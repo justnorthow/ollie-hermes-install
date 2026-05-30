@@ -53,6 +53,11 @@ bash scripts/05-install-orchestrator.sh
 
 # 8. Install the cortex + frontend Docker stack
 bash scripts/06-install-stack.sh
+
+# 9. Patch hermes-agent so cron jobs can use the cortex brain tools.
+#    See the script header for the rationale and what it edits.
+#    Re-run this after every `hermes update`.
+bash scripts/07-patch-cron-brain.sh
 ```
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
