@@ -1,0 +1,66 @@
+# Cortex memory service + dashboard frontend.
+#
+# ARCHITECTURE NOTE
+# -----------------
+# Hermes is NOT containerized here. Install it natively on the host (one
+# `hermes-gateway-*` systemd service per profile, plus `hermes-dashboard`)
+# per `docs/superpowers/specs/2026-05-25-host-native-hermes-multi-agent-design.md`.
+# The containers below reach the host's Hermes via `host.docker.internal`,
+# which requires `extra_hosts: ["host.docker.internal:host-gateway"]` on Linux
+# (Docker >= 20.10).
+#
+# SETUP
+# -----
+# 1. `cp .env.example .env` and set HERMES_GATEWAY_KEY (must match the host's
+#    `~/.hermes/.env` API_SERVER_KEY, and any per-profile .env's of the same).
+# 2. Install Hermes on the host and start its gateway services (see the spec).
+# 3. Set AGENTS_JSON below to the list of agents your install exposes.
+# 4. `docker compose up -d`
+
+services:
+  cortex:
+    image: justnorthow/ollie-hermes-cortex:latest
+    container_name: cortex
+    restart: unless-stopped
+    ports:
+      - "9120:9120"
+    volumes:
+      - cortex-data:/data
+      - cortex-plugin:/plugin
+    environment:
+      - DATA_DIR=/data
+      # Cortex talks to the default profile's gateway for memory extraction.
+      # Multi-agent cortex routing is a follow-up.
+      - HERMES_GATEWAY_URL=http://host.docker.internal:8642
+      - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  dashboard:
+    image: justnorthow/ollie-hermes-frontend:latest
+    container_name: ollie-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND=hermes
+      - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
+      # Bearer token for the host-native ollie-hermes-orchestrator service on
+      # :9123 (used by the dashboard's "+ New agent" management UI). When
+      # unset the nginx /orchestrator-proxy/ block emits a 503 and the UI
+      # gracefully hides agent management.
+      - ORCHESTRATOR_KEY=${ORCHESTRATOR_KEY:-}
+      # One entry per agent on the host. `gatewayUrl` is the agent's Hermes
+      # Gateway (browser → /gateway-proxy/<id>/* → nginx → gatewayUrl).
+      # `dashboardUrl` is the agent's Hermes Dashboard (each profile has its
+      # own dashboard service scoped to its own sessions DB). The browser hits
+      # the nginx proxy paths, NOT these URLs directly. To list sessions
+      # across profiles, the frontend queries each agent's dashboard.
+      - AGENTS_JSON=${AGENTS_JSON:-[{"id":"default","name":"Ollie","gatewayUrl":"http://host.docker.internal:8642","dashboardUrl":"http://host.docker.internal:9119"}]}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  cortex-data:
+  cortex-plugin:
