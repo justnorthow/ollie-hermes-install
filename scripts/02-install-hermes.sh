@@ -97,13 +97,29 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now hermes-dashboard
 
-sleep 3
 echo
-echo "==> verification"
-systemctl --user is-active hermes-gateway && echo "    hermes-gateway: active"
-systemctl --user is-active hermes-dashboard && echo "    hermes-dashboard: active"
-curl -s -o /dev/null -w "    dashboard http :${DASHBOARD_PORT} → %{http_code} (200 = good)\n" "http://localhost:${DASHBOARD_PORT}/"
-curl -s -o /dev/null -w "    gateway   http :${GATEWAY_PORT} → %{http_code} (405 = good, GET wrong method)\n" "http://localhost:${GATEWAY_PORT}/v1/runs"
+echo "==> verification (waiting for ports to bind — dashboard's first start needs ~5-10s)"
+# Don't let set -e abort the script if a curl probe fails — the probes are informational.
+set +e
+echo "    hermes-gateway:   $(systemctl --user is-active hermes-gateway)"
+echo "    hermes-dashboard: $(systemctl --user is-active hermes-dashboard)"
+# Poll the dashboard until it answers (max 30s — first-start asset build can be slow)
+for i in $(seq 1 15); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 3 "http://localhost:${DASHBOARD_PORT}/" || true)
+  if [[ "${code}" == "200" ]]; then
+    echo "    dashboard http :${DASHBOARD_PORT} → 200 ✓"
+    break
+  fi
+  [[ "${i}" == "15" ]] && echo "    dashboard http :${DASHBOARD_PORT} → ${code:-none} (not 200 after 30s — check 'journalctl --user -u hermes-dashboard')"
+  sleep 2
+done
+# Gateway listens for POST; any HTTP response (including 404/405) means it's alive.
+code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://localhost:${GATEWAY_PORT}/v1/runs" || true)
+case "${code}" in
+  ''|000) echo "    gateway   http :${GATEWAY_PORT} → no response (check 'systemctl --user status hermes-gateway')" ;;
+  *) echo "    gateway   http :${GATEWAY_PORT} → ${code} ✓ (any HTTP response = listening)" ;;
+esac
+set -e
 
 echo
 echo "✓ Hermes installed and running."
