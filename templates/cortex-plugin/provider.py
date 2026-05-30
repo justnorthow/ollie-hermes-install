@@ -51,14 +51,19 @@ class CortexProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         return (
             "# Cortex Memory\n"
-            "Active. You have persistent memory and a brain knowledge base.\n\n"
-            "Use these tools proactively:\n"
-            "- memory_save: Save important facts, preferences, or context the user shares. "
-            "Call this whenever the user tells you something worth remembering (name, preferences, goals, etc.).\n"
-            "- memory_search: Search past memories before answering questions about the user or their context.\n"
-            "- brain_read: Read a section of the structured knowledge base (e.g. 'foundation', 'delivery').\n"
-            "- brain_update: Update a knowledge base section with new or revised information.\n\n"
-            "Always call memory_save immediately when the user shares personal information or explicitly asks you to remember something."
+            "Active. You have persistent memory and a brain knowledge base shared across ALL agents.\n\n"
+            "Memory tools (per-thought facts about the user):\n"
+            "- memory_save: Save important facts, preferences, or context the user shares.\n"
+            "- memory_search: Search past memories before answering questions about the user.\n\n"
+            "Brain tools (structured knowledge files, shared across agents):\n"
+            "- brain_read: Read a brain file by path (e.g. 'foundation/company', 'jnow-deliverability').\n"
+            "- brain_update: Replace a brain file's entire contents. Use for full rewrites.\n"
+            "- brain_append: Append a line or block to a brain file (creates the file if missing). "
+            "Use this for longitudinal logs — daily run results, status changes, decisions made.\n\n"
+            "Brain files are the right place for anything you'll want to reference WEEKS later — "
+            "trend lines, decision logs, deliverability history, incident timelines. "
+            "Prefer brain_append over writing to local files; brain is shared and persistent across all agents.\n\n"
+            "Always call memory_save immediately when the user shares personal information or asks you to remember something."
         )
 
     def get_config_schema(self) -> list[dict]:
@@ -130,12 +135,24 @@ class CortexProvider(MemoryProvider):
             },
             {
                 "name": "brain_update",
-                "description": "Update a brain knowledge base section",
+                "description": "Replace a brain knowledge base file's entire contents. For full rewrites only.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "key": {"type": "string"},
+                        "key": {"type": "string", "description": "File path (e.g. foundation/company, jnow-deliverability)"},
                         "content": {"type": "string"},
+                    },
+                    "required": ["key", "content"],
+                },
+            },
+            {
+                "name": "brain_append",
+                "description": "Append a line or block to a brain file. Creates the file if it doesn't exist. Use for longitudinal logs — daily run results, decisions, status entries. Preferred over brain_update when you're adding to an existing record.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "File path (e.g. jnow-deliverability)"},
+                        "content": {"type": "string", "description": "Text to append. A trailing newline is added if missing."},
                     },
                     "required": ["key", "content"],
                 },
@@ -162,6 +179,22 @@ class CortexProvider(MemoryProvider):
             if name == "brain_update":
                 self._client.put(f"/brain/files/{args['key']}", {"content": args["content"]})
                 return "Updated."
+            if name == "brain_append":
+                # Read existing content (tolerate missing files — append should create them).
+                try:
+                    existing = self._client.get(f"/brain/files/{args['key']}")
+                    text = existing.get("content", "") if isinstance(existing, dict) else ""
+                except Exception:
+                    text = ""
+                addition = args["content"]
+                # Ensure a clean newline separator between existing content and the new block.
+                if text and not text.endswith("\n"):
+                    text += "\n"
+                text += addition
+                if not text.endswith("\n"):
+                    text += "\n"
+                self._client.put(f"/brain/files/{args['key']}", {"content": text})
+                return "Appended."
             return f"Unknown tool: {name}"
         except Exception as e:
             return f"Cortex error: {e}"
