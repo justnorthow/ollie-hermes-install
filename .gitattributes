@@ -1,0 +1,6 @@
+# Shell scripts MUST be LF — they run on Linux servers
+scripts/*.sh text eol=lf
+# Systemd units + docker-compose are Linux-only too
+templates/*.service text eol=lf
+templates/*.yml text eol=lf
+templates/*.yaml text eol=lf
