@@ -1,0 +1,5 @@
+name: cortex
+version: "1.0.0"
+description: "Persistent memory and brain knowledge base for Hermes agents"
+author: "JNOW"
+min_hermes_version: "0.13.0"
