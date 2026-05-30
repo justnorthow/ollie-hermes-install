@@ -56,13 +56,16 @@ class CortexProvider(MemoryProvider):
             "- memory_save: Save important facts, preferences, or context the user shares.\n"
             "- memory_search: Search past memories before answering questions about the user.\n\n"
             "Brain tools (structured knowledge files, shared across agents):\n"
-            "- brain_read: Read a brain file by path (e.g. 'foundation/company', 'jnow-deliverability').\n"
+            "- brain_read: Read a brain file by section/file (e.g. 'foundation/company', 'logs/jnow-deliverability').\n"
             "- brain_update: Replace a brain file's entire contents. Use for full rewrites.\n"
             "- brain_append: Append a line or block to a brain file (creates the file if missing). "
             "Use this for longitudinal logs — daily run results, status changes, decisions made.\n\n"
+            "Brain paths are always `<section>/<file>`. Sections include 'foundation', 'delivery', 'prospecting', "
+            "'content', 'reference' (all pre-defined files), and 'logs' (free-form — you can create any file_id you want "
+            "for operational logs). Examples: `logs/jnow-deliverability`, `logs/cron-runs`, `logs/incidents`.\n\n"
             "Brain files are the right place for anything you'll want to reference WEEKS later — "
             "trend lines, decision logs, deliverability history, incident timelines. "
-            "Prefer brain_append over writing to local files; brain is shared and persistent across all agents.\n\n"
+            "Prefer brain_append to the 'logs/' section over writing to local files; brain is shared across all agents.\n\n"
             "Always call memory_save immediately when the user shares personal information or asks you to remember something."
         )
 
@@ -175,7 +178,10 @@ class CortexProvider(MemoryProvider):
                 return "Unpinned."
             if name == "brain_read":
                 result = self._client.get(f"/brain/files/{args['key']}")
-                return result.get("content", "") if isinstance(result, dict) else ""
+                # Cortex returns {"body": "...", "exists": bool, ...}
+                if isinstance(result, dict):
+                    return result.get("body", "") or ""
+                return ""
             if name == "brain_update":
                 self._client.put(f"/brain/files/{args['key']}", {"content": args["content"]})
                 return "Updated."
@@ -183,7 +189,7 @@ class CortexProvider(MemoryProvider):
                 # Read existing content (tolerate missing files — append should create them).
                 try:
                     existing = self._client.get(f"/brain/files/{args['key']}")
-                    text = existing.get("content", "") if isinstance(existing, dict) else ""
+                    text = existing.get("body", "") if isinstance(existing, dict) else ""
                 except Exception:
                     text = ""
                 addition = args["content"]
