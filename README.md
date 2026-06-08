@@ -60,6 +60,12 @@ bash scripts/06-install-stack.sh
 #    See the script header for the rationale and what it edits.
 #    Re-run this after every `hermes update`.
 bash scripts/07-patch-cron-brain.sh
+
+# 10. Provision agent personas: seed the default agent's first-run identity
+#     onboarding (it interviews you on first chat) + any preset personas for
+#     extra profiles. Marker-gated — never overwrites a customized SOUL.md.
+#     Run this LAST, before you start chatting. Re-run after adding a profile.
+bash scripts/08-install-souls.sh
 ```
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
