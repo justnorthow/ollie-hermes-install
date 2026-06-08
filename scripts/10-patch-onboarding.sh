@@ -13,20 +13,22 @@
 # and the agent intermittently restarts the interview (re-asks the name, reverts
 # the chosen name, loops).
 #
-# The dashboard talks to the gateway's api_server platform, which has its OWN agent
-# executor (APIServerAdapter._run_agent -> _create_agent -> AIAgent). Hermes's
-# built-in first-message onboarding lives in gateway/run.py's _handle_message_with_agent
-# and only runs for MESSAGING platforms (Telegram/Discord/Slack) — the dashboard never
-# reaches it. So the only channel that ever reached the dashboard agent was SOUL.md
-# (every message). We need a ONCE-only channel on the api_server path.
+# The dashboard talks to the gateway's api_server platform, which builds its agent via
+# APIServerAdapter._create_agent (called by _handle_runs for /v1/runs, and by _run_agent
+# for the chat endpoints). Hermes's built-in first-message onboarding lives in
+# gateway/run.py's _handle_message_with_agent and only runs for MESSAGING platforms
+# (Telegram/Discord/Slack) — the dashboard never reaches it. So the only channel that
+# ever reached the dashboard agent was SOUL.md (every message). We need a ONCE-only
+# channel on the api_server path.
 #
-# api_server._run_agent threads an `ephemeral_system_prompt` straight to the agent for
-# THAT run only. We wrap _run_agent so that, when the caller supplied no ephemeral
-# prompt AND the default agent's SOUL.md is still the OLLIE-SOUL-DEFAULT stub AND our
-# once-ever flag is unset, it injects the interview directive and marks the flag. The
-# directive is delivered exactly once, on the dashboard's first message — no per-turn
-# re-injection, no restart. (We also override agent/onboarding.py::profile_build_directive
-# so the SAME interview drives messaging-platform onboarding, for parity.)
+# _create_agent threads an `ephemeral_system_prompt` straight to the AIAgent for THAT run
+# only. We wrap _create_agent (the common chokepoint for every api_server run path) so
+# that, when the caller supplied no ephemeral prompt AND the default agent's SOUL.md is
+# still the OLLIE-SOUL-DEFAULT stub AND our once-ever flag is unset, it injects the
+# interview directive and marks the flag. The directive is delivered exactly once, on the
+# dashboard's first message — no per-turn re-injection, no restart. (We also override
+# agent/onboarding.py::profile_build_directive so the SAME interview drives
+# messaging-platform onboarding, for parity.)
 #
 # Both overrides are APPENDED as marker-guarded blocks (Python binds the name/method to
 # the last definition), so they are append-only, line-number-independent, and survive
@@ -101,7 +103,7 @@ PYEOF
   echo "    appended override block"
 fi
 
-echo "==> step 2b: inject the interview once via api_server _run_agent (the dashboard path)"
+echo "==> step 2b: inject the interview once via api_server _create_agent (the dashboard path)"
 # The dashboard's api_server executor never runs Hermes's onboarding gate, so we inject
 # our directive through its per-run ephemeral_system_prompt hook — exactly once, while
 # SOUL is still the default stub and our flag is unset.
@@ -117,7 +119,7 @@ import os as _ollie_os2
 from pathlib import Path as _OlliePath
 
 _OLLIE_ONBOARD_FLAG = "ollie_identity_onboarded"
-_ollie_orig_run_agent = APIServerAdapter._run_agent
+_ollie_orig_create_agent = APIServerAdapter._create_agent
 
 
 def _ollie_onboarding_ephemeral():
@@ -146,17 +148,18 @@ def _ollie_onboarding_ephemeral():
         return None
 
 
-async def _ollie_run_agent(self, *args, **kwargs):
-    # ephemeral_system_prompt is always passed by keyword by every caller; only inject
-    # when the caller supplied none of their own.
-    if not kwargs.get("ephemeral_system_prompt"):
+def _ollie_create_agent(self, *args, **kwargs):
+    # Every caller (_handle_runs at the /v1/runs path, _run_agent, etc.) passes
+    # ephemeral_system_prompt by keyword. Inject only when the caller supplied none of
+    # their own and nothing was passed positionally (avoids a duplicate-arg TypeError).
+    if not kwargs.get("ephemeral_system_prompt") and not args:
         _inj = _ollie_onboarding_ephemeral()
         if _inj:
             kwargs["ephemeral_system_prompt"] = _inj
-    return await _ollie_orig_run_agent(self, *args, **kwargs)
+    return _ollie_orig_create_agent(self, *args, **kwargs)
 
 
-APIServerAdapter._run_agent = _ollie_run_agent
+APIServerAdapter._create_agent = _ollie_create_agent
 # <<< OLLIE-IDENTITY-ONBOARDING-APISERVER <<<
 PYEOF
   echo "    appended api_server injection block"
@@ -173,7 +176,7 @@ src = o.profile_build_directive.__doc__ or ""
 print("    profile_build_directive:", "OVERRIDE" if "Ollie identity interview" in src else "UPSTREAM")
 try:
     from gateway.platforms.api_server import APIServerAdapter
-    print("    api_server._run_agent:", "OVERRIDE" if APIServerAdapter._run_agent.__name__ == "_ollie_run_agent" else "UPSTREAM")
+    print("    api_server._create_agent:", "OVERRIDE" if APIServerAdapter._create_agent.__name__ == "_ollie_create_agent" else "UPSTREAM")
 except Exception as _e:
     print("    api_server._run_agent: (import skipped:", type(_e).__name__, ")")
 PY
