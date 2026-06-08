@@ -29,37 +29,51 @@ sudo ln -sfn "${DEST}" /usr/local/bin/ollie-set-identity
 echo "    linked /usr/local/bin/ollie-set-identity"
 
 echo "==> allowlisting ollie-set-identity (so the agent runs it without an approval prompt)"
-# Best-effort: a round-trip YAML edit (ruamel preserves comments/formatting).
-# If anything goes wrong, the command still works — the agent just gets a
-# one-time approval prompt. So we never fail the install on this.
+# Best-effort + data-safe: ruamel round-trip preserves comments/formatting, and
+# we write via a temp file + atomic os.replace so config.yaml can NEVER be left
+# truncated. Python exit codes: 0 = changed, 10 = already present, other = error.
+# We never fail the install on this — worst case the agent prompts once.
 if [[ -x "${VENV_PY}" && -f "${CFG}" ]]; then
-  if "${VENV_PY}" - "${CFG}" <<'PY'
-import sys
+  set +e
+  "${VENV_PY}" - "${CFG}" <<'PY'
+import os, sys, tempfile
 from ruamel.yaml import YAML
 path = sys.argv[1]
 yaml = YAML()  # round-trip: preserves comments + formatting
 with open(path) as f:
     cfg = yaml.load(f)
 al = cfg.get("command_allowlist")
-if not isinstance(al, list):
+if al is not None and not isinstance(al, list):
+    sys.exit("command_allowlist is not a list; leaving config untouched")
+if al is None:
     al = []
     cfg["command_allowlist"] = al
-if "ollie-set-identity" not in al:
-    al.append("ollie-set-identity")
-    with open(path, "w") as f:
-        yaml.dump(cfg, f)
-    print("    added ollie-set-identity to command_allowlist")
-else:
+if "ollie-set-identity" in al:
     print("    already in command_allowlist")
+    sys.exit(10)
+al.append("ollie-set-identity")
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".hermes-cfg-")
+try:
+    with os.fdopen(fd, "w") as f:
+        yaml.dump(cfg, f)
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+print("    added ollie-set-identity to command_allowlist")
 PY
-  then
-    # restart running gateways so they pick up the config change
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
     for unit in $(systemctl --user list-units --no-legend --plain 'hermes-gateway*' 2>/dev/null | awk '{print $1}'); do
-      systemctl --user restart "${unit}" 2>/dev/null && echo "    restarted ${unit}"
+      systemctl --user restart "${unit}" 2>/dev/null && echo "    restarted ${unit}" || true
     done
-  else
-    echo "    WARNING: could not edit command_allowlist; the agent may prompt once for approval." >&2
+  elif [[ "${rc}" -ne 10 ]]; then
+    echo "    WARNING: could not edit command_allowlist (rc=${rc}); the agent may prompt once for approval." >&2
   fi
 else
   echo "    WARNING: ${CFG} or venv python missing; skipped allowlisting (agent may prompt once)." >&2
