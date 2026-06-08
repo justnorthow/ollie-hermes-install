@@ -43,6 +43,11 @@ soul_is_replaceable() {
   if grep -qE 'OLLIE-SOUL-BOOTSTRAP|OLLIE-PRESET-SOUL' "$f"; then
     return 0
   fi
+  # The stock Hermes default persona that `hermes profile create` writes verbatim
+  # into a new profile's SOUL.md — treat as unconfigured (replaceable by a preset).
+  if grep -q 'an intelligent AI assistant created by Nous Research' "$f"; then
+    return 0
+  fi
   local meaningful
   meaningful="$(awk '
     {
