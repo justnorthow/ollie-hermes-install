@@ -35,15 +35,22 @@ usermod -aG sudo "${TARGET_USER}"
 echo "${TARGET_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${TARGET_USER}"
 chmod 0440 "/etc/sudoers.d/${TARGET_USER}"
 
-echo "==> copying root SSH authorized_keys to ${TARGET_USER}"
+echo "==> merging root SSH authorized_keys into ${TARGET_USER} (preserve existing + dedupe)"
 USER_HOME="/home/${TARGET_USER}"
+USER_AK="${USER_HOME}/.ssh/authorized_keys"
 mkdir -p "${USER_HOME}/.ssh"
+touch "${USER_AK}"
+# IMPORTANT: merge, never overwrite. A plain `cp` here clobbers any key added
+# directly to the ${TARGET_USER} account — including the one you're connected
+# with right now — so re-running this script could lock you out. Concatenate
+# root's keys with the existing ones and de-dupe (order-preserving, blank-safe).
 if [[ -f /root/.ssh/authorized_keys ]]; then
-  cp /root/.ssh/authorized_keys "${USER_HOME}/.ssh/"
+  cat /root/.ssh/authorized_keys "${USER_AK}" | awk 'NF && !seen[$0]++' > "${USER_AK}.tmp"
+  mv "${USER_AK}.tmp" "${USER_AK}"
 fi
 chown -R "${TARGET_USER}:${TARGET_USER}" "${USER_HOME}/.ssh"
 chmod 700 "${USER_HOME}/.ssh"
-chmod 600 "${USER_HOME}/.ssh/authorized_keys" 2>/dev/null || true
+chmod 600 "${USER_AK}"
 
 echo "==> enabling systemd --user linger for ${TARGET_USER} (services survive logout)"
 loginctl enable-linger "${TARGET_USER}"

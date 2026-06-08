@@ -38,6 +38,22 @@ else
 fi
 hermes --version
 
+echo "==> step 1b: symlink hermes into /usr/local/bin so it resolves in EVERY context"
+# The upstream installer only puts ~/.local/bin on PATH via .bashrc/.profile, which
+# load ONLY in interactive login shells. That leaves `hermes` missing under sudo,
+# cron, non-interactive scripts, and even the same shell right after install (before
+# re-login) — the "hermes: command not found" symptom. It also causes a confusing
+# "No module named 'dotenv'" if you work around it by invoking a non-venv python.
+# /usr/local/bin is already on every default PATH (incl. sudo secure_path and cron),
+# and the wrapper it points to execs the venv's python — so hermes AND its bundled
+# deps (python-dotenv, etc.) are always available. Idempotent.
+if [[ -x "${HOME}/.local/bin/hermes" ]]; then
+  sudo ln -sfn "${HOME}/.local/bin/hermes" /usr/local/bin/hermes
+  echo "    linked /usr/local/bin/hermes -> ${HOME}/.local/bin/hermes"
+else
+  echo "    warning: ${HOME}/.local/bin/hermes not found — upstream install may have failed" >&2
+fi
+
 echo "==> step 2: ensure ~/.hermes/.env exists"
 mkdir -p "${HOME}/.hermes"
 touch "${HERMES_ENV}"
