@@ -124,7 +124,7 @@ After you've verified the new host for at least a day (so any cron'd skills have
 | Empty Memory tab | Cortex volume not actually loaded | Re-run the `docker run --rm -v hermes-stack_cortex-data:/data ...` step |
 | Telegram bot ignores DMs | Polling conflict with the old host | Stop the old host's gateway (step 5) |
 | `mcp test agentmail` succeeds but agents say "no inbox" | Stale tool cache in the agent's session | Start a NEW chat session (existing ones miss the post-migration MCP) |
-| Gateway logs warn "auth refresh failed" | Codex tokens copied but the gateway restart raced with token use | `hermes login --provider openai-codex` for a fresh refresh, then `systemctl --user restart hermes-gateway` |
+| Gateway logs warn "auth refresh failed" | Codex tokens copied but the gateway restart raced with token use | Re-auth with `hermes auth add openai-codex --type oauth --no-browser --manual-paste` (the old `hermes login` was removed in v0.16+), then `systemctl --user restart hermes-gateway`. Check with `hermes auth status openai-codex`. |
 
 ## Version notes
 
