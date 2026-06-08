@@ -66,6 +66,11 @@ bash scripts/07-patch-cron-brain.sh
 #     extra profiles. Marker-gated — never overwrites a customized SOUL.md.
 #     Run this LAST, before you start chatting. Re-run after adding a profile.
 bash scripts/08-install-souls.sh
+
+# 11. Install the identity-sync helper (ollie-set-identity): lets the agent save
+#     its persona + update its dashboard display name in one deterministic step
+#     during onboarding. Needs the orchestrator (step 7) for the rename half.
+bash scripts/09-install-identity-sync.sh
 ```
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
