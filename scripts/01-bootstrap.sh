@@ -86,6 +86,10 @@ chmod 0440 "/etc/sudoers.d/${TARGET_USER}"
 
 echo "==> seeding ${TARGET_USER} authorized_keys from operator -> root -> existing (deduped)"
 USER_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
+if [[ -z "${USER_HOME}" ]]; then
+  echo "error: could not resolve home directory for ${TARGET_USER}" >&2
+  exit 1
+fi
 USER_AK="${USER_HOME}/.ssh/authorized_keys"
 mkdir -p "${USER_HOME}/.ssh"
 touch "${USER_AK}"
@@ -93,6 +97,9 @@ if [[ "${OPERATOR}" == "root" ]]; then
   OP_AK="/root/.ssh/authorized_keys"
 else
   OP_AK="$(getent passwd "${OPERATOR}" | cut -d: -f6)/.ssh/authorized_keys"
+  if ! getent passwd "${OPERATOR}" >/dev/null 2>&1; then
+    echo "    WARNING: operator '${OPERATOR}' not found in passwd — skipping their key seed." >&2
+  fi
 fi
 # Merge, never overwrite: a plain cp could clobber a key added directly to the
 # service account and lock you out on re-run. Order-preserving, blank+dup safe.
@@ -130,7 +137,11 @@ if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
   chmod a+r /etc/apt/keyrings/docker.gpg
 fi
 ARCH="$(dpkg --print-architecture)"
-CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")"
+if [[ -z "${CODENAME}" ]]; then
+  echo "error: could not determine Ubuntu codename from /etc/os-release" >&2
+  exit 1
+fi
 echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
   > /etc/apt/sources.list.d/docker.list
 apt-get update -qq
