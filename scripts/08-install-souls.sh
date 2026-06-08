@@ -104,7 +104,8 @@ done
 
 echo
 echo "✓ SOUL provisioning complete."
-echo "  The default agent starts as 'Ollie' (minimal persona). Its first-run identity"
-echo "  interview is delivered by 10-patch-onboarding.sh on the first chat of a fresh"
-echo "  install, then saved via ollie-set-identity. Re-run after adding a profile (03)"
-echo "  or after editing a preset in templates/souls/."
+echo "  The default agent starts as 'Ollie' (minimal persona carrying the"
+echo "  OLLIE-SOUL-DEFAULT marker). On first launch the dashboard's identity wizard"
+echo "  detects that marker, collects the operator's choices, and writes the real"
+echo "  SOUL.md + dashboard name via the orchestrator. Re-run after adding a profile"
+echo "  (03) or after editing a preset in templates/souls/."
