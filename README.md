@@ -70,13 +70,11 @@ bash scripts/08-install-souls.sh
 #     its persona + update its dashboard display name in one deterministic step
 #     during onboarding. Needs the orchestrator (step 7) for the rename half.
 bash scripts/09-install-identity-sync.sh
-
-# 12. Wire the default agent's first-run identity interview into Hermes's
-#     once-only onboarding channel (overrides profile_build_directive). The agent
-#     interviews you on the first chat of a fresh install, then saves SOUL.md via
-#     ollie-set-identity. Run this LAST. Re-apply after every `hermes update`.
-bash scripts/10-patch-onboarding.sh
 ```
+
+> First-run identity setup (naming the default agent, its personality, mission, etc.)
+> is handled by the **dashboard's identity wizard** on first launch — not by an install
+> script. The wizard writes the agent's `SOUL.md` and dashboard name via the orchestrator.
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
 
