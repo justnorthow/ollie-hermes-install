@@ -12,8 +12,9 @@
 #   5. Installs the hermes-gateway systemd --user service via `hermes gateway install`
 #   6. Installs a hardened hermes-dashboard systemd --user service (Restart=always + burst guard)
 #
-# After this script: run `hermes login --provider <provider>` to set up your LLM auth.
-# For Codex/ChatGPT: hermes login --provider openai-codex
+# After this script: set up your LLM auth (the old `hermes login` was removed).
+# For Codex/ChatGPT OAuth on a headless box:
+#   hermes auth add openai-codex --type oauth --no-browser --manual-paste
 
 set -euo pipefail
 
