@@ -88,16 +88,31 @@ gating).
 Run as the service user (NOT root), after `02` (default exists) and, if profiles
 are used, after `03`. Idempotent and re-runnable.
 
-**Default agent** → `~/.hermes/SOUL.md`:
-- Install `templates/souls/default-onboarding.md` **iff** the target is one of:
-  (a) missing, (b) Hermes's stock template (detected by its signature header +
-  no real persona content), or (c) already contains `OLLIE-SOUL-BOOTSTRAP`.
-- Otherwise leave it untouched (it's a completed onboarding or a hand-edit).
+**"Replaceable" — the shared gate (`soul_is_replaceable`).** A target `SOUL.md`
+may be written iff it is one of:
+- missing, OR
+- carries one of our markers (`OLLIE-SOUL-BOOTSTRAP` / `OLLIE-PRESET-SOUL`), OR
+- is **unconfigured stock content**, in either of the two forms Hermes ships:
+  1. the *empty comment template* — what `~/.hermes/SOUL.md` holds for the default
+     agent: only `#` headers, HTML-comment blocks, and blank lines remain after
+     stripping; or
+  2. the *stock default-persona prose* that `hermes profile create` writes
+     verbatim into a NEW profile's `SOUL.md` ("You are Hermes Agent, an
+     intelligent AI assistant created by Nous Research. …"), detected by the
+     stable signature `an intelligent AI assistant created by Nous Research`.
 
-**Preset agents** → for each `~/.hermes/profiles/<name>/`:
-- If `templates/souls/<name>.md` exists, install it to `<profile>/SOUL.md` under
-  the same gating (replace iff missing / stock template / carries
-  `OLLIE-PRESET-SOUL`). Profiles with no matching preset are left as-is.
+A real, customized persona (prose, no marker, not the stock signature) is kept.
+Form #2 was discovered during on-box validation — without it, presets would
+silently no-op on every freshly-created profile.
+
+**Default agent** → `~/.hermes/SOUL.md`: install `default-onboarding.md` when the
+target is replaceable (in practice: the empty template, form #1); otherwise leave
+it untouched (a completed onboarding or a hand-edit).
+
+**Preset agents** → for each `~/.hermes/profiles/<name>/`: if
+`templates/souls/<name>.md` exists, install it to `<profile>/SOUL.md` when the
+target is replaceable (on a fresh profile this is form #2 above). Profiles with
+no matching preset are left as-is.
 
 Print a per-target summary (installed / skipped-customized / no-preset).
 
@@ -120,6 +135,10 @@ Print a per-target summary (installed / skipped-customized / no-preset).
 - **Agent can write the file** → it runs as the service user; `~/.hermes/SOUL.md`
   is in its home and writable via the agent's file tools.
 - **Profile with a pre-existing customized `SOUL.md`** → not overwritten by a preset.
+- **Fresh profile from `hermes profile create`** → its `SOUL.md` holds Hermes's
+  stock default-persona prose (NOT the empty template), so the signature check
+  (replaceable form #2) lets the preset install. Discovered during on-box
+  validation; handled in `soul_is_replaceable` (commit `cee06d1`).
 
 ## Testing
 
