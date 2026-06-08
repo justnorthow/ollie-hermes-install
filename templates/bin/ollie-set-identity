@@ -24,9 +24,9 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --name)      NAME="${2:-}"; shift 2 ;;
-    --soul-file) SOUL_FILE="${2:-}"; shift 2 ;;
-    --id)        AGENT_ID="${2:-}"; shift 2 ;;
+    --name)      [[ $# -ge 2 ]] || { echo "error: --name requires a value" >&2; usage; exit 2; }; NAME="$2"; shift 2 ;;
+    --soul-file) [[ $# -ge 2 ]] || { echo "error: --soul-file requires a value" >&2; usage; exit 2; }; SOUL_FILE="$2"; shift 2 ;;
+    --id)        [[ $# -ge 2 ]] || { echo "error: --id requires a value" >&2; usage; exit 2; }; AGENT_ID="$2"; shift 2 ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -49,6 +49,7 @@ fi
 #    exactly the persona, so the bootstrap marker cannot survive.
 mkdir -p "$(dirname "${SOUL_DEST}")"
 TMP="${SOUL_DEST}.tmp.$$"
+trap 'rm -f "${TMP}"' EXIT
 cp "${SOUL_FILE}" "${TMP}"
 chmod 644 "${TMP}"
 mv -f "${TMP}" "${SOUL_DEST}"
