@@ -89,6 +89,33 @@ ensure_env API_SERVER_CORS_ORIGINS '*'
 echo "==> step 4: <name> config set gateway.port = ${GATEWAY_PORT}"
 "${NAME}" config set gateway.port "${GATEWAY_PORT}" >/dev/null
 
+echo "==> step 4b: inherit the default agent's inference provider + credentials"
+# New profiles ship with no model/provider, so their gateway returns
+# "No inference provider configured" on first chat. Inherit whatever the default
+# agent is using (e.g. openai-codex / gpt-5.5) so the profile works out of the box.
+DEFAULT_CONFIG="${HOME}/.hermes/config.yaml"
+DEFAULT_AUTH="${HOME}/.hermes/auth.json"
+read_default_model() {
+  python3 -c "import yaml,os; c=yaml.safe_load(open(os.path.expanduser('${DEFAULT_CONFIG}'))) or {}; m=c.get('model') or {}; print(m.get('$1','') or '')" 2>/dev/null
+}
+DEF_PROVIDER="$(read_default_model provider)"
+DEF_MODEL="$(read_default_model default)"
+DEF_BASEURL="$(read_default_model base_url)"
+if [[ -n "${DEF_PROVIDER}" ]]; then
+  "${NAME}" config set model.provider "${DEF_PROVIDER}" >/dev/null 2>&1 || true
+  [[ -n "${DEF_MODEL}" ]]   && "${NAME}" config set model.default  "${DEF_MODEL}"   >/dev/null 2>&1 || true
+  [[ -n "${DEF_BASEURL}" ]] && "${NAME}" config set model.base_url "${DEF_BASEURL}" >/dev/null 2>&1 || true
+  echo "    inherited model '${DEF_MODEL:-?}' via provider '${DEF_PROVIDER}'"
+else
+  echo "    default agent has no provider configured yet — skipping (configure one, then re-run)"
+fi
+# Share the default agent's provider credentials. A symlink keeps OAuth token
+# refreshes in sync across all agents instead of letting per-profile copies diverge.
+if [[ -f "${DEFAULT_AUTH}" ]]; then
+  ln -sfn ../../auth.json "${PROFILE_DIR}/auth.json"
+  echo "    linked provider credentials (${NAME}/auth.json -> default auth.json)"
+fi
+
 echo "==> step 5: install per-profile gateway service"
 printf 'y\ny\ny\ny\ny\n' | "${NAME}" gateway install 2>&1 | tail -3 || true
 
