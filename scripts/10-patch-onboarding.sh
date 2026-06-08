@@ -11,19 +11,26 @@
 # Hermes injects SOUL.md into the system prompt on EVERY message. Seeding the
 # first-run interview into SOUL.md therefore re-asserts "start setup" every turn,
 # and the agent intermittently restarts the interview (re-asks the name, reverts
-# the chosen name, loops). gateway/run.py instead injects onboarding directives
-# exactly ONCE, on the first message of a fresh install (gated by `not history and
-# not has_any_sessions()`), via agent/onboarding.py::profile_build_directive().
-# Delivering our interview through that channel makes it run as a normal
-# conversation off history — no per-turn re-injection, no restart.
+# the chosen name, loops).
 #
-# We override profile_build_directive() by APPENDING a marker-guarded redefinition
-# to the end of onboarding.py. Python binds the module name to the last definition,
-# so the call site's `from agent.onboarding import profile_build_directive` picks up
-# ours. Append-only and line-number-independent, so it survives upstream edits.
+# The dashboard talks to the gateway's api_server platform, which has its OWN agent
+# executor (APIServerAdapter._run_agent -> _create_agent -> AIAgent). Hermes's
+# built-in first-message onboarding lives in gateway/run.py's _handle_message_with_agent
+# and only runs for MESSAGING platforms (Telegram/Discord/Slack) — the dashboard never
+# reaches it. So the only channel that ever reached the dashboard agent was SOUL.md
+# (every message). We need a ONCE-only channel on the api_server path.
 #
-# Re-apply after every `hermes update` (it rewrites onboarding.py). Same maintenance
-# model as 07-patch-cron-brain.sh.
+# api_server._run_agent threads an `ephemeral_system_prompt` straight to the agent for
+# THAT run only. We wrap _run_agent so that, when the caller supplied no ephemeral
+# prompt AND the default agent's SOUL.md is still the OLLIE-SOUL-DEFAULT stub AND our
+# once-ever flag is unset, it injects the interview directive and marks the flag. The
+# directive is delivered exactly once, on the dashboard's first message — no per-turn
+# re-injection, no restart. (We also override agent/onboarding.py::profile_build_directive
+# so the SAME interview drives messaging-platform onboarding, for parity.)
+#
+# Both overrides are APPENDED as marker-guarded blocks (Python binds the name/method to
+# the last definition), so they are append-only, line-number-independent, and survive
+# upstream edits. Re-apply after every `hermes update`. Same model as 07-patch-cron-brain.sh.
 
 set -euo pipefail
 
@@ -36,14 +43,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIRECTIVE_SRC="${SCRIPT_DIR}/../templates/onboarding/profile-build-directive.md"
 HERMES_HOME="${HOME}/.hermes"
 ONBOARDING="${HERMES_HOME}/hermes-agent/agent/onboarding.py"
-SESSION_PY="${HERMES_HOME}/hermes-agent/gateway/session.py"
+API_SERVER="${HERMES_HOME}/hermes-agent/gateway/platforms/api_server.py"
 DIRECTIVE_DEST="${HERMES_HOME}/ollie-onboarding-directive.txt"
 
 if [[ ! -f "${DIRECTIVE_SRC}" ]]; then
   echo "error: vendored directive not found at ${DIRECTIVE_SRC}" >&2
   exit 1
 fi
-if [[ ! -f "${ONBOARDING}" || ! -f "${SESSION_PY}" ]]; then
+if [[ ! -f "${ONBOARDING}" || ! -f "${API_SERVER}" ]]; then
   echo "error: hermes-agent not installed at ${HERMES_HOME}/hermes-agent" >&2
   echo "       run 02-install-hermes.sh first" >&2
   exit 1
@@ -94,53 +101,70 @@ PYEOF
   echo "    appended override block"
 fi
 
-echo "==> step 2b: override SessionStore.has_any_sessions() in gateway/session.py"
-# The first-message onboarding gate in run.py is `not history and not
-# has_any_sessions()`, where has_any_sessions() is `session_count() > 1`. In this
-# deployment the dashboard/orchestrator create their own api_server sessions, so the
-# count is always >1 at first contact and the gate never fires. has_any_sessions() has
-# a SINGLE caller (that gate), so we safely make it report "no sessions" WHILE the
-# default agent's SOUL is still the OLLIE-SOUL-DEFAULT stub — letting onboarding fire
-# once regardless of poller sessions. Once ollie-set-identity writes a real SOUL
-# (marker gone), it reverts to the genuine count.
-if grep -q 'OLLIE-IDENTITY-ONBOARDING-GATE' "${SESSION_PY}"; then
+echo "==> step 2b: inject the interview once via api_server _run_agent (the dashboard path)"
+# The dashboard's api_server executor never runs Hermes's onboarding gate, so we inject
+# our directive through its per-run ephemeral_system_prompt hook — exactly once, while
+# SOUL is still the default stub and our flag is unset.
+if grep -q 'OLLIE-IDENTITY-ONBOARDING-APISERVER' "${API_SERVER}"; then
   echo "    already applied — skipping"
 else
-  cp -n "${SESSION_PY}" "${SESSION_PY}.bak.onboard" 2>/dev/null || true
-  cat >> "${SESSION_PY}" <<'PYEOF'
+  cp -n "${API_SERVER}" "${API_SERVER}.bak.onboard" 2>/dev/null || true
+  cat >> "${API_SERVER}" <<'PYEOF'
 
 
-# >>> OLLIE-IDENTITY-ONBOARDING-GATE (idempotent; re-applied after hermes update) >>>
+# >>> OLLIE-IDENTITY-ONBOARDING-APISERVER (idempotent; re-applied after hermes update) >>>
 import os as _ollie_os2
-_ollie_orig_has_any_sessions = SessionStore.has_any_sessions
+from pathlib import Path as _OlliePath
+
+_OLLIE_ONBOARD_FLAG = "ollie_identity_onboarded"
+_ollie_orig_run_agent = APIServerAdapter._run_agent
 
 
-def _ollie_has_any_sessions(self) -> bool:
-    """While the default agent's identity is still the un-personalized stub, report
-    'no sessions' so gateway/run.py's first-message onboarding gate fires even when
-    background dashboard/poller sessions exist. The profile_build_offered flag still
-    limits the interview to once. Once ollie-set-identity writes a real SOUL (the
-    OLLIE-SOUL-DEFAULT marker is gone), behave exactly as upstream.
+def _ollie_onboarding_ephemeral():
+    """Return the identity-interview directive exactly once, on the dashboard's first
+    message — while the default agent's SOUL.md is still the OLLIE-SOUL-DEFAULT stub and
+    our once-ever flag is unset — then mark the flag. Returns None otherwise (incl. preset
+    agents whose SOUL carries a real persona). Best-effort: any error -> None (no injection).
     """
     try:
         home = _ollie_os2.environ.get("HERMES_HOME") or _ollie_os2.path.expanduser("~/.hermes")
         with open(_ollie_os2.path.join(home, "SOUL.md"), encoding="utf-8") as _f:
-            if "OLLIE-SOUL-DEFAULT" in _f.read():
-                return False
+            if "OLLIE-SOUL-DEFAULT" not in _f.read():
+                return None  # identity already personalized (or a preset agent)
+        from gateway.run import _load_gateway_config
+        from agent.onboarding import is_seen, mark_seen
+        cfg = _load_gateway_config()
+        if is_seen(cfg, _OLLIE_ONBOARD_FLAG):
+            return None  # already offered once
+        with open(_ollie_os2.path.join(home, "ollie-onboarding-directive.txt"), encoding="utf-8") as _f:
+            directive = _f.read().strip()
+        if not directive:
+            return None
+        mark_seen(_OlliePath(home) / "config.yaml", _OLLIE_ONBOARD_FLAG)
+        return directive
     except Exception:
-        pass
-    return _ollie_orig_has_any_sessions(self)
+        return None
 
 
-SessionStore.has_any_sessions = _ollie_has_any_sessions
-# <<< OLLIE-IDENTITY-ONBOARDING-GATE <<<
+async def _ollie_run_agent(self, *args, **kwargs):
+    # ephemeral_system_prompt is always passed by keyword by every caller; only inject
+    # when the caller supplied none of their own.
+    if not kwargs.get("ephemeral_system_prompt"):
+        _inj = _ollie_onboarding_ephemeral()
+        if _inj:
+            kwargs["ephemeral_system_prompt"] = _inj
+    return await _ollie_orig_run_agent(self, *args, **kwargs)
+
+
+APIServerAdapter._run_agent = _ollie_run_agent
+# <<< OLLIE-IDENTITY-ONBOARDING-APISERVER <<<
 PYEOF
-  echo "    appended gate override block"
+  echo "    appended api_server injection block"
 fi
 
 echo "==> step 3: byte-compile check (syntax)"
 python3 -c "import py_compile, sys; py_compile.compile('${ONBOARDING}', doraise=True); print('    onboarding.py compiles')"
-python3 -c "import py_compile, sys; py_compile.compile('${SESSION_PY}', doraise=True); print('    session.py compiles')"
+python3 -c "import py_compile, sys; py_compile.compile('${API_SERVER}', doraise=True); print('    api_server.py compiles')"
 
 echo "==> step 4: verify the overrides are the live bindings"
 ( cd "${HERMES_HOME}/hermes-agent" && python3 - <<'PY'
@@ -148,11 +172,10 @@ import agent.onboarding as o
 src = o.profile_build_directive.__doc__ or ""
 print("    profile_build_directive:", "OVERRIDE" if "Ollie identity interview" in src else "UPSTREAM")
 try:
-    from gateway.session import SessionStore
-    doc = SessionStore.has_any_sessions.__doc__ or ""
-    print("    has_any_sessions:", "OVERRIDE" if "un-personalized stub" in doc else "UPSTREAM")
+    from gateway.platforms.api_server import APIServerAdapter
+    print("    api_server._run_agent:", "OVERRIDE" if APIServerAdapter._run_agent.__name__ == "_ollie_run_agent" else "UPSTREAM")
 except Exception as _e:
-    print("    has_any_sessions: (import skipped:", type(_e).__name__, ")")
+    print("    api_server._run_agent: (import skipped:", type(_e).__name__, ")")
 PY
 ) || echo "    (live-binding check skipped; import needs hermes deps)"
 
