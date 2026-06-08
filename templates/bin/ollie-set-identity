@@ -16,7 +16,7 @@ NAME=""
 SOUL_FILE=""
 AGENT_ID="default"
 ORCH_URL="${ORCH_URL:-http://localhost:9123}"
-ORCH_ENV="${HOME}/.config/ollie-orchestrator/.env"
+ORCH_ENV="${ORCH_ENV:-${HOME}/.config/ollie-orchestrator/.env}"
 
 usage() {
   echo 'usage: ollie-set-identity --name "<name>" --soul-file <path> [--id <agent_id>]' >&2
