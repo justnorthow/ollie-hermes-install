@@ -61,16 +61,21 @@ bash scripts/06-install-stack.sh
 #    Re-run this after every `hermes update`.
 bash scripts/07-patch-cron-brain.sh
 
-# 10. Provision agent personas: seed the default agent's first-run identity
-#     onboarding (it interviews you on first chat) + any preset personas for
-#     extra profiles. Marker-gated — never overwrites a customized SOUL.md.
-#     Run this LAST, before you start chatting. Re-run after adding a profile.
+# 10. Provision agent personas: seed the default agent's minimal "Ollie" persona
+#     + any preset personas for extra profiles. Marker-gated — never overwrites
+#     a customized SOUL.md. Re-run after adding a profile.
 bash scripts/08-install-souls.sh
 
 # 11. Install the identity-sync helper (ollie-set-identity): lets the agent save
 #     its persona + update its dashboard display name in one deterministic step
 #     during onboarding. Needs the orchestrator (step 7) for the rename half.
 bash scripts/09-install-identity-sync.sh
+
+# 12. Wire the default agent's first-run identity interview into Hermes's
+#     once-only onboarding channel (overrides profile_build_directive). The agent
+#     interviews you on the first chat of a fresh install, then saves SOUL.md via
+#     ollie-set-identity. Run this LAST. Re-apply after every `hermes update`.
+bash scripts/10-patch-onboarding.sh
 ```
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
