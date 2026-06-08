@@ -45,9 +45,22 @@ soul_is_replaceable() {
   fi
   local meaningful
   meaningful="$(awk '
-    /<!--/{inc=1}
-    { if(!inc){ print } }
-    /-->/{inc=0}
+    {
+      s = $0; out = ""
+      while (1) {
+        if (in_block) {
+          p = index(s, "-->")
+          if (p == 0) { s = ""; break }
+          s = substr(s, p + 3); in_block = 0
+        } else {
+          p = index(s, "<!--")
+          if (p == 0) { out = out s; break }
+          out = out substr(s, 1, p - 1)
+          s = substr(s, p + 4); in_block = 1
+        }
+      }
+      print out
+    }
   ' "$f" | sed -E 's/^[[:space:]]*#.*$//' | grep -vE '^[[:space:]]*$' || true)"
   [[ -z "${meaningful}" ]] && return 0
   return 1
