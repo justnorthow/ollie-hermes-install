@@ -34,6 +34,13 @@ services:
       - HERMES_GATEWAY_URL=http://host.docker.internal:8642
       - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Brain Discovery: web crawl needs a Firecrawl API key (uploads work without it).
+      # Tunables have sensible defaults in code; override here if needed.
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - DISCOVERY_MAX_PAGES=${DISCOVERY_MAX_PAGES:-20}
+      - DISCOVERY_MAX_UPLOAD_MB=${DISCOVERY_MAX_UPLOAD_MB:-10}
+      - DISCOVERY_MAX_TOTAL_MB=${DISCOVERY_MAX_TOTAL_MB:-50}
+      - DISCOVERY_SCRAPE_TIMEOUT=${DISCOVERY_SCRAPE_TIMEOUT:-60}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
