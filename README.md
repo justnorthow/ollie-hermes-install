@@ -29,12 +29,14 @@ A working install of:
 git clone https://github.com/justnorthow/ollie-hermes-install.git
 cd ollie-hermes-install
 
-# 2. Bootstrap: create ubuntu user, install Docker + Python + git
+# 2. Bootstrap: creates the service user (default: ollie), installs Docker + Python + git.
+#    Run it as root, OR as any sudo-capable user — it self-elevates via sudo.
+#    Options: TARGET_USER=<name> to pick the service user, USE_CURRENT_USER=1
+#    to run the stack as yourself, NO_SELF_ELEVATE=1 to disable auto-sudo.
 bash scripts/01-bootstrap.sh
 
-# 3. Switch to the ubuntu user for the rest
-su - ubuntu
-cd ~/ollie-hermes-install   # we'll re-clone here so ubuntu owns it
+# 3. Become the service user for the rest (a fresh login picks up the docker group)
+sudo -iu ollie               # or: ssh ollie@<host>
 git clone https://github.com/justnorthow/ollie-hermes-install.git
 cd ollie-hermes-install
 

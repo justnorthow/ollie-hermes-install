@@ -1,5 +1,9 @@
 # Migration Notes
 
+> Note: new installs default the service user to **`ollie`** (configurable via
+> `TARGET_USER`). The commands below target boxes provisioned with the older
+> `ubuntu` service user — substitute your service-user name as needed.
+
 These notes document an ad-hoc migration from an existing Ollie/Hermes install on one host to a fresh one (e.g., AWS EC2 → Hetzner Cloud). The 6 install scripts handle a **fresh install with no data carryover**. This doc handles the data carryover.
 
 > **Not scripted in v1 by design.** Migration is a one-time, host-specific operation. Generalizing it into a script invites edge cases (mismatched versions, divergent profile sets, custom plugins). When you need to migrate, follow the playbook below.
