@@ -29,7 +29,7 @@ SOULS_SRC="${SCRIPT_DIR}/../templates/souls"
 HERMES_HOME="${HOME}/.hermes"
 PROFILES_DIR="${HERMES_HOME}/profiles"
 
-if [[ ! -f "${SOULS_SRC}/default-onboarding.md" ]]; then
+if [[ ! -f "${SOULS_SRC}/default.md" ]]; then
   echo "error: vendored souls not found at ${SOULS_SRC}" >&2
   exit 1
 fi
@@ -40,7 +40,7 @@ fi
 soul_is_replaceable() {
   local f="$1"
   [[ -f "$f" ]] || return 0
-  if grep -qE 'OLLIE-SOUL-BOOTSTRAP|OLLIE-PRESET-SOUL' "$f"; then
+  if grep -qE 'OLLIE-SOUL-BOOTSTRAP|OLLIE-SOUL-DEFAULT|OLLIE-PRESET-SOUL' "$f"; then
     return 0
   fi
   # The stock Hermes default persona that `hermes profile create` writes verbatim
@@ -85,7 +85,7 @@ install_soul() {  # $1=src  $2=dest  $3=label
 }
 
 echo "==> default agent: ~/.hermes/SOUL.md"
-install_soul "${SOULS_SRC}/default-onboarding.md" "${HERMES_HOME}/SOUL.md" "default (onboarding)"
+install_soul "${SOULS_SRC}/default.md" "${HERMES_HOME}/SOUL.md" "default (Ollie stub)"
 
 echo "==> preset agents: per-profile SOUL.md"
 shopt -s nullglob
@@ -104,6 +104,7 @@ done
 
 echo
 echo "✓ SOUL provisioning complete."
-echo "  The default agent runs its first-run identity setup on the next NEW chat,"
-echo "  then rewrites its own SOUL.md. Re-run after adding a profile (03) or after"
-echo "  editing a preset in templates/souls/."
+echo "  The default agent starts as 'Ollie' (minimal persona). Its first-run identity"
+echo "  interview is delivered by 10-patch-onboarding.sh on the first chat of a fresh"
+echo "  install, then saved via ollie-set-identity. Re-run after adding a profile (03)"
+echo "  or after editing a preset in templates/souls/."
