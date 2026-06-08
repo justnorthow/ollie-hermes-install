@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# ollie-set-identity — atomically save an agent's persona to its SOUL.md and
+# sync its dashboard display name via the orchestrator.
+#
+# Usage:
+#   ollie-set-identity --name "<name>" --soul-file <path> [--id <agent_id>]
+#
+# The persona write is the hard requirement (non-zero exit on failure). The
+# display-name update is best-effort: if the orchestrator is unreachable it warns
+# and still exits 0 — the persona is what matters; the label is cosmetic and can
+# be set later from the dashboard.
+
+set -euo pipefail
+
+NAME=""
+SOUL_FILE=""
+AGENT_ID="default"
+ORCH_URL="${ORCH_URL:-http://localhost:9123}"
+ORCH_ENV="${HOME}/.config/ollie-orchestrator/.env"
+
+usage() {
+  echo 'usage: ollie-set-identity --name "<name>" --soul-file <path> [--id <agent_id>]' >&2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name)      NAME="${2:-}"; shift 2 ;;
+    --soul-file) SOUL_FILE="${2:-}"; shift 2 ;;
+    --id)        AGENT_ID="${2:-}"; shift 2 ;;
+    -h|--help)   usage; exit 0 ;;
+    *) echo "error: unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+[[ -n "${NAME}" ]]      || { echo "error: --name is required" >&2; usage; exit 2; }
+[[ -n "${SOUL_FILE}" ]] || { echo "error: --soul-file is required" >&2; usage; exit 2; }
+[[ -f "${SOUL_FILE}" ]] || { echo "error: --soul-file not found: ${SOUL_FILE}" >&2; exit 2; }
+[[ -s "${SOUL_FILE}" ]] || { echo "error: --soul-file is empty: ${SOUL_FILE}" >&2; exit 2; }
+
+if [[ "${AGENT_ID}" == "default" ]]; then
+  SOUL_DEST="${HOME}/.hermes/SOUL.md"
+else
+  PROFILE_DIR="${HOME}/.hermes/profiles/${AGENT_ID}"
+  [[ -d "${PROFILE_DIR}" ]] || { echo "error: profile '${AGENT_ID}' not found at ${PROFILE_DIR}" >&2; exit 2; }
+  SOUL_DEST="${PROFILE_DIR}/SOUL.md"
+fi
+
+# 1) Atomically install the persona (hard requirement). The file content is
+#    exactly the persona, so the bootstrap marker cannot survive.
+mkdir -p "$(dirname "${SOUL_DEST}")"
+TMP="${SOUL_DEST}.tmp.$$"
+cp "${SOUL_FILE}" "${TMP}"
+chmod 644 "${TMP}"
+mv -f "${TMP}" "${SOUL_DEST}"
+echo "✓ persona saved → ${SOUL_DEST} ($(wc -c < "${SOUL_DEST}") bytes)"
+
+# 2) Update the dashboard display name via the orchestrator (best-effort).
+rename_status="skipped"
+ORCH_KEY=""
+[[ -f "${ORCH_ENV}" ]] && ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV}" | head -1 | cut -d= -f2- || true)"
+
+if [[ -z "${ORCH_KEY}" ]]; then
+  echo "    WARNING: no ORCHESTRATOR_KEY in ${ORCH_ENV}; skipping display-name update." >&2
+  rename_status="no-key"
+else
+  payload="$(NAME="${NAME}" python3 -c 'import os,json; print(json.dumps({"displayName": os.environ["NAME"]}))')"
+  set +e
+  code="$(curl -sS -m 8 -o /tmp/.ollie-rename.out -w '%{http_code}' \
+            -X PATCH "${ORCH_URL}/v1/agents/${AGENT_ID}" \
+            -H "Authorization: Bearer ${ORCH_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" 2>/dev/null)"
+  set -e
+  if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
+    echo "✓ display name updated: ${AGENT_ID} → \"${NAME}\""
+    rename_status="ok"
+  else
+    echo "    WARNING: display-name update failed (HTTP ${code:-none}); set it from the dashboard if needed." >&2
+    rename_status="http-${code:-err}"
+  fi
+fi
+
+echo "✓ identity set: id=${AGENT_ID} name=\"${NAME}\" rename=${rename_status}"
+exit 0
