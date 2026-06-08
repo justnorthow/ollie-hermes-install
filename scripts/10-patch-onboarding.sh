@@ -116,34 +116,28 @@ else
 
 # >>> OLLIE-IDENTITY-ONBOARDING-APISERVER (idempotent; re-applied after hermes update) >>>
 import os as _ollie_os2
-from pathlib import Path as _OlliePath
 
-_OLLIE_ONBOARD_FLAG = "ollie_identity_onboarded"
 _ollie_orig_create_agent = APIServerAdapter._create_agent
 
 
 def _ollie_onboarding_ephemeral():
-    """Return the identity-interview directive exactly once, on the dashboard's first
-    message — while the default agent's SOUL.md is still the OLLIE-SOUL-DEFAULT stub and
-    our once-ever flag is unset — then mark the flag. Returns None otherwise (incl. preset
-    agents whose SOUL carries a real persona). Best-effort: any error -> None (no injection).
+    """Return the identity-interview directive on EVERY run while the default agent's
+    SOUL.md is still the OLLIE-SOUL-DEFAULT stub (i.e. identity not yet saved). Injecting
+    it every turn keeps the interview instructions — crucially, the save step — in the
+    agent's context throughout setup; the directive itself is state-aware ("continue from
+    the next unanswered question; never restart"), so re-injection does not cause restarts.
+    Once ollie-set-identity writes a real persona (the OLLIE-SOUL-DEFAULT marker is gone),
+    this returns None and onboarding stops. Preset agents (real persona, no marker) never
+    see it. Best-effort: any error -> None (no injection).
     """
     try:
         home = _ollie_os2.environ.get("HERMES_HOME") or _ollie_os2.path.expanduser("~/.hermes")
         with open(_ollie_os2.path.join(home, "SOUL.md"), encoding="utf-8") as _f:
             if "OLLIE-SOUL-DEFAULT" not in _f.read():
                 return None  # identity already personalized (or a preset agent)
-        from gateway.run import _load_gateway_config
-        from agent.onboarding import is_seen, mark_seen
-        cfg = _load_gateway_config()
-        if is_seen(cfg, _OLLIE_ONBOARD_FLAG):
-            return None  # already offered once
         with open(_ollie_os2.path.join(home, "ollie-onboarding-directive.txt"), encoding="utf-8") as _f:
             directive = _f.read().strip()
-        if not directive:
-            return None
-        mark_seen(_OlliePath(home) / "config.yaml", _OLLIE_ONBOARD_FLAG)
-        return directive
+        return directive or None
     except Exception:
         return None
 
