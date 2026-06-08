@@ -140,9 +140,12 @@ set -e
 echo
 echo "✓ Hermes installed and running."
 echo
-echo "NEXT — authenticate to your LLM provider:"
-echo "    hermes login --provider openai-codex   # for Codex/ChatGPT OAuth"
+echo "NEXT — authenticate to your LLM provider (the old 'hermes login' was removed):"
+echo "    # Codex/ChatGPT OAuth on a headless box (this VPS): prints a URL to open"
+echo "    # on your laptop, then paste the failed localhost callback URL back."
+echo "    hermes auth add openai-codex --type oauth --no-browser --manual-paste"
 echo "  OR set an API key in ~/.hermes/.env (e.g. OPENROUTER_API_KEY=...)"
 echo
 echo "Then restart the gateway so it picks up the new auth:"
 echo "    systemctl --user restart hermes-gateway"
+echo "Check it with:  hermes auth status openai-codex"
