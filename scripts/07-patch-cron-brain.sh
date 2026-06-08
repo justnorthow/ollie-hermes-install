@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 07-patch-cron-brain.sh — let cron jobs use the cortex memory provider (brain_* tools).
 #
-# Run as: ubuntu (NOT root) — patches files under ~/.hermes/hermes-agent
+# Run as: the service user (ollie by default; NOT root) — patches files under ~/.hermes/hermes-agent
 # Idempotent: safe to re-run; detects already-applied patches.
 #
 # Why this patch exists
@@ -34,7 +34,7 @@
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  echo "error: run as the ubuntu user, not root" >&2
+  echo "error: run as the service user, not root" >&2
   exit 1
 fi
 

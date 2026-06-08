@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 04-install-cortex-plugin.sh — register the Cortex memory plugin with Hermes.
 #
-# Run as: ubuntu
+# Run as: the service user (ollie by default)
 # Idempotent: safe to re-run.
 #
 # What it does:
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  echo "error: run as the ubuntu user, not root" >&2
+  echo "error: run as the service user, not root" >&2
   exit 1
 fi
 

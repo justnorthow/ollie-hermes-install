@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 06-install-stack.sh — install the Docker stack (cortex + ollie-dashboard).
 #
-# Run as: ubuntu (in the `docker` group)
+# Run as: the service user (ollie by default; in the `docker` group)
 # Idempotent: safe to re-run.
 #
 # What it does:
@@ -16,11 +16,11 @@
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  echo "error: run as the ubuntu user, not root" >&2
+  echo "error: run as the service user, not root" >&2
   exit 1
 fi
 if ! id -nG | grep -qw docker; then
-  echo "error: ubuntu user not in docker group — log out and back in after running 01-bootstrap.sh" >&2
+  echo "error: service user not in docker group — log out and back in after running 01-bootstrap.sh" >&2
   exit 1
 fi
 
