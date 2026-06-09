@@ -28,6 +28,13 @@ if [[ "$(id -u)" -eq 0 ]]; then
   echo "error: run as the service user, not root" >&2
   exit 1
 fi
+
+# Ensure `systemctl --user` can reach the per-user systemd bus even when this
+# script runs without a login session (e.g. via `sudo -u` / `su`). Otherwise the
+# raw `systemctl --user` calls below fail with "Failed to connect to bus: No
+# medium found". Linger (enabled in 01-bootstrap.sh) guarantees /run/user/<uid>.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 if [[ $# -ne 3 ]]; then
   echo "usage: $0 <name> <gateway_port> <dashboard_port>" >&2
   exit 1

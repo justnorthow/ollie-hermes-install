@@ -20,6 +20,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exit 1
 fi
 
+# Ensure `systemctl --user` can reach the per-user systemd bus even when this
+# script runs without a login session (e.g. via `sudo -u` / `su`). Otherwise the
+# raw `systemctl --user` calls below fail with "Failed to connect to bus: No
+# medium found". Linger (enabled in 01-bootstrap.sh) guarantees /run/user/<uid>.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 ORCH_REPO="${ORCH_REPO:-https://github.com/justnorthow/ollie-hermes-orchestrator.git}"
 ORCH_DIR="${HOME}/ollie-hermes-orchestrator"
 ORCH_ENV="${HOME}/.config/ollie-orchestrator/.env"

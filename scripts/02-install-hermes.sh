@@ -23,6 +23,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exit 1
 fi
 
+# Ensure `systemctl --user` can reach the per-user systemd bus even when this
+# script runs without a login session (e.g. via `sudo -u` / `su`). Otherwise the
+# raw `systemctl --user` calls below fail with "Failed to connect to bus: No
+# medium found". Linger (enabled in 01-bootstrap.sh) guarantees /run/user/<uid>.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 GATEWAY_PORT="${GATEWAY_PORT:-8642}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-9119}"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
