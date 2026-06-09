@@ -58,6 +58,12 @@ services:
       # unset the nginx /orchestrator-proxy/ block emits a 503 and the UI
       # gracefully hides agent management.
       - ORCHESTRATOR_KEY=${ORCHESTRATOR_KEY:-}
+      # Browser-facing HTTPS URL of the native Hermes dashboard, used by the
+      # frontend's "Backend Settings" link. Leave unset and the link falls back
+      # to http://<host>:9119 — which HTTPS-First browsers refuse, producing
+      # ERR_SSL_PROTOCOL_ERROR. Point this at a TLS reverse-proxy to the
+      # dashboard, e.g. https://ollie.example.com:9443.
+      - HERMES_UI_URL=${HERMES_UI_URL:-}
       # One entry per agent on the host. `gatewayUrl` is the agent's Hermes
       # Gateway (browser → /gateway-proxy/<id>/* → nginx → gatewayUrl).
       # `dashboardUrl` is the agent's Hermes Dashboard (each profile has its
