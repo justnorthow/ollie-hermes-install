@@ -112,6 +112,29 @@ def orch_request(method, path, body=None, timeout=30):
         return None, None, str(e)
 
 
+def orch_stream(method, path, body, timeout=600):
+    """Send a request and relay the orchestrator's SSE stream as NDJSON.
+    Returns the last event object (or None if the stream was empty)."""
+    req = urllib.request.Request(
+        ORCH_URL + path, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": "Bearer " + orch_key(),
+                 "Content-Type": "application/json"})
+    last = None
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for line in resp:
+            line = line.decode().strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                obj = json.loads(line[5:].strip())
+            except ValueError:
+                continue
+            last = obj
+            event(**obj)
+    return last
+
+
 # ----------------------------------------------------------- health collectors
 
 def _read_file(path):
@@ -228,6 +251,47 @@ def cmd_health(args):
     emit(build_health())
 
 
+def _payload(args):
+    """JSON body from --json or stdin."""
+    raw = args.json if args.json else sys.stdin.read()
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        fail("invalid JSON payload: %s" % e, 2)
+
+
+def cmd_agents(args):
+    if args.action == "list":
+        status, parsed, raw = orch_request("GET", "/v1/agents")
+        if status != 200 or parsed is None:
+            fail("orchestrator HTTP %s: %s" % (status, raw[:200]))
+        emit(parsed)
+    elif args.action == "get":
+        status, parsed, raw = orch_request("GET", "/v1/agents/%s" % args.id)
+        if status != 200 or parsed is None:
+            fail("orchestrator HTTP %s: %s" % (status, raw[:200]))
+        emit(parsed)
+    elif args.action == "create":
+        last = orch_stream("POST", "/v1/agents", _payload(args))
+        if not last or last.get("event") != "done":
+            sys.exit(1)
+    elif args.action == "update":
+        status, parsed, raw = orch_request("PATCH", "/v1/agents/%s" % args.id, _payload(args))
+        if status != 200:
+            fail("orchestrator HTTP %s: %s" % (status, raw[:200]))
+        emit(parsed if parsed is not None else {"updated": args.id})
+    elif args.action == "delete":
+        status, _, raw = orch_request("DELETE", "/v1/agents/%s" % args.id)
+        if status not in (204, 404):  # delete is idempotent
+            fail("orchestrator HTTP %s: %s" % (status, raw[:200]))
+        emit({"deleted": args.id})
+    elif args.action == "set-identity":
+        status, parsed, raw = orch_request("POST", "/v1/agents/%s/identity" % args.id, _payload(args))
+        if status != 200:
+            fail("orchestrator HTTP %s: %s" % (status, raw[:200]))
+        emit(parsed if parsed is not None else {"ok": True})
+
+
 # -------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -236,12 +300,21 @@ def main(argv=None):
     sub = p.add_subparsers(dest="verb", required=True)
     sub.add_parser("version", help="fleetctl version")
     sub.add_parser("health", help="one-shot stack health snapshot (JSON)")
+    a = sub.add_parser("agents", help="agent CRUD via the local orchestrator")
+    a.add_argument("action", choices=["list", "get", "create", "update",
+                                      "delete", "set-identity"])
+    a.add_argument("id", nargs="?", help="agent id (required except for list/create)")
+    a.add_argument("--json", help="JSON payload; omit to read from stdin")
 
     args = p.parse_args(argv)
     if args.verb == "version":
         emit({"fleetctl": VERSION})
     elif args.verb == "health":
         cmd_health(args)
+    elif args.verb == "agents":
+        if args.action in ("get", "update", "delete", "set-identity") and not args.id:
+            p.error("agents %s requires an agent id" % args.action)
+        cmd_agents(args)
 
 
 if __name__ == "__main__":

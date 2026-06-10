@@ -166,5 +166,73 @@ class TestHealth(unittest.TestCase):
         self.assertEqual(self.mod.get_containers(), [])
 
 
+class TestAgents(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+        self.calls = []
+
+    def fake_orch(self, status, parsed, raw=""):
+        def f(method, path, body=None, timeout=30):
+            self.calls.append((method, path, body))
+            return status, parsed, raw
+        return f
+
+    def test_agents_list(self):
+        self.mod.orch_request = self.fake_orch(200, {"agents": [{"id": "default"}]})
+        code, out = run_main(self.mod, ["agents", "list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, [{"agents": [{"id": "default"}]}])
+        self.assertEqual(self.calls, [("GET", "/v1/agents", None)])
+
+    def test_agents_get_requires_id(self):
+        code, out = run_main(self.mod, ["agents", "get"])
+        self.assertNotEqual(code, 0)
+
+    def test_agents_delete_treats_404_as_success(self):
+        self.mod.orch_request = self.fake_orch(404, None)
+        code, out = run_main(self.mod, ["agents", "delete", "paige"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, [{"deleted": "paige"}])
+        self.assertEqual(self.calls, [("DELETE", "/v1/agents/paige", None)])
+
+    def test_agents_update_passes_json_payload(self):
+        self.mod.orch_request = self.fake_orch(200, {"id": "paige", "model": "m2"})
+        code, out = run_main(self.mod, ["agents", "update", "paige", "--json", '{"model": "m2"}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls, [("PATCH", "/v1/agents/paige", {"model": "m2"})])
+
+    def test_agents_set_identity(self):
+        self.mod.orch_request = self.fake_orch(200, {"ok": True})
+        code, out = run_main(self.mod, ["agents", "set-identity", "default",
+                                        "--json", '{"displayName": "Ollie", "soulContent": "# Soul"}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls[0][1], "/v1/agents/default/identity")
+
+    def test_agents_create_streams_and_succeeds_on_done(self):
+        def fake_stream(method, path, body, timeout=600):
+            self.calls.append((method, path, body))
+            self.mod.event(event="progress", step="profile")
+            self.mod.event(event="done", id="paige")
+            return {"event": "done", "id": "paige"}
+        self.mod.orch_stream = fake_stream
+        code, out = run_main(self.mod, ["agents", "create", "--json", '{"name": "paige"}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1]["event"], "done")
+
+    def test_agents_create_fails_without_done(self):
+        def fake_stream(method, path, body, timeout=600):
+            self.mod.event(event="error", error="boom")
+            return {"event": "error", "error": "boom"}
+        self.mod.orch_stream = fake_stream
+        code, out = run_main(self.mod, ["agents", "create", "--json", '{"name": "paige"}'])
+        self.assertEqual(code, 1)
+
+    def test_agents_error_status_fails(self):
+        self.mod.orch_request = self.fake_orch(401, None, "unauthorized")
+        code, out = run_main(self.mod, ["agents", "list"])
+        self.assertEqual(code, 1)
+        self.assertIn("error", out[0])
+
+
 if __name__ == "__main__":
     unittest.main()
