@@ -397,6 +397,26 @@ class TestUpdateHeartbeat(unittest.TestCase):
         self.assertEqual(out[0], {"posted": True, "status": 200})
 
 
+class TestErrorContract(unittest.TestCase):
+    """Every failure must surface as {"error": ...} on stdout, never a traceback."""
+
+    def test_agents_list_missing_orch_key_emits_error_json(self):
+        mod = load_fleetctl()
+        mod.ORCH_ENV = "/nonexistent/.env"
+        code, out = run_main(mod, ["agents", "list"])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(out), 1)
+        self.assertIn("ORCHESTRATOR_KEY", out[0]["error"])
+
+    def test_restart_stack_systemctl_failure_emits_error_json(self):
+        mod = load_fleetctl()
+        mod.get_units = lambda: (_ for _ in ()).throw(RuntimeError("systemctl failed: no bus"))
+        code, out = run_main(mod, ["restart", "stack"])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(out), 1)
+        self.assertIn("systemctl failed", out[0]["error"])
+
+
 class TestBackup(unittest.TestCase):
     def setUp(self):
         self.mod = load_fleetctl()

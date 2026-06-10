@@ -5,4 +5,6 @@ Description=Ollie Fleet heartbeat (push stack health to the fleet dashboard)
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/ollie-fleetctl heartbeat
-TimeoutStartSec=120
+# Headroom for build_health worst case (hung docker/systemctl all timing out)
+# so a degraded report still gets posted instead of the unit being killed.
+TimeoutStartSec=180

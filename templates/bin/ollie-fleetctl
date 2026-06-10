@@ -241,13 +241,12 @@ def build_health():
     health = {"fleetctlVersion": VERSION,
               "collectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     errors = []
-    _mod = sys.modules.get(__name__) if __name__ != "__main__" else sys.modules.get("__main__")
-    _gdict = _mod.__dict__ if _mod is not None else globals()
     for key, name in (("system", "get_system"), ("units", "get_units"),
                       ("containers", "get_containers"), ("versions", "get_versions"),
                       ("agents", "get_agents_summary")):
         try:
-            health[key] = _gdict[name]()
+            # globals() is the live module dict, so tests can monkeypatch collectors
+            health[key] = globals()[name]()
         except Exception as e:  # collectors degrade independently
             health[key] = None
             errors.append("%s: %s" % (key, e))
@@ -498,27 +497,41 @@ def main(argv=None):
     u.add_argument("component", nargs="?", default="all",
                    choices=["hermes", "stack", "orchestrator", "all"])
     sub.add_parser("heartbeat", help="POST health to the fleet dashboard (no-op until enrolled)")
-    sub.add_parser("backup", help="stream a tarball of state DBs, configs, and personas")
+    sub.add_parser("backup", help="stream a tarball of state DBs, configs, personas, "
+                                  "and auth.json (contains live OAuth tokens — store securely)")
 
     args = p.parse_args(argv)
-    if args.verb == "version":
-        emit({"fleetctl": VERSION})
-    elif args.verb == "health":
-        cmd_health(args)
-    elif args.verb == "agents":
-        if args.action in ("get", "update", "delete", "set-identity") and not args.id:
-            p.error("agents %s requires an agent id" % args.action)
-        cmd_agents(args)
-    elif args.verb == "restart":
-        cmd_restart(args)
-    elif args.verb == "logs":
-        cmd_logs(args)
-    elif args.verb == "update":
-        cmd_update(args)
-    elif args.verb == "heartbeat":
-        cmd_heartbeat(args)
-    elif args.verb == "backup":
-        cmd_backup(args)
+
+    # systemctl --user needs the user bus even when invoked via sudo -u / cron
+    # without a login session (same fallback scripts 02/03/05/07 use).
+    if hasattr(os, "getuid"):
+        os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+
+    try:
+        if args.verb == "version":
+            emit({"fleetctl": VERSION})
+        elif args.verb == "health":
+            cmd_health(args)
+        elif args.verb == "agents":
+            if args.action in ("get", "update", "delete", "set-identity") and not args.id:
+                p.error("agents %s requires an agent id" % args.action)
+            cmd_agents(args)
+        elif args.verb == "restart":
+            cmd_restart(args)
+        elif args.verb == "logs":
+            cmd_logs(args)
+        elif args.verb == "update":
+            cmd_update(args)
+        elif args.verb == "heartbeat":
+            cmd_heartbeat(args)
+        elif args.verb == "backup":
+            cmd_backup(args)
+    except SystemExit:
+        raise
+    except Exception as e:
+        # The contract promises {"error": ...} on stdout for every failure —
+        # an uncaught traceback on stderr is invisible to the Fleet dashboard.
+        fail("%s: %s" % (type(e).__name__, e))
 
 
 if __name__ == "__main__":
