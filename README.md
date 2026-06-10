@@ -70,6 +70,22 @@ bash scripts/08-install-souls.sh
 #     its persona + update its dashboard display name in one deterministic step
 #     during onboarding. Needs the orchestrator (step 7) for the rename half.
 bash scripts/09-install-identity-sync.sh
+
+# 12. (Optional — skip if the box is not managed by Ollie Fleet)
+#     Install ollie-fleetctl and the fleet-heartbeat systemd user timer.
+#     fleetctl is the verb CLI that the Ollie Fleet dashboard invokes over SSH
+#     to manage the box. Available verbs (all emit JSON):
+#       health | agents <list|get|create|update|delete|set-identity>
+#       restart <target> | logs <service> | update [hermes|stack|orchestrator|all]
+#       backup | heartbeat | version
+#     The binary lands in ~/.local/bin and is also symlinked to /usr/local/bin.
+#     The heartbeat timer fires every 5 minutes but is a no-op until the box is
+#     enrolled: enrollment writes ~/.config/ollie-fleet/.env (FLEET_URL + FLEET_TOKEN).
+#     Safe to install on un-enrolled boxes. Re-running after `hermes update` is not
+#     required (fleetctl lives outside ~/.hermes/hermes-agent), but is always safe.
+#     Note: `ollie-fleetctl update hermes` encodes the full post-update runbook
+#     (re-runs scripts 04, 07, 08) in one command when fleetctl is installed.
+bash scripts/10-install-fleetctl.sh
 ```
 
 > First-run identity setup (naming the default agent, its personality, mission, etc.)
@@ -89,6 +105,8 @@ cd ~/ollie-hermes-install && git pull   # get the latest templates/personas
 bash scripts/07-patch-cron-brain.sh     # re-apply the cron brain-tools patch
 bash scripts/08-install-souls.sh        # restore Ollie/Karl/Paige personas from templates/souls/
 ```
+
+> If `ollie-fleetctl` is installed, `ollie-fleetctl update hermes` is the one-command equivalent of the three lines above.
 
 - `08` is marker-aware: it rewrites a host `SOUL.md` only when it's missing or still the stock default, and skips any persona you've since customized on the host. So it restores what the update wiped without clobbering live edits.
 - The canonical persona text lives in `templates/souls/{default,karl,paige}.md`. Edit those (and commit) if you want a change to survive future updates; editing only the host copy means the next update reverts it.
