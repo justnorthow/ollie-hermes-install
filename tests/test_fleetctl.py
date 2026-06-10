@@ -406,9 +406,9 @@ class TestBackup(unittest.TestCase):
             hermes = os.path.join(d, ".hermes")
             os.makedirs(os.path.join(hermes, "profiles", "paige"))
             for rel in ("state.db", "config.yaml", "SOUL.md", "auth.json"):
-                open(os.path.join(hermes, rel), "w").write("x")
-            open(os.path.join(hermes, "profiles", "paige", "state.db"), "w").write("x")
-            open(os.path.join(hermes, "profiles", "paige", "SOUL.md"), "w").write("x")
+                pathlib.Path(hermes, rel).write_text("x")
+            pathlib.Path(hermes, "profiles", "paige", "state.db").write_text("x")
+            pathlib.Path(hermes, "profiles", "paige", "SOUL.md").write_text("x")
             self.mod.HERMES_DIR = hermes
             self.mod.PROFILES_DIR = os.path.join(hermes, "profiles")
             paths = self.mod.collect_backup_paths()

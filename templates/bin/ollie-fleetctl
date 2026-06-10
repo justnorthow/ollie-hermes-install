@@ -449,6 +449,8 @@ def cmd_backup(args):
             paths.append(snap)
         if not paths:
             fail("nothing to back up (no state.db/config/SOUL files found)")
+        # Once tar starts, stdout IS the archive — nothing else may write to it
+        # (no emit/fail/print past this line, or the tarball is corrupted).
         rc = subprocess.call(["tar", "czf", "-", "--absolute-names"] + paths,
                              stdout=sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout)
         sys.exit(rc)
