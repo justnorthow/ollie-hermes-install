@@ -86,6 +86,142 @@ def read_env_file(path):
     return env
 
 
+# ------------------------------------------------------- orchestrator client
+
+def orch_key():
+    key = read_env_file(ORCH_ENV).get("ORCHESTRATOR_KEY", "")
+    if not key:
+        raise RuntimeError("no ORCHESTRATOR_KEY in %s" % ORCH_ENV)
+    return key
+
+
+def orch_request(method, path, body=None, timeout=30):
+    """JSON request to the local orchestrator -> (status, parsed_or_None, raw)."""
+    req = urllib.request.Request(
+        ORCH_URL + path, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": "Bearer " + orch_key(),
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw.strip() else None), raw
+    except urllib.error.HTTPError as e:
+        return e.code, None, e.read().decode(errors="replace")
+
+
+# ----------------------------------------------------------- health collectors
+
+def _read_file(path):
+    with open(path) as f:
+        return f.read()
+
+
+def _proc_stat_cpu():
+    """-> (idle_ticks, total_ticks) from the aggregate cpu line."""
+    nums = [int(x) for x in _read_file("/proc/stat").splitlines()[0].split()[1:]]
+    idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+    return idle, sum(nums)
+
+
+def get_cpu_percent():
+    i1, t1 = _proc_stat_cpu()
+    time.sleep(0.25)
+    i2, t2 = _proc_stat_cpu()
+    dt = t2 - t1
+    return round(100 * (1 - (i2 - i1) / dt)) if dt > 0 else 0
+
+
+def get_memory_mb():
+    """-> (used_mb, total_mb) using MemAvailable semantics."""
+    info = {}
+    for line in _read_file("/proc/meminfo").splitlines():
+        k, _, v = line.partition(":")
+        if v.strip():
+            info[k.strip()] = int(v.strip().split()[0])  # kB
+    total = info.get("MemTotal", 0) // 1024
+    avail = info.get("MemAvailable", 0) // 1024
+    return total - avail, total
+
+
+def get_system():
+    used_mb, total_mb = get_memory_mb()
+    du = shutil.disk_usage("/")
+    return {
+        "cpuPercent": get_cpu_percent(),
+        "ramUsedMb": used_mb,
+        "ramTotalMb": total_mb,
+        "diskUsedGb": round(du.used / 1e9, 1),
+        "diskTotalGb": round(du.total / 1e9, 1),
+    }
+
+
+def get_units():
+    rc, out, err = run_cmd(["systemctl", "--user", "list-units", "--all",
+                            "--no-legend", "--plain",
+                            "hermes-*", "ollie-orchestrator*"])
+    if rc != 0:
+        raise RuntimeError("systemctl failed: %s" % err.strip())
+    units = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].endswith(".service"):
+            units.append({"unit": parts[0], "active": parts[2]})
+    return units
+
+
+def get_containers():
+    rc, out, err = run_cmd(["docker", "compose", "-f", COMPOSE_FILE,
+                            "ps", "-a", "--format", "json"])
+    if rc != 0:
+        raise RuntimeError("docker compose ps failed: %s" % err.strip())
+    containers = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        c = json.loads(line)
+        containers.append({"name": c.get("Service", ""),
+                           "state": c.get("State", ""),
+                           "status": c.get("Status", "")})
+    return containers
+
+
+def get_versions():
+    versions = {"fleetctl": VERSION}
+    rc, out, _ = run_cmd(["hermes", "--version"], timeout=15)
+    versions["hermes"] = out.strip() if rc == 0 and out.strip() else "unknown"
+    return versions
+
+
+def get_agents_summary():
+    status, parsed, raw = orch_request("GET", "/v1/agents")
+    if status != 200 or parsed is None:
+        raise RuntimeError("orchestrator /v1/agents returned HTTP %s" % status)
+    return parsed.get("agents", [])
+
+
+def build_health():
+    health = {"fleetctlVersion": VERSION,
+              "collectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    errors = []
+    _mod = sys.modules.get(__name__) if __name__ != "__main__" else sys.modules.get("__main__")
+    _gdict = _mod.__dict__ if _mod is not None else globals()
+    for key, name in (("system", "get_system"), ("units", "get_units"),
+                      ("containers", "get_containers"), ("versions", "get_versions"),
+                      ("agents", "get_agents_summary")):
+        try:
+            health[key] = _gdict[name]()
+        except Exception as e:  # collectors degrade independently
+            health[key] = None
+            errors.append("%s: %s" % (key, e))
+    health["errors"] = errors
+    return health
+
+
+def cmd_health(args):
+    emit(build_health())
+
+
 # -------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -93,10 +229,13 @@ def main(argv=None):
                                 description="Management verbs for the Ollie/Hermes stack")
     sub = p.add_subparsers(dest="verb", required=True)
     sub.add_parser("version", help="fleetctl version")
+    sub.add_parser("health", help="one-shot stack health snapshot (JSON)")
 
     args = p.parse_args(argv)
     if args.verb == "version":
         emit({"fleetctl": VERSION})
+    elif args.verb == "health":
+        cmd_health(args)
 
 
 if __name__ == "__main__":
