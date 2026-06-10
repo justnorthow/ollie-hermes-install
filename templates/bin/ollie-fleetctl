@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""ollie-fleetctl — stable management verbs for the Ollie/Hermes stack.
+
+Invoked over SSH by the Ollie Fleet dashboard. Contract: every verb prints
+exactly one JSON object to stdout and exits 0, or {"error": "..."} and exits
+non-zero. Long verbs (agents create, update) stream NDJSON events ending in
+{"event": "done"} or {"event": "error"}. `backup` is the one exception: it
+streams a raw tarball to stdout. stderr is human-only; Fleet never parses it.
+
+Installed by scripts/10-install-fleetctl.sh. Versioned with the stack on
+purpose: the verb names are the stable contract, the implementation follows
+whatever the current install scripts set up.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+VERSION = "1.0.0"
+
+HOME = os.path.expanduser("~")
+HERMES_DIR = os.path.join(HOME, ".hermes")
+PROFILES_DIR = os.path.join(HERMES_DIR, "profiles")
+STACK_DIR = os.environ.get("HERMES_STACK_DIR", os.path.join(HOME, "hermes-stack"))
+COMPOSE_FILE = os.path.join(STACK_DIR, "docker-compose.yml")
+INSTALL_DIR = os.environ.get("OLLIE_INSTALL_DIR", os.path.join(HOME, "ollie-hermes-install"))
+ORCH_DIR = os.path.join(HOME, "ollie-hermes-orchestrator")
+ORCH_URL = os.environ.get("ORCH_URL", "http://localhost:9123")
+ORCH_ENV = os.environ.get("ORCH_ENV", os.path.join(HOME, ".config", "ollie-orchestrator", ".env"))
+FLEET_ENV = os.environ.get("FLEET_ENV", os.path.join(HOME, ".config", "ollie-fleet", ".env"))
+
+
+# ---------------------------------------------------------------- plumbing
+
+def emit(obj):
+    """Print the verb's single JSON result object."""
+    print(json.dumps(obj))
+
+
+def fail(msg, code=1):
+    """Print {"error": ...} and exit non-zero."""
+    print(json.dumps({"error": msg}))
+    sys.exit(code)
+
+
+def event(**kw):
+    """Print one NDJSON progress event (flushed so SSH relays it live)."""
+    print(json.dumps(kw), flush=True)
+
+
+def run_cmd(args, timeout=30, input_text=None):
+    """Run a command; return (rc, stdout, stderr). Never raises on non-zero."""
+    try:
+        p = subprocess.run(args, capture_output=True, text=True,
+                           timeout=timeout, input=input_text)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", "%s: not found" % args[0]
+    except subprocess.TimeoutExpired:
+        return 124, "", "%s: timed out after %ss" % (args[0], timeout)
+
+
+def read_env_file(path):
+    """Parse KEY=VALUE lines (quotes stripped); missing file -> {}."""
+    env = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return env
+
+
+# -------------------------------------------------------------------- main
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="ollie-fleetctl",
+                                description="Management verbs for the Ollie/Hermes stack")
+    sub = p.add_subparsers(dest="verb", required=True)
+    sub.add_parser("version", help="fleetctl version")
+
+    args = p.parse_args(argv)
+    if args.verb == "version":
+        emit({"fleetctl": VERSION})
+
+
+if __name__ == "__main__":
+    main()
