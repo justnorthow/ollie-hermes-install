@@ -233,6 +233,28 @@ class TestAgents(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("error", out[0])
 
+    def test_agents_create_http_error_emits_error_event(self):
+        import urllib.error, urllib.request as _ur
+        def fake_urlopen(*a, **k):
+            raise urllib.error.HTTPError("http://localhost:9123/v1/agents", 400,
+                                         "Bad Request", {}, io.BytesIO(b"duplicate name"))
+        self.mod.orch_key = lambda: "k"
+        real = _ur.urlopen
+        _ur.urlopen = fake_urlopen
+        try:
+            code, out = run_main(self.mod, ["agents", "create", "--json", '{"name": "paige"}'])
+        finally:
+            _ur.urlopen = real
+        self.assertEqual(code, 1)
+        self.assertEqual(out[-1]["event"], "error")
+        self.assertIn("HTTP 400", out[-1]["error"])
+        self.assertIn("duplicate name", out[-1]["error"])
+
+    def test_payload_empty_json_flag_is_invalid_not_stdin(self):
+        code, out = run_main(self.mod, ["agents", "create", "--json", ""])
+        self.assertEqual(code, 2)
+        self.assertIn("invalid JSON payload", out[0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

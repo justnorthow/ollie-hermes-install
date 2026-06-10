@@ -121,17 +121,25 @@ def orch_stream(method, path, body, timeout=600):
         headers={"Authorization": "Bearer " + orch_key(),
                  "Content-Type": "application/json"})
     last = None
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        for line in resp:
-            line = line.decode().strip()
-            if not line.startswith("data:"):
-                continue
-            try:
-                obj = json.loads(line[5:].strip())
-            except ValueError:
-                continue
-            last = obj
-            event(**obj)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for line in resp:
+                line = line.decode().strip()
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    obj = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                last = obj
+                event(**obj)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:200]
+        last = {"event": "error", "error": "orchestrator HTTP %s: %s" % (e.code, body)}
+        event(**last)
+    except (urllib.error.URLError, OSError) as e:
+        last = {"event": "error", "error": "orchestrator unreachable: %s" % e}
+        event(**last)
     return last
 
 
@@ -253,7 +261,7 @@ def cmd_health(args):
 
 def _payload(args):
     """JSON body from --json or stdin."""
-    raw = args.json if args.json else sys.stdin.read()
+    raw = args.json if args.json is not None else sys.stdin.read()
     try:
         return json.loads(raw)
     except ValueError as e:
