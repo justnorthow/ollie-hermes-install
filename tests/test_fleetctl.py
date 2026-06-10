@@ -46,9 +46,8 @@ class TestScaffold(unittest.TestCase):
 
     def test_unknown_verb_exits_nonzero(self):
         mod = load_fleetctl()
-        with self.assertRaises(SystemExit):
-            with redirect_stdout(io.StringIO()):
-                mod.main(["frobnicate"])
+        code, _ = run_main(mod, ["frobnicate"])
+        self.assertNotEqual(code, 0)
 
     def test_read_env_file(self):
         mod = load_fleetctl()
@@ -68,6 +67,23 @@ class TestScaffold(unittest.TestCase):
         rc, out, err = mod.run_cmd(["definitely-not-a-real-binary-xyz"])
         self.assertEqual(rc, 127)
         self.assertIn("not found", err)
+
+    def test_fail_emits_error_json_and_exit_code(self):
+        mod = load_fleetctl()
+        buf = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx:
+            with redirect_stdout(buf):
+                mod.fail("boom", 2)
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(json.loads(buf.getvalue()), {"error": "boom"})
+
+    def test_read_env_file_skips_empty_key(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, ".env")
+            with open(p, "w") as f:
+                f.write("=NOKEY\nGOOD=1\n")
+            self.assertEqual(mod.read_env_file(p), {"GOOD": "1"})
 
 
 if __name__ == "__main__":
