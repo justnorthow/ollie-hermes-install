@@ -300,6 +300,66 @@ def cmd_agents(args):
         emit(parsed if parsed is not None else {"ok": True})
 
 
+DOCKER_SERVICES = {"cortex": "cortex", "frontend": "dashboard"}
+
+
+def resolve_target(target):
+    """Map a restart/logs target -> (systemd_units, compose_services).
+    Raises ValueError for unknown targets."""
+    if target == "stack":
+        units = [u["unit"] for u in get_units()]
+        return units, ["cortex", "dashboard"]
+    if target in DOCKER_SERVICES:
+        return [], [DOCKER_SERVICES[target]]
+    if target == "orchestrator":
+        return ["ollie-orchestrator.service"], []
+    for base in ("gateway", "dashboard"):
+        if target == base:
+            return ["hermes-%s.service" % base], []
+        if target.startswith(base + "-"):
+            return ["hermes-%s.service" % target], []
+    raise ValueError("unknown target: %s (expected gateway[-name], dashboard[-name], "
+                     "orchestrator, cortex, frontend, or stack)" % target)
+
+
+def cmd_restart(args):
+    try:
+        units, services = resolve_target(args.target)
+    except ValueError as e:
+        fail(str(e), 2)
+    results = []
+    for u in units:
+        rc, _, err = run_cmd(["systemctl", "--user", "restart", u], timeout=60)
+        results.append({"target": u, "ok": rc == 0,
+                        "error": err.strip() or "exit %s" % rc if rc != 0 else None})
+    for s in services:
+        rc, _, err = run_cmd(["docker", "compose", "-f", COMPOSE_FILE,
+                              "restart", s], timeout=120)
+        results.append({"target": "compose:%s" % s, "ok": rc == 0,
+                        "error": err.strip() or "exit %s" % rc if rc != 0 else None})
+    emit({"restarted": results})
+    if not all(r["ok"] for r in results):
+        sys.exit(1)
+
+
+def cmd_logs(args):
+    if args.service in DOCKER_SERVICES:
+        rc, out, err = run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "logs",
+                                "--no-color", "--tail", str(args.lines),
+                                DOCKER_SERVICES[args.service]], timeout=30)
+    else:
+        try:
+            units, _ = resolve_target(args.service)
+        except ValueError as e:
+            fail(str(e), 2)
+        rc, out, err = run_cmd(["journalctl", "--user", "-u", units[0],
+                                "-n", str(args.lines), "--no-pager",
+                                "-o", "short-iso"], timeout=30)
+    if rc != 0:
+        fail("logs failed for %s: %s" % (args.service, err.strip()))
+    emit({"service": args.service, "lines": out.splitlines()})
+
+
 # -------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -313,6 +373,12 @@ def main(argv=None):
                                       "delete", "set-identity"])
     a.add_argument("id", nargs="?", help="agent id (required except for list/create)")
     a.add_argument("--json", help="JSON payload; omit to read from stdin")
+    r = sub.add_parser("restart", help="restart a service or the whole stack")
+    r.add_argument("target",
+                   help="gateway[-name] | dashboard[-name] | orchestrator | cortex | frontend | stack")
+    l = sub.add_parser("logs", help="recent logs for one service")
+    l.add_argument("service", help="same targets as restart (except stack)")
+    l.add_argument("-n", "--lines", type=int, default=200)
 
     args = p.parse_args(argv)
     if args.verb == "version":
@@ -323,6 +389,10 @@ def main(argv=None):
         if args.action in ("get", "update", "delete", "set-identity") and not args.id:
             p.error("agents %s requires an agent id" % args.action)
         cmd_agents(args)
+    elif args.verb == "restart":
+        cmd_restart(args)
+    elif args.verb == "logs":
+        cmd_logs(args)
 
 
 if __name__ == "__main__":

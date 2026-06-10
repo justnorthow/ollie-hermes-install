@@ -256,5 +256,69 @@ class TestAgents(unittest.TestCase):
         self.assertIn("invalid JSON payload", out[0]["error"])
 
 
+class TestRestartLogs(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def test_resolve_target_mappings(self):
+        m = self.mod
+        self.assertEqual(m.resolve_target("gateway"), (["hermes-gateway.service"], []))
+        self.assertEqual(m.resolve_target("gateway-paige"), (["hermes-gateway-paige.service"], []))
+        self.assertEqual(m.resolve_target("dashboard-karl"), (["hermes-dashboard-karl.service"], []))
+        self.assertEqual(m.resolve_target("orchestrator"), (["ollie-orchestrator.service"], []))
+        self.assertEqual(m.resolve_target("cortex"), ([], ["cortex"]))
+        self.assertEqual(m.resolve_target("frontend"), ([], ["dashboard"]))
+
+    def test_resolve_target_stack_uses_live_units(self):
+        self.mod.get_units = lambda: [
+            {"unit": "hermes-gateway.service", "active": "active"},
+            {"unit": "hermes-dashboard.service", "active": "active"},
+            {"unit": "ollie-orchestrator.service", "active": "active"},
+        ]
+        units, services = self.mod.resolve_target("stack")
+        self.assertEqual(units, ["hermes-gateway.service", "hermes-dashboard.service",
+                                 "ollie-orchestrator.service"])
+        self.assertEqual(services, ["cortex", "dashboard"])
+
+    def test_resolve_target_unknown_raises(self):
+        with self.assertRaises(ValueError):
+            self.mod.resolve_target("mainframe")
+
+    def test_restart_reports_per_target_results(self):
+        seen = []
+        def fake_run(args, timeout=30, input_text=None):
+            seen.append(args)
+            return 0, "", ""
+        self.mod.run_cmd = fake_run
+        code, out = run_main(self.mod, ["restart", "gateway-paige"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out[0]["restarted"][0],
+                         {"target": "hermes-gateway-paige.service", "ok": True, "error": None})
+        self.assertIn(["systemctl", "--user", "restart", "hermes-gateway-paige.service"], seen)
+
+    def test_restart_failure_exits_nonzero(self):
+        self.mod.run_cmd = lambda *a, **k: (1, "", "unit not found")
+        code, out = run_main(self.mod, ["restart", "gateway"])
+        self.assertEqual(code, 1)
+        self.assertFalse(out[0]["restarted"][0]["ok"])
+
+    def test_logs_systemd_service(self):
+        self.mod.run_cmd = lambda args, timeout=30, input_text=None: (0, "line1\nline2\n", "")
+        code, out = run_main(self.mod, ["logs", "gateway-paige", "-n", "50"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out[0], {"service": "gateway-paige", "lines": ["line1", "line2"]})
+
+    def test_logs_docker_service(self):
+        captured = []
+        def fake_run(args, timeout=30, input_text=None):
+            captured.append(args)
+            return 0, "cortex log line\n", ""
+        self.mod.run_cmd = fake_run
+        code, out = run_main(self.mod, ["logs", "cortex"])
+        self.assertEqual(code, 0)
+        self.assertIn("logs", captured[0])
+        self.assertEqual(out[0]["lines"], ["cortex log line"])
+
+
 if __name__ == "__main__":
     unittest.main()
