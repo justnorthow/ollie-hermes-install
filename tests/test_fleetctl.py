@@ -359,6 +359,18 @@ class TestUpdateHeartbeat(unittest.TestCase):
         steps = [e["step"] for e in out if e.get("event") == "progress"]
         self.assertEqual(steps, ["compose-pull", "compose-up"])
 
+    def test_update_hermes_pipes_yes_into_hermes_update(self):
+        seen = []
+        def fake_run(args, timeout=30, input_text=None):
+            seen.append((tuple(args), input_text))
+            return 0, "", ""
+        self.mod.run_cmd = fake_run
+        code, _ = run_main(self.mod, ["update", "hermes"])
+        self.assertEqual(code, 0)
+        inputs = dict(seen)
+        self.assertEqual(inputs[("hermes", "update")], "y\ny\ny\ny\ny\n")
+        self.assertIsNone(inputs[("git", "-C", self.mod.INSTALL_DIR, "pull", "--ff-only")])
+
     def test_heartbeat_skips_when_not_enrolled(self):
         self.mod.FLEET_ENV = "/nonexistent/.env"
         code, out = run_main(self.mod, ["heartbeat"])

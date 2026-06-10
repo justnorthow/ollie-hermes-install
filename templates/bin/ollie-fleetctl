@@ -362,9 +362,9 @@ def cmd_logs(args):
     emit({"service": args.service, "lines": out.splitlines()})
 
 
-def _step_cmd(args_list, timeout):
+def _step_cmd(args_list, timeout, input_text=None):
     """Run one update step -> (ok, short_detail)."""
-    rc, out, err = run_cmd(args_list, timeout=timeout)
+    rc, out, err = run_cmd(args_list, timeout=timeout, input_text=input_text)
     return rc == 0, (err.strip() or out.strip())[-500:]
 
 
@@ -395,7 +395,10 @@ def cmd_update(args):
         ]
     for name, cmd_args, timeout in steps:
         event(event="progress", step=name)
-        ok, detail = _step_cmd(cmd_args, timeout)
+        # hermes update prompts interactively (same CLI behavior 02-install-hermes.sh
+        # works around by piping "y"); answer yes so it can't hang to the timeout.
+        ok, detail = _step_cmd(cmd_args, timeout,
+                               input_text="y\ny\ny\ny\ny\n" if name == "hermes-update" else None)
         if not ok:
             event(event="error", step=name, error=detail)
             sys.exit(1)
@@ -403,7 +406,7 @@ def cmd_update(args):
 
 
 def post_json(url, token, payload, timeout=15):
-    """POST JSON with a bearer token -> HTTP status (raises on network error)."""
+    """POST JSON with a bearer token -> HTTP status (raises on network or HTTP error)."""
     req = urllib.request.Request(
         url, method="POST", data=json.dumps(payload).encode(),
         headers={"Authorization": "Bearer " + token,
