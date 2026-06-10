@@ -436,12 +436,17 @@ def cmd_backup(args):
              "(e.g. ollie-fleetctl backup > backup.tgz)", 2)
     staging = tempfile.mkdtemp(prefix="fleet-backup-")
     try:
-        # Cortex DB snapshot via sqlite's online .backup (best-effort; the
+        # Cortex DB snapshot via sqlite's online backup API (best-effort; the
         # container may be down — the rest of the backup still proceeds).
-        run_cmd(["docker", "exec", "cortex", "sqlite3", "/data/cortex.db",
-                 ".backup /data/cortex-snapshot.db"], timeout=120)
+        # The python-slim image has no sqlite3 CLI, so go through python.
+        run_cmd(["docker", "exec", "cortex", "python", "-c",
+                 "import sqlite3; src = sqlite3.connect('/data/cortex.db'); "
+                 "dst = sqlite3.connect('/data/cortex-snapshot.db'); "
+                 "src.backup(dst); dst.close(); src.close()"], timeout=120)
         run_cmd(["docker", "cp", "cortex:/data/cortex-snapshot.db", staging],
                 timeout=120)
+        run_cmd(["docker", "exec", "cortex", "rm", "-f",
+                 "/data/cortex-snapshot.db"], timeout=30)
         paths = collect_backup_paths()
         snap = os.path.join(staging, "cortex-snapshot.db")
         if os.path.isfile(snap):
