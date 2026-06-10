@@ -4,3 +4,6 @@ scripts/*.sh text eol=lf
 templates/*.service text eol=lf
 templates/*.yml text eol=lf
 templates/*.yaml text eol=lf
+# Executables and systemd units in template subdirs run on Linux servers
+templates/bin/* text eol=lf
+templates/systemd/* text eol=lf
