@@ -343,6 +343,8 @@ def cmd_restart(args):
 
 
 def cmd_logs(args):
+    if args.service == "stack":
+        fail("'stack' is not a valid logs target; specify a single service", 2)
     if args.service in DOCKER_SERVICES:
         rc, out, err = run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "logs",
                                 "--no-color", "--tail", str(args.lines),

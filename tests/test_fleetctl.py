@@ -319,6 +319,11 @@ class TestRestartLogs(unittest.TestCase):
         self.assertIn("logs", captured[0])
         self.assertEqual(out[0]["lines"], ["cortex log line"])
 
+    def test_logs_rejects_stack_target(self):
+        code, out = run_main(self.mod, ["logs", "stack"])
+        self.assertEqual(code, 2)
+        self.assertIn("not a valid logs target", out[0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
