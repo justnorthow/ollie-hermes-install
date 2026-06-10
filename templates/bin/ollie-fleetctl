@@ -362,6 +362,73 @@ def cmd_logs(args):
     emit({"service": args.service, "lines": out.splitlines()})
 
 
+def _step_cmd(args_list, timeout):
+    """Run one update step -> (ok, short_detail)."""
+    rc, out, err = run_cmd(args_list, timeout=timeout)
+    return rc == 0, (err.strip() or out.strip())[-500:]
+
+
+def cmd_update(args):
+    component = args.component
+    steps = []
+    if component in ("hermes", "all"):
+        steps += [
+            ("git-pull-install-repo", ["git", "-C", INSTALL_DIR, "pull", "--ff-only"], 120),
+            ("hermes-update", ["hermes", "update"], 900),
+            # hermes update resets ~/.hermes/hermes-agent — re-apply the stack pieces it wipes:
+            ("reinstall-cortex-plugin", ["bash", os.path.join(INSTALL_DIR, "scripts", "04-install-cortex-plugin.sh")], 300),
+            ("repatch-cron-brain", ["bash", os.path.join(INSTALL_DIR, "scripts", "07-patch-cron-brain.sh")], 120),
+            ("reinstall-souls", ["bash", os.path.join(INSTALL_DIR, "scripts", "08-install-souls.sh")], 120),
+        ]
+    if component in ("stack", "all"):
+        steps += [
+            ("compose-pull", ["docker", "compose", "-f", COMPOSE_FILE, "pull"], 600),
+            ("compose-up", ["docker", "compose", "-f", COMPOSE_FILE, "up", "-d"], 300),
+        ]
+    if component in ("orchestrator", "all"):
+        steps += [
+            ("git-pull-orchestrator", ["git", "-C", ORCH_DIR, "pull", "--ff-only"], 120),
+            ("pip-install", [os.path.join(ORCH_DIR, ".venv", "bin", "pip"),
+                             "install", "-q", "-r",
+                             os.path.join(ORCH_DIR, "requirements.txt")], 600),
+            ("restart-orchestrator", ["systemctl", "--user", "restart", "ollie-orchestrator"], 60),
+        ]
+    for name, cmd_args, timeout in steps:
+        event(event="progress", step=name)
+        ok, detail = _step_cmd(cmd_args, timeout)
+        if not ok:
+            event(event="error", step=name, error=detail)
+            sys.exit(1)
+    event(event="done", component=component)
+
+
+def post_json(url, token, payload, timeout=15):
+    """POST JSON with a bearer token -> HTTP status (raises on network error)."""
+    req = urllib.request.Request(
+        url, method="POST", data=json.dumps(payload).encode(),
+        headers={"Authorization": "Bearer " + token,
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status
+
+
+def cmd_heartbeat(args):
+    env = read_env_file(FLEET_ENV)
+    url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
+    if not url or not token:
+        # Pre-enrollment no-op: the timer is installed before the box is enrolled.
+        emit({"skipped": "not enrolled (%s lacks FLEET_URL/FLEET_TOKEN)" % FLEET_ENV})
+        return
+    payload = {"health": build_health()}
+    try:
+        status = post_json(url.rstrip("/") + "/heartbeat", token, payload)
+        emit({"posted": True, "status": status})
+    except urllib.error.HTTPError as e:
+        fail("heartbeat rejected: HTTP %s" % e.code)
+    except (urllib.error.URLError, OSError) as e:
+        fail("heartbeat failed: %s" % e)
+
+
 # -------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -381,6 +448,10 @@ def main(argv=None):
     l = sub.add_parser("logs", help="recent logs for one service")
     l.add_argument("service", help="same targets as restart (except stack)")
     l.add_argument("-n", "--lines", type=int, default=200)
+    u = sub.add_parser("update", help="update stack components (streams NDJSON progress)")
+    u.add_argument("component", nargs="?", default="all",
+                   choices=["hermes", "stack", "orchestrator", "all"])
+    sub.add_parser("heartbeat", help="POST health to the fleet dashboard (no-op until enrolled)")
 
     args = p.parse_args(argv)
     if args.verb == "version":
@@ -395,6 +466,10 @@ def main(argv=None):
         cmd_restart(args)
     elif args.verb == "logs":
         cmd_logs(args)
+    elif args.verb == "update":
+        cmd_update(args)
+    elif args.verb == "heartbeat":
+        cmd_heartbeat(args)
 
 
 if __name__ == "__main__":

@@ -325,5 +325,65 @@ class TestRestartLogs(unittest.TestCase):
         self.assertIn("not a valid logs target", out[0]["error"])
 
 
+class TestUpdateHeartbeat(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def test_update_hermes_runs_runbook_in_order(self):
+        seen = []
+        self.mod.run_cmd = lambda args, timeout=30, input_text=None: (seen.append(args), (0, "", ""))[1]
+        code, out = run_main(self.mod, ["update", "hermes"])
+        self.assertEqual(code, 0)
+        steps = [e["step"] for e in out if e.get("event") == "progress"]
+        self.assertEqual(steps, ["git-pull-install-repo", "hermes-update",
+                                 "reinstall-cortex-plugin", "repatch-cron-brain",
+                                 "reinstall-souls"])
+        self.assertEqual(out[-1], {"event": "done", "component": "hermes"})
+        self.assertEqual(seen[1], ["hermes", "update"])
+
+    def test_update_stops_and_errors_on_failed_step(self):
+        calls = {"n": 0}
+        def fake_run(args, timeout=30, input_text=None):
+            calls["n"] += 1
+            return (1, "", "pull refused") if calls["n"] == 1 else (0, "", "")
+        self.mod.run_cmd = fake_run
+        code, out = run_main(self.mod, ["update", "hermes"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out[-1]["event"], "error")
+        self.assertEqual(out[-1]["step"], "git-pull-install-repo")
+        self.assertEqual(calls["n"], 1)  # stopped at first failure
+
+    def test_update_stack_steps(self):
+        self.mod.run_cmd = lambda *a, **k: (0, "", "")
+        code, out = run_main(self.mod, ["update", "stack"])
+        steps = [e["step"] for e in out if e.get("event") == "progress"]
+        self.assertEqual(steps, ["compose-pull", "compose-up"])
+
+    def test_heartbeat_skips_when_not_enrolled(self):
+        self.mod.FLEET_ENV = "/nonexistent/.env"
+        code, out = run_main(self.mod, ["heartbeat"])
+        self.assertEqual(code, 0)
+        self.assertIn("skipped", out[0])
+
+    def test_heartbeat_posts_health_with_bearer(self):
+        with tempfile.TemporaryDirectory() as d:
+            envp = os.path.join(d, ".env")
+            with open(envp, "w") as f:
+                f.write("FLEET_URL=https://fleet.example.com\nFLEET_TOKEN=tok123\n")
+            self.mod.FLEET_ENV = envp
+            self.mod.build_health = lambda: {"fleetctlVersion": self.mod.VERSION, "errors": []}
+            captured = {}
+            def fake_post(url, token, payload, timeout=15):
+                captured.update(url=url, token=token, payload=payload)
+                return 200
+            self.mod.post_json = fake_post
+            code, out = run_main(self.mod, ["heartbeat"])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["url"], "https://fleet.example.com/heartbeat")
+        self.assertEqual(captured["token"], "tok123")
+        self.assertIn("health", captured["payload"])
+        self.assertEqual(out[0], {"posted": True, "status": 200})
+
+
 if __name__ == "__main__":
     unittest.main()
