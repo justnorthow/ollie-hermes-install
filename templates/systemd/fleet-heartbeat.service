@@ -1,0 +1,8 @@
+[Unit]
+Description=Ollie Fleet heartbeat (push stack health to the fleet dashboard)
+# No-ops cleanly until ~/.config/ollie-fleet/.env exists (written at enrollment).
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ollie-fleetctl heartbeat
+TimeoutStartSec=120
