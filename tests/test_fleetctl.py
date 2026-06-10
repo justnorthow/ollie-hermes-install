@@ -149,6 +149,22 @@ class TestHealth(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["errors"], [])
 
+    def test_get_containers_parses_compose_array_format(self):
+        array_out = ('[{"Service":"cortex","State":"running","Status":"Up 3 days"},'
+                     '{"Service":"dashboard","State":"running","Status":"Up 3 days"}]')
+        self.mod.run_cmd = lambda *a, **k: (0, array_out, "")
+        cs = self.mod.get_containers()
+        self.assertEqual([c["name"] for c in cs], ["cortex", "dashboard"])
+
+    def test_get_containers_raises_on_failure(self):
+        self.mod.run_cmd = lambda *a, **k: (1, "", "no docker")
+        with self.assertRaises(RuntimeError):
+            self.mod.get_containers()
+
+    def test_get_containers_empty_output(self):
+        self.mod.run_cmd = lambda *a, **k: (0, "", "")
+        self.assertEqual(self.mod.get_containers(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

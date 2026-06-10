@@ -108,6 +108,8 @@ def orch_request(method, path, body=None, timeout=30):
             return resp.status, (json.loads(raw) if raw.strip() else None), raw
     except urllib.error.HTTPError as e:
         return e.code, None, e.read().decode(errors="replace")
+    except urllib.error.URLError as e:
+        return None, None, str(e)
 
 
 # ----------------------------------------------------------- health collectors
@@ -141,6 +143,8 @@ def get_memory_mb():
             info[k.strip()] = int(v.strip().split()[0])  # kB
     total = info.get("MemTotal", 0) // 1024
     avail = info.get("MemAvailable", 0) // 1024
+    if not info.get("MemAvailable"):
+        raise RuntimeError("MemAvailable missing from /proc/meminfo")
     return total - avail, total
 
 
@@ -175,15 +179,15 @@ def get_containers():
                             "ps", "-a", "--format", "json"])
     if rc != 0:
         raise RuntimeError("docker compose ps failed: %s" % err.strip())
-    containers = []
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        c = json.loads(line)
-        containers.append({"name": c.get("Service", ""),
-                           "state": c.get("State", ""),
-                           "status": c.get("Status", "")})
-    return containers
+    stripped = out.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):  # compose v2.21+ emits a single JSON array
+        items = json.loads(stripped)
+    else:  # older compose emits one JSON object per line
+        items = [json.loads(l) for l in stripped.splitlines() if l.strip()]
+    return [{"name": c.get("Service", ""), "state": c.get("State", ""),
+             "status": c.get("Status", "")} for c in items]
 
 
 def get_versions():
@@ -195,8 +199,10 @@ def get_versions():
 
 def get_agents_summary():
     status, parsed, raw = orch_request("GET", "/v1/agents")
-    if status != 200 or parsed is None:
-        raise RuntimeError("orchestrator /v1/agents returned HTTP %s" % status)
+    if status != 200:
+        raise RuntimeError("orchestrator /v1/agents returned HTTP %s: %s" % (status, raw[:200]))
+    if parsed is None:
+        raise RuntimeError("orchestrator /v1/agents: empty body")
     return parsed.get("agents", [])
 
 
