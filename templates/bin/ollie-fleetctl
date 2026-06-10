@@ -415,6 +415,47 @@ def post_json(url, token, payload, timeout=15):
         return resp.status
 
 
+def collect_backup_paths():
+    """Files worth preserving: session DBs, configs, personas, OAuth tokens."""
+    paths = []
+    for rel in ("state.db", "config.yaml", "SOUL.md", "auth.json"):
+        p = os.path.join(HERMES_DIR, rel)
+        if os.path.isfile(p):
+            paths.append(p)
+    if os.path.isdir(PROFILES_DIR):
+        for prof in sorted(os.listdir(PROFILES_DIR)):
+            for rel in ("state.db", "config.yaml", "SOUL.md"):
+                p = os.path.join(PROFILES_DIR, prof, rel)
+                if os.path.isfile(p):
+                    paths.append(p)
+    return paths
+
+
+def cmd_backup(args):
+    if sys.stdout.isatty():
+        fail("backup streams a tarball; redirect stdout "
+             "(e.g. ollie-fleetctl backup > backup.tgz)", 2)
+    staging = tempfile.mkdtemp(prefix="fleet-backup-")
+    try:
+        # Cortex DB snapshot via sqlite's online .backup (best-effort; the
+        # container may be down — the rest of the backup still proceeds).
+        run_cmd(["docker", "exec", "cortex", "sqlite3", "/data/cortex.db",
+                 ".backup /data/cortex-snapshot.db"], timeout=120)
+        run_cmd(["docker", "cp", "cortex:/data/cortex-snapshot.db", staging],
+                timeout=120)
+        paths = collect_backup_paths()
+        snap = os.path.join(staging, "cortex-snapshot.db")
+        if os.path.isfile(snap):
+            paths.append(snap)
+        if not paths:
+            fail("nothing to back up (no state.db/config/SOUL files found)")
+        rc = subprocess.call(["tar", "czf", "-", "--absolute-names"] + paths,
+                             stdout=sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout)
+        sys.exit(rc)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def cmd_heartbeat(args):
     env = read_env_file(FLEET_ENV)
     url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
@@ -455,6 +496,7 @@ def main(argv=None):
     u.add_argument("component", nargs="?", default="all",
                    choices=["hermes", "stack", "orchestrator", "all"])
     sub.add_parser("heartbeat", help="POST health to the fleet dashboard (no-op until enrolled)")
+    sub.add_parser("backup", help="stream a tarball of state DBs, configs, and personas")
 
     args = p.parse_args(argv)
     if args.verb == "version":
@@ -473,6 +515,8 @@ def main(argv=None):
         cmd_update(args)
     elif args.verb == "heartbeat":
         cmd_heartbeat(args)
+    elif args.verb == "backup":
+        cmd_backup(args)
 
 
 if __name__ == "__main__":

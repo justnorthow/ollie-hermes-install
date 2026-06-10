@@ -397,5 +397,32 @@ class TestUpdateHeartbeat(unittest.TestCase):
         self.assertEqual(out[0], {"posted": True, "status": 200})
 
 
+class TestBackup(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def test_collect_backup_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            hermes = os.path.join(d, ".hermes")
+            os.makedirs(os.path.join(hermes, "profiles", "paige"))
+            for rel in ("state.db", "config.yaml", "SOUL.md", "auth.json"):
+                open(os.path.join(hermes, rel), "w").write("x")
+            open(os.path.join(hermes, "profiles", "paige", "state.db"), "w").write("x")
+            open(os.path.join(hermes, "profiles", "paige", "SOUL.md"), "w").write("x")
+            self.mod.HERMES_DIR = hermes
+            self.mod.PROFILES_DIR = os.path.join(hermes, "profiles")
+            paths = self.mod.collect_backup_paths()
+        rels = sorted(os.path.relpath(p, hermes).replace(os.sep, "/") for p in paths)
+        self.assertEqual(rels, ["SOUL.md", "auth.json", "config.yaml",
+                                "profiles/paige/SOUL.md", "profiles/paige/state.db",
+                                "state.db"])
+
+    def test_collect_backup_paths_skips_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.mod.HERMES_DIR = d
+            self.mod.PROFILES_DIR = os.path.join(d, "profiles")
+            self.assertEqual(self.mod.collect_backup_paths(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
