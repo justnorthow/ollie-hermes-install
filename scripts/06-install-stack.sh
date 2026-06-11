@@ -45,18 +45,13 @@ fi
 GATEWAY_KEY="$(grep '^API_SERVER_KEY=' "${HERMES_ENV}" | cut -d= -f2-)"
 ORCH_KEY="$(grep '^ORCHESTRATOR_KEY=' "${ORCH_ENV}" | cut -d= -f2-)"
 
-echo "==> step 3: build AGENTS_JSON by auto-detecting installed profiles"
-# Default profile is always present. Use its port from .env. Display name defaults to "Ollie".
+echo "==> step 3: build AGENTS_JSON (auto-detect profiles, preserve wizard-set fields)"
+# Default profile is always present. Use its port from .env.
 DEFAULT_PORT="$(grep '^API_SERVER_PORT=' "${HERMES_ENV}" | cut -d= -f2-)"
 DEFAULT_DASH=9119
-# Build JSON entries. jq isn't a hard dep for this — we hand-roll the JSON for portability.
-build_entry() {
-  local id="$1" name="$2" gw="$3" dash="$4"
-  printf '{"id":"%s","name":"%s","gatewayUrl":"http://host.docker.internal:%s","dashboardUrl":"http://host.docker.internal:%s"}' \
-    "${id}" "${name}" "${gw}" "${dash}"
-}
-ENTRIES=()
-ENTRIES+=("$(build_entry default Ollie "${DEFAULT_PORT}" "${DEFAULT_DASH}")")
+# Detected profiles: just id + ports. Hand-rolled JSON (numbers unquoted) for portability.
+det_entries=()
+det_entries+=("$(printf '{"id":"default","gw":%s,"dash":%s}' "${DEFAULT_PORT}" "${DEFAULT_DASH}")")
 for prof_env in "${HOME}"/.hermes/profiles/*/.env; do
   [[ -f "${prof_env}" ]] || continue
   prof_name="$(basename "$(dirname "${prof_env}")")"
@@ -72,11 +67,38 @@ for prof_env in "${HOME}"/.hermes/profiles/*/.env; do
     echo "    skipping profile '${prof_name}' (missing port info)" >&2
     continue
   fi
-  display="$(echo "${prof_name}" | sed 's/.*/\u&/')"
-  ENTRIES+=("$(build_entry "${prof_name}" "${display}" "${gw_port}" "${dash_port}")")
+  det_entries+=("$(printf '{"id":"%s","gw":%s,"dash":%s}' "${prof_name}" "${gw_port}" "${dash_port}")")
 done
-# Join entries with commas
-AGENTS_JSON="[$(IFS=,; echo "${ENTRIES[*]}")]"
+DETECTED="[$(IFS=,; echo "${det_entries[*]}")]"
+
+# Merge detection with the EXISTING AGENTS_JSON so the orchestrator wizard's
+# displayName/color/model survive a re-run. Ports/URLs are refreshed from
+# detection; agents whose profile is gone are dropped.
+EXISTING_AGENTS="$(grep -E '^AGENTS_JSON=' "${STACK_ENV}" 2>/dev/null | cut -d= -f2- || true)"
+AGENTS_JSON="$(EXISTING_AGENTS="${EXISTING_AGENTS}" DETECTED="${DETECTED}" python3 <<'PY'
+import json, os
+try:
+    prev = {a["id"]: a for a in json.loads(os.environ.get("EXISTING_AGENTS") or "[]")}
+except Exception:
+    prev = {}
+out = []
+for d in json.loads(os.environ["DETECTED"]):
+    p = prev.get(d["id"], {})
+    entry = {
+        "id": d["id"],
+        # Preserve a wizard-set displayName; else default (capitalized id; "Ollie" for default).
+        "name": p.get("name") or ("Ollie" if d["id"] == "default" else d["id"].capitalize()),
+        "gatewayUrl": f'http://host.docker.internal:{d["gw"]}',
+        "dashboardUrl": f'http://host.docker.internal:{d["dash"]}',
+    }
+    if p.get("color"):
+        entry["color"] = p["color"]
+    if p.get("model"):
+        entry["model"] = p["model"]
+    out.append(entry)
+print(json.dumps(out, separators=(",", ":")))
+PY
+)"
 echo "    detected agents: $(echo "${AGENTS_JSON}" | python3 -c 'import sys,json; print(", ".join(a["id"] for a in json.load(sys.stdin)))')"
 
 # FIRECRAWL_API_KEY is operator-supplied (for Brain Discovery web crawl), not derived from
