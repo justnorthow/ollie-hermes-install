@@ -27,6 +27,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exit 1
 fi
 
+# Required for `systemctl --user` to reach the user bus when invoked via
+# `sudo -u ollie` (no login session sets this). Without it the gateway-restart
+# loop below fails to connect to the bus and silently restarts nothing, while
+# the script still prints success. Matches scripts 02/03/05/09.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 # The plugin files are vendored into this repo at templates/cortex-plugin/ so the
 # install is self-contained (cortex repo is private; we avoid needing GH auth on
 # the install target). The source of truth still lives in ollie-hermes-cortex/

@@ -38,6 +38,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exit 1
 fi
 
+# Required for `systemctl --user` to reach the user bus when invoked via
+# `sudo -u ollie` (no login session sets this). Without it the gateway-restart
+# loop below fails to connect to the bus and silently restarts nothing, while
+# the script still prints success. Matches scripts 02/03/05/09.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 HERMES_AGENT_DIR="${HOME}/.hermes/hermes-agent"
 SCHED="${HERMES_AGENT_DIR}/cron/scheduler.py"
 RUN_AGENT="${HERMES_AGENT_DIR}/run_agent.py"
