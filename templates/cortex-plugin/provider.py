@@ -131,7 +131,7 @@ class CortexProvider(MemoryProvider):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "key": {"type": "string", "description": "Section key (e.g. foundation, delivery)"}
+                        "key": {"type": "string", "description": "Brain file path as section/file (e.g. foundation/company, delivery/playbook)"}
                     },
                     "required": ["key"],
                 },
@@ -142,7 +142,7 @@ class CortexProvider(MemoryProvider):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "key": {"type": "string", "description": "File path (e.g. foundation/company, jnow-deliverability)"},
+                        "key": {"type": "string", "description": "Brain file path as section/file (e.g. foundation/company)"},
                         "content": {"type": "string"},
                     },
                     "required": ["key", "content"],
@@ -154,13 +154,24 @@ class CortexProvider(MemoryProvider):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "key": {"type": "string", "description": "File path (e.g. jnow-deliverability)"},
+                        "key": {"type": "string", "description": "Brain file path as section/file (e.g. logs/cron-runs)"},
                         "content": {"type": "string", "description": "Text to append. A trailing newline is added if missing."},
                     },
                     "required": ["key", "content"],
                 },
             },
         ]
+
+    @staticmethod
+    def _brain_files_path(key: str) -> str:
+        # Cortex routes /brain/files/{section}/{file}; a bare single-segment key
+        # 404s. Require the two-segment form and surface an actionable error.
+        k = key.strip().strip("/")
+        if "/" not in k:
+            raise ValueError(
+                f"brain key must be 'section/file' (e.g. foundation/company), got {key!r}"
+            )
+        return f"/brain/files/{k}"
 
     def handle_tool_call(self, name: str, args: dict) -> str:
         try:
@@ -177,18 +188,18 @@ class CortexProvider(MemoryProvider):
                 self._client.patch(f"/memory/thoughts/{args['id']}/unpin")
                 return "Unpinned."
             if name == "brain_read":
-                result = self._client.get(f"/brain/files/{args['key']}")
+                result = self._client.get(self._brain_files_path(args['key']))
                 # Cortex returns {"body": "...", "exists": bool, ...}
                 if isinstance(result, dict):
                     return result.get("body", "") or ""
                 return ""
             if name == "brain_update":
-                self._client.put(f"/brain/files/{args['key']}", {"content": args["content"]})
+                self._client.put(self._brain_files_path(args['key']), {"content": args["content"]})
                 return "Updated."
             if name == "brain_append":
                 # Read existing content (tolerate missing files — append should create them).
                 try:
-                    existing = self._client.get(f"/brain/files/{args['key']}")
+                    existing = self._client.get(self._brain_files_path(args['key']))
                     text = existing.get("body", "") if isinstance(existing, dict) else ""
                 except Exception:
                     text = ""
@@ -199,7 +210,7 @@ class CortexProvider(MemoryProvider):
                 text += addition
                 if not text.endswith("\n"):
                     text += "\n"
-                self._client.put(f"/brain/files/{args['key']}", {"content": text})
+                self._client.put(self._brain_files_path(args['key']), {"content": text})
                 return "Appended."
             return f"Unknown tool: {name}"
         except Exception as e:
