@@ -23,7 +23,13 @@ services:
     container_name: cortex
     restart: unless-stopped
     ports:
-      - "9120:9120"
+      # Bind to host loopback only. The host-native Hermes cortex plugin reaches
+      # cortex at http://localhost:9120, and nginx in the dashboard container
+      # reaches it over the Docker network as http://cortex:9120 — neither needs
+      # the port published on 0.0.0.0. Publishing it publicly exposed an
+      # unauthenticated API (read/wipe memories, overwrite brain files, trigger
+      # paid discovery jobs) to the internet.
+      - "127.0.0.1:9120:9120"
     volumes:
       - cortex-data:/data
       - cortex-plugin:/plugin
@@ -53,6 +59,10 @@ services:
     environment:
       - BACKEND=hermes
       - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
+      # Front-door HTTP Basic Auth. Set both to require login at the dashboard.
+      # When unset the dashboard is open (container logs a warning at startup).
+      - DASHBOARD_USER=${DASHBOARD_USER:-}
+      - DASHBOARD_PASS=${DASHBOARD_PASS:-}
       # Bearer token for the host-native ollie-hermes-orchestrator service on
       # :9123 (used by the dashboard's "+ New agent" management UI). When
       # unset the nginx /orchestrator-proxy/ block emits a 503 and the UI
