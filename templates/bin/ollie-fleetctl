@@ -29,6 +29,11 @@ VERSION = "1.0.0"
 # which 403s the heartbeat POST before it reaches Fleet. A named UA passes.
 USER_AGENT = "ollie-fleetctl/" + VERSION
 
+CONTROL_POLL_SECONDS = 60
+MIN_INTERVAL_MINUTES = 5
+MAX_INTERVAL_MINUTES = 720
+DEFAULT_INTERVAL_MINUTES = 30
+
 HOME = os.path.expanduser("~")
 HERMES_DIR = os.path.join(HOME, ".hermes")
 PROFILES_DIR = os.path.join(HERMES_DIR, "profiles")
@@ -39,6 +44,9 @@ ORCH_DIR = os.path.join(HOME, "ollie-hermes-orchestrator")
 ORCH_URL = os.environ.get("ORCH_URL", "http://localhost:9123")
 ORCH_ENV = os.environ.get("ORCH_ENV", os.path.join(HOME, ".config", "ollie-orchestrator", ".env"))
 FLEET_ENV = os.environ.get("FLEET_ENV", os.path.join(HOME, ".config", "ollie-fleet", ".env"))
+# Tear-down marker for the "fully disabled" state: present => the daemon exits
+# before any network call and stays silent across reboots. Lives beside the env.
+DISABLED_MARKER = os.path.join(os.path.dirname(FLEET_ENV), "disabled")
 
 
 # ---------------------------------------------------------------- plumbing
@@ -419,6 +427,51 @@ def post_json(url, token, payload, timeout=15):
                  "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status
+
+
+def clamp_interval(minutes):
+    try:
+        m = int(minutes)
+    except (TypeError, ValueError):
+        return DEFAULT_INTERVAL_MINUTES
+    return max(MIN_INTERVAL_MINUTES, min(MAX_INTERVAL_MINUTES, m))
+
+
+def health_beat_due(now_s, last_beat_s, interval_min, beat_now):
+    if beat_now or last_beat_s is None:
+        return True
+    return (now_s - last_beat_s) >= interval_min * 60
+
+
+def is_disabled():
+    return os.path.exists(DISABLED_MARKER)
+
+
+def set_disabled():
+    os.makedirs(os.path.dirname(DISABLED_MARKER), exist_ok=True)
+    with open(DISABLED_MARKER, "w") as f:
+        f.write("disabled by fleet\n")
+
+
+def clear_disabled():
+    try:
+        os.remove(DISABLED_MARKER)
+    except FileNotFoundError:
+        pass
+
+
+def get_control(url, token, timeout=15):
+    """POST /heartbeat/control -> dict config, or None on any failure."""
+    req = urllib.request.Request(
+        url.rstrip("/") + "/heartbeat/control", method="POST", data=b"{}",
+        headers={"Authorization": "Bearer " + token,
+                 "Content-Type": "application/json",
+                 "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
 
 
 def collect_backup_paths():

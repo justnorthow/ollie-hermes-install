@@ -444,5 +444,35 @@ class TestBackup(unittest.TestCase):
             self.assertEqual(self.mod.collect_backup_paths(), [])
 
 
+class TestHeartbeatDaemonHelpers(unittest.TestCase):
+    def test_clamp_interval(self):
+        mod = load_fleetctl()
+        self.assertEqual(mod.clamp_interval(1), 5)
+        self.assertEqual(mod.clamp_interval(30), 30)
+        self.assertEqual(mod.clamp_interval(99999), 720)
+        self.assertEqual(mod.clamp_interval("bad"), 30)  # falls back to default
+
+    def test_health_beat_due(self):
+        mod = load_fleetctl()
+        # never beaten -> due
+        self.assertTrue(mod.health_beat_due(1000, None, 5, False))
+        # beat_now forces it
+        self.assertTrue(mod.health_beat_due(1000, 999, 5, True))
+        # within interval -> not due
+        self.assertFalse(mod.health_beat_due(1000, 999, 5, False))
+        # past interval -> due (5 min = 300s)
+        self.assertTrue(mod.health_beat_due(1000 + 301, 1000, 5, False))
+
+    def test_disabled_marker_roundtrip(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            mod.DISABLED_MARKER = os.path.join(d, "disabled")
+            self.assertFalse(mod.is_disabled())
+            mod.set_disabled()
+            self.assertTrue(mod.is_disabled())
+            mod.clear_disabled()
+            self.assertFalse(mod.is_disabled())
+
+
 if __name__ == "__main__":
     unittest.main()
