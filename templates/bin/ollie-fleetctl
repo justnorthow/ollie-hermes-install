@@ -539,6 +539,55 @@ def cmd_heartbeat(args):
         fail("heartbeat failed: %s" % e)
 
 
+def daemon_tick(env, last_beat_s, now_s):
+    """One control-poll + optional health beat. Returns the new last_beat_s
+    (seconds), unchanged last_beat_s, or the string "DISABLED" to stop."""
+    url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
+    if not url or not token:
+        return last_beat_s  # not enrolled yet
+    cfg = get_control(url, token)
+    if cfg is None:
+        return last_beat_s  # transient failure: keep last-known behaviour
+    state = cfg.get("state", "active")
+    if state == "disabled":
+        set_disabled()
+        return "DISABLED"
+    if state == "paused":
+        return last_beat_s
+    interval = clamp_interval(cfg.get("intervalMinutes", DEFAULT_INTERVAL_MINUTES))
+    if health_beat_due(now_s, last_beat_s, interval, bool(cfg.get("beatNow"))):
+        try:
+            post_json(url.rstrip("/") + "/heartbeat", token, {"health": build_health()})
+            return now_s
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+            sys.stderr.write("heartbeat beat failed: %s\n" % e)
+            return last_beat_s
+    return last_beat_s
+
+
+def cmd_heartbeat_daemon(args):
+    # A disabled box must never touch the network: bail before reading anything.
+    if is_disabled():
+        emit({"daemon": "disabled (marker present); exiting"})
+        return
+    last_beat_s = None
+    while True:
+        env = read_env_file(FLEET_ENV)
+        now_s = int(time.time())
+        result = daemon_tick(env, last_beat_s, now_s)
+        if result == "DISABLED":
+            emit({"daemon": "disabled by fleet; exiting"})
+            return
+        last_beat_s = result
+        if getattr(args, "once", False):
+            return
+        # Honour the server's requested control cadence if present, else 60s.
+        env2 = read_env_file(FLEET_ENV)
+        poll = CONTROL_POLL_SECONDS
+        del env2
+        time.sleep(poll)
+
+
 # -------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -562,6 +611,8 @@ def main(argv=None):
     u.add_argument("component", nargs="?", default="all",
                    choices=["hermes", "stack", "orchestrator", "all"])
     sub.add_parser("heartbeat", help="POST health to the fleet dashboard (no-op until enrolled)")
+    d = sub.add_parser("heartbeat-daemon", help="run the heartbeat control loop (systemd service)")
+    d.add_argument("--once", action="store_true", help="run a single tick and exit (debug/test)")
     sub.add_parser("backup", help="stream a tarball of state DBs, configs, personas, "
                                   "and auth.json (contains live OAuth tokens — store securely)")
 
@@ -589,6 +640,8 @@ def main(argv=None):
             cmd_update(args)
         elif args.verb == "heartbeat":
             cmd_heartbeat(args)
+        elif args.verb == "heartbeat-daemon":
+            cmd_heartbeat_daemon(args)
         elif args.verb == "backup":
             cmd_backup(args)
     except SystemExit:

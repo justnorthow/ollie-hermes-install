@@ -474,5 +474,47 @@ class TestHeartbeatDaemonHelpers(unittest.TestCase):
             self.assertFalse(mod.is_disabled())
 
 
+class TestDaemonTick(unittest.TestCase):
+    def _mod(self):
+        return load_fleetctl()
+
+    def test_active_due_posts_health(self):
+        mod = self._mod()
+        posted = {}
+        mod.get_control = lambda url, token: {"state": "active", "intervalMinutes": 5, "beatNow": False, "controlPollSeconds": 60}
+        mod.build_health = lambda: {"fleetctlVersion": mod.VERSION}
+        mod.post_json = lambda url, token, payload, timeout=15: posted.setdefault("status", 200) or 200
+        env = {"FLEET_URL": "https://f", "FLEET_TOKEN": "t"}
+        new_last = mod.daemon_tick(env, last_beat_s=None, now_s=1000)
+        self.assertEqual(new_last, 1000)
+        self.assertEqual(posted["status"], 200)
+
+    def test_paused_skips_health(self):
+        mod = self._mod()
+        mod.get_control = lambda url, token: {"state": "paused", "intervalMinutes": 5, "beatNow": False, "controlPollSeconds": 60}
+        called = []
+        mod.post_json = lambda *a, **k: called.append(1)
+        env = {"FLEET_URL": "https://f", "FLEET_TOKEN": "t"}
+        new_last = mod.daemon_tick(env, last_beat_s=500, now_s=10000)
+        self.assertEqual(new_last, 500)       # unchanged
+        self.assertEqual(called, [])          # no beat
+
+    def test_disabled_sets_marker_and_signals(self):
+        mod = self._mod()
+        mod.get_control = lambda url, token: {"state": "disabled", "intervalMinutes": 5, "beatNow": False, "controlPollSeconds": 60}
+        with tempfile.TemporaryDirectory() as d:
+            mod.DISABLED_MARKER = os.path.join(d, "disabled")
+            env = {"FLEET_URL": "https://f", "FLEET_TOKEN": "t"}
+            result = mod.daemon_tick(env, last_beat_s=None, now_s=1000)
+            self.assertEqual(result, "DISABLED")
+            self.assertTrue(mod.is_disabled())
+
+    def test_tick_no_control_keeps_last(self):
+        mod = self._mod()
+        mod.get_control = lambda url, token: None  # network blip
+        env = {"FLEET_URL": "https://f", "FLEET_TOKEN": "t"}
+        self.assertEqual(mod.daemon_tick(env, last_beat_s=42, now_s=1000), 42)
+
+
 if __name__ == "__main__":
     unittest.main()
