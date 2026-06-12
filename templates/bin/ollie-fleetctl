@@ -24,6 +24,10 @@ import urllib.error
 import urllib.request
 
 VERSION = "1.0.0"
+# Identify ourselves explicitly. The urllib default ("Python-urllib/x.y") is
+# flagged by Cloudflare's managed bot heuristics even with Bot Fight Mode off,
+# which 403s the heartbeat POST before it reaches Fleet. A named UA passes.
+USER_AGENT = "ollie-fleetctl/" + VERSION
 
 HOME = os.path.expanduser("~")
 HERMES_DIR = os.path.join(HOME, ".hermes")
@@ -101,7 +105,8 @@ def orch_request(method, path, body=None, timeout=30):
         ORCH_URL + path, method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Authorization": "Bearer " + orch_key(),
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode()
@@ -119,7 +124,8 @@ def orch_stream(method, path, body, timeout=600):
         ORCH_URL + path, method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Authorization": "Bearer " + orch_key(),
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 "User-Agent": USER_AGENT})
     last = None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -409,7 +415,8 @@ def post_json(url, token, payload, timeout=15):
     req = urllib.request.Request(
         url, method="POST", data=json.dumps(payload).encode(),
         headers={"Authorization": "Bearer " + token,
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status
 
