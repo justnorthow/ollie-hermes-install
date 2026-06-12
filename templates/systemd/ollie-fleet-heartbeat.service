@@ -1,0 +1,17 @@
+[Unit]
+Description=Ollie Fleet heartbeat daemon (control loop + health push)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ollie
+ExecStart=/usr/local/bin/ollie-fleetctl heartbeat-daemon
+# Clean exit (state=disabled) must NOT restart; only crashes restart.
+Restart=on-failure
+RestartSec=10
+# Headroom for a worst-case health collection (hung docker/systemctl).
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

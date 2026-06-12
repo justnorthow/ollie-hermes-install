@@ -18,12 +18,10 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_BIN="${SCRIPT_DIR}/../templates/bin/ollie-fleetctl"
-SRC_SVC="${SCRIPT_DIR}/../templates/systemd/fleet-heartbeat.service"
-SRC_TMR="${SCRIPT_DIR}/../templates/systemd/fleet-heartbeat.timer"
+SRC_SVC="${SCRIPT_DIR}/../templates/systemd/ollie-fleet-heartbeat.service"
 DEST_BIN="${HOME}/.local/bin/ollie-fleetctl"
-UNIT_DIR="${HOME}/.config/systemd/user"
 
-for f in "${SRC_BIN}" "${SRC_SVC}" "${SRC_TMR}"; do
+for f in "${SRC_BIN}" "${SRC_SVC}"; do
   [[ -f "${f}" ]] || { echo "error: ${f} not found" >&2; exit 1; }
 done
 
@@ -37,18 +35,17 @@ echo "    linked /usr/local/bin/ollie-fleetctl"
 echo "==> smoke test"
 ollie-fleetctl version
 
-echo "==> installing fleet-heartbeat systemd user units"
-mkdir -p "${UNIT_DIR}"
-cp "${SRC_SVC}" "${UNIT_DIR}/fleet-heartbeat.service"
-cp "${SRC_TMR}" "${UNIT_DIR}/fleet-heartbeat.timer"
-
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-systemctl --user daemon-reload
-systemctl --user enable --now fleet-heartbeat.timer
-echo "    timer enabled: $(systemctl --user is-active fleet-heartbeat.timer)"
+echo "==> installing ollie-fleet-heartbeat system service"
+sudo cp "${SRC_SVC}" /etc/systemd/system/ollie-fleet-heartbeat.service
+# Retire the old per-user timer if a previous install left one behind.
+systemctl --user disable --now fleet-heartbeat.timer 2>/dev/null || true
+rm -f "${HOME}/.config/systemd/user/fleet-heartbeat.service" "${HOME}/.config/systemd/user/fleet-heartbeat.timer"
+sudo systemctl daemon-reload
+sudo systemctl enable --now ollie-fleet-heartbeat.service
+echo "    service active: $(systemctl is-active ollie-fleet-heartbeat.service)"
 
 echo
 echo "✓ fleetctl installed."
 echo "  verbs: health | agents <action> | restart <target> | logs <service> | update | backup | heartbeat | version"
-echo "  heartbeat is a no-op until enrollment writes ${HOME}/.config/ollie-fleet/.env"
+echo "  heartbeat-daemon is a no-op until enrollment writes ${HOME}/.config/ollie-fleet/.env"
 echo "  (FLEET_URL=... and FLEET_TOKEN=..., mode 600 — the Fleet dashboard does this for you)"
