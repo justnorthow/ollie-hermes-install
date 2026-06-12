@@ -581,11 +581,7 @@ def cmd_heartbeat_daemon(args):
         last_beat_s = result
         if getattr(args, "once", False):
             return
-        # Honour the server's requested control cadence if present, else 60s.
-        env2 = read_env_file(FLEET_ENV)
-        poll = CONTROL_POLL_SECONDS
-        del env2
-        time.sleep(poll)
+        time.sleep(CONTROL_POLL_SECONDS)
 
 
 # -------------------------------------------------------------------- main

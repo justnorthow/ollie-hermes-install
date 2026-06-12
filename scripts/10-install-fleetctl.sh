@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 10-install-fleetctl.sh — install ollie-fleetctl (the verb CLI that Ollie Fleet
-# invokes over SSH) and the fleet-heartbeat systemd user timer.
+# invokes over SSH) and the ollie-fleet-heartbeat systemd system service.
 #
 # Run as: the service user (ollie by default; NOT root). Idempotent.
 # The heartbeat no-ops until ~/.config/ollie-fleet/.env exists (Fleet writes it
