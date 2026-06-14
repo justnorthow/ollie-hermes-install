@@ -673,7 +673,12 @@ def cmd_sync_agents(args):
 
     # --- named profiles (from ~/.hermes/profiles/) ---
     for profile in profiles_on_disk:
-        gw_port = get_service_port("hermes-gateway-%s.service" % profile)
+        gw_svc = "hermes-gateway-%s.service" % profile
+        gw_port = get_service_port(gw_svc)
+        # Native Hermes units read port from config.yaml (no --port in ExecStart).
+        # Fall back to config.yaml when the service is active but port isn't in the unit.
+        if gw_port is None and is_service_active(gw_svc):
+            gw_port = read_profile_gateway_port(profile)
         dash_port = get_service_port("hermes-dashboard-%s.service" % profile)
 
         # Create missing gateway service
