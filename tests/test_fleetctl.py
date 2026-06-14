@@ -68,6 +68,25 @@ class TestScaffold(unittest.TestCase):
         self.assertEqual(rc, 127)
         self.assertIn("not found", err)
 
+    def test_run_cmd_makes_local_bin_resolvable(self):
+        # `hermes` lives in ~/.local/bin, which a non-interactive SSH shell does
+        # NOT have on PATH. run_cmd must prepend it so `update hermes` (and any
+        # other ~/.local/bin tool) resolves instead of failing "hermes: not found".
+        import sys
+        mod = load_fleetctl()
+        local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
+        # Simulate the non-interactive SSH shell: ~/.local/bin absent from PATH.
+        original = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(
+            p for p in original.split(os.pathsep) if p and p != local_bin)
+        try:
+            rc, out, err = mod.run_cmd(
+                [sys.executable, "-c", "import os; print(os.environ.get('PATH', ''))"])
+        finally:
+            os.environ["PATH"] = original
+        self.assertEqual(rc, 0, err)
+        self.assertIn(local_bin, out.strip().split(os.pathsep))
+
     def test_fail_emits_error_json_and_exit_code(self):
         mod = load_fleetctl()
         buf = io.StringIO()

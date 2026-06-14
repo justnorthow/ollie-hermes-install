@@ -35,6 +35,10 @@ MAX_INTERVAL_MINUTES = 720
 DEFAULT_INTERVAL_MINUTES = 30
 
 HOME = os.path.expanduser("~")
+# `hermes` installs to ~/.local/bin, which a non-interactive SSH shell does not
+# put on PATH (it never sources ~/.bashrc). run_cmd prepends this so verbs like
+# `update hermes` can find the binary instead of failing "hermes: not found".
+LOCAL_BIN = os.path.join(HOME, ".local", "bin")
 HERMES_DIR = os.path.join(HOME, ".hermes")
 PROFILES_DIR = os.path.join(HERMES_DIR, "profiles")
 DEFAULT_GATEWAY_PORT = 8642
@@ -75,9 +79,11 @@ def event(**kw):
 
 def run_cmd(args, timeout=30, input_text=None):
     """Run a command; return (rc, stdout, stderr). Never raises on non-zero."""
+    env = dict(os.environ)
+    env["PATH"] = LOCAL_BIN + os.pathsep + env.get("PATH", "")
     try:
         p = subprocess.run(args, capture_output=True, text=True,
-                           timeout=timeout, input=input_text)
+                           timeout=timeout, input=input_text, env=env)
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
         return 127, "", "%s: not found" % args[0]
