@@ -39,6 +39,10 @@ HERMES_DIR = os.path.join(HOME, ".hermes")
 PROFILES_DIR = os.path.join(HERMES_DIR, "profiles")
 DEFAULT_GATEWAY_PORT = 8642
 DEFAULT_DASHBOARD_PORT = 9119
+GATEWAY_BASE_PORT = 8643    # first named-profile gateway port
+DASHBOARD_BASE_PORT = 9121  # first named-profile dashboard port (9120 = cortex)
+VENV_PYTHON = os.path.join(os.path.expanduser("~"), ".hermes", "hermes-agent", "venv", "bin", "python")
+SYSTEMD_USER_DIR = os.path.join(os.path.expanduser("~"), ".config", "systemd", "user")
 STACK_DIR = os.environ.get("HERMES_STACK_DIR", os.path.join(HOME, "hermes-stack"))
 COMPOSE_FILE = os.path.join(STACK_DIR, "docker-compose.yml")
 INSTALL_DIR = os.environ.get("OLLIE_INSTALL_DIR", os.path.join(HOME, "ollie-hermes-install"))
@@ -489,16 +493,171 @@ def write_stack_env_key(key, value):
     os.replace(tmp, env_path)
 
 
+def read_profile_gateway_port(profile):
+    """Read gateway.port from the profile's config.yaml. Returns None if absent."""
+    config_path = os.path.join(PROFILES_DIR, profile, "config.yaml")
+    try:
+        with open(config_path) as f:
+            in_gateway = False
+            for line in f:
+                stripped = line.strip()
+                if stripped == "gateway:":
+                    in_gateway = True
+                    continue
+                if in_gateway:
+                    if stripped.startswith("port:"):
+                        try:
+                            return int(stripped.split(":", 1)[1].strip())
+                        except ValueError:
+                            pass
+                    if line and not line[0].isspace():
+                        in_gateway = False
+    except OSError:
+        pass
+    return None
+
+
+def scan_used_ports(service_glob):
+    """Return the set of ports used by all units matching a glob (e.g. hermes-gateway-*.service)."""
+    used = set()
+    if os.path.isdir(SYSTEMD_USER_DIR):
+        for fname in os.listdir(SYSTEMD_USER_DIR):
+            if fname.endswith(".service") and (
+                fname.startswith("hermes-gateway-") if "gateway" in service_glob
+                else fname.startswith("hermes-dashboard-")
+            ):
+                p = get_service_port(fname)
+                if p:
+                    used.add(p)
+    return used
+
+
+def _next_free_port(base, used):
+    p = base
+    while p in used:
+        p += 1
+    return p
+
+
+def _create_gateway_unit(profile):
+    """Create, enable and start a hermes-gateway-{profile}.service. Returns port or None."""
+    unit_name = "hermes-gateway-%s.service" % profile
+    unit_path = os.path.join(SYSTEMD_USER_DIR, unit_name)
+    if os.path.exists(unit_path):
+        return None  # unit file already exists but get_service_port failed — leave it alone
+
+    # Port: read from profile config.yaml first, then auto-assign
+    port = read_profile_gateway_port(profile)
+    if port is None:
+        used = scan_used_ports("gateway") | {DEFAULT_GATEWAY_PORT}
+        port = _next_free_port(GATEWAY_BASE_PORT, used)
+
+    venv_bin = os.path.dirname(VENV_PYTHON)
+    node_bin = os.path.join(HERMES_DIR, "node", "bin")
+    node_modules_bin = os.path.join(HERMES_DIR, "hermes-agent", "node_modules", ".bin")
+    local_bin = os.path.join(HOME, ".local", "bin")
+    path_env = ":".join(filter(os.path.isdir, [venv_bin, node_modules_bin, node_bin, local_bin,
+                                                "/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
+                                                "/usr/bin", "/sbin", "/bin"]))
+
+    profile_dir = os.path.join(PROFILES_DIR, profile)
+    unit = (
+        "[Unit]\n"
+        "Description=Hermes Agent Gateway - %s\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "StartLimitIntervalSec=0\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "ExecStart=%s -m hermes_cli.main --profile %s gateway run\n"
+        "WorkingDirectory=%s\n"
+        'Environment="PATH=%s"\n'
+        'Environment="VIRTUAL_ENV=%s"\n'
+        'Environment="HERMES_HOME=%s"\n'
+        "Restart=always\n"
+        "RestartSec=5\n"
+        "RestartForceExitStatus=75\n"
+        "KillMode=mixed\n"
+        "KillSignal=SIGTERM\n"
+        "ExecReload=/bin/kill -USR1 $MAINPID\n"
+        "TimeoutStopSec=210\n"
+        "StandardOutput=journal\n"
+        "StandardError=journal\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    ) % (profile, VENV_PYTHON, profile, profile_dir, path_env,
+         os.path.dirname(venv_bin), profile_dir)
+
+    os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
+    with open(unit_path, "w") as f:
+        f.write(unit)
+
+    run_cmd(["systemctl", "--user", "daemon-reload"])
+    rc, _, _ = run_cmd(["systemctl", "--user", "enable", "--now", unit_name], timeout=60)
+    if rc != 0:
+        try:
+            os.unlink(unit_path)
+        except OSError:
+            pass
+        return None
+    return port
+
+
+def _create_dashboard_unit(profile):
+    """Create, enable and start a hermes-dashboard-{profile}.service. Returns port or None."""
+    unit_name = "hermes-dashboard-%s.service" % profile
+    unit_path = os.path.join(SYSTEMD_USER_DIR, unit_name)
+    if os.path.exists(unit_path):
+        return get_service_port(unit_name)  # already exists — return its port
+
+    used = scan_used_ports("dashboard") | {DEFAULT_DASHBOARD_PORT}
+    port = _next_free_port(DASHBOARD_BASE_PORT, used)
+
+    hermes_shim = os.path.join(HOME, ".local", "bin", "hermes")
+    unit = (
+        "[Unit]\n"
+        "Description=Hermes dashboard for %s\n"
+        "After=network.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "Environment=PATH=%s/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        "ExecStart=%s -p %s dashboard --host 0.0.0.0 --port %d --insecure --no-open\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
+        "StartLimitBurst=10\n"
+        "StartLimitIntervalSec=60\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    ) % (profile, HOME, hermes_shim, profile, port)
+
+    os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
+    with open(unit_path, "w") as f:
+        f.write(unit)
+
+    run_cmd(["systemctl", "--user", "daemon-reload"])
+    rc, _, _ = run_cmd(["systemctl", "--user", "enable", "--now", unit_name], timeout=60)
+    if rc != 0:
+        try:
+            os.unlink(unit_path)
+        except OSError:
+            pass
+        return None
+    return port
+
+
 def cmd_sync_agents(args):
-    """Reconcile AGENTS_JSON with running Hermes profiles and gateway services.
+    """Reconcile AGENTS_JSON with running Hermes profiles and gateway/dashboard services.
 
     Ground truth: ~/.hermes/profiles/ (named profiles) + hermes-gateway.service
-    (default profile). For each profile missing from AGENTS_JSON, reads the port
-    from the systemd unit and adds an entry. Flags profiles with no gateway
-    service and AGENTS_JSON entries whose profile directory is gone. Writes
-    AGENTS_JSON and restarts the orchestrator if anything changed.
+    (default profile). Adds missing AGENTS_JSON entries, optionally creates missing
+    systemd units (--fix-gateways), and flags stale entries.
     """
     dry_run = getattr(args, "dry_run", False)
+    fix = getattr(args, "fix_gateways", False)
     profiles_on_disk = list_profiles()
     current = read_agents_json()
     agents_by_id = {a["id"]: a for a in current}
@@ -506,24 +665,52 @@ def cmd_sync_agents(args):
 
     added = []
     unchanged = []
-    needs_gateway = []  # profile dir exists but no gateway service
-    stale = []          # in AGENTS_JSON but profile dir gone
+    needs_gateway = []   # profile dir exists but no gateway service
+    needs_dashboard = [] # gateway ok but no dashboard service
+    fixed_gateway = []   # gateway created by --fix-gateways
+    fixed_dashboard = [] # dashboard created by --fix-gateways
+    stale = []           # in AGENTS_JSON but profile dir gone
 
     # --- named profiles (from ~/.hermes/profiles/) ---
     for profile in profiles_on_disk:
+        gw_port = get_service_port("hermes-gateway-%s.service" % profile)
+        dash_port = get_service_port("hermes-dashboard-%s.service" % profile)
+
+        # Create missing gateway service
+        if gw_port is None:
+            if fix and not dry_run:
+                gw_port = _create_gateway_unit(profile)
+                if gw_port is not None:
+                    fixed_gateway.append(profile)
+                else:
+                    needs_gateway.append(profile)
+            else:
+                needs_gateway.append(profile)
+
+        # Create missing dashboard service (independently of gateway)
+        if gw_port is not None and dash_port is None:
+            if fix and not dry_run:
+                dash_port = _create_dashboard_unit(profile)
+                if dash_port is not None:
+                    fixed_dashboard.append(profile)
+                else:
+                    needs_dashboard.append(profile)
+            else:
+                needs_dashboard.append(profile)
+
+        if gw_port is None:
+            continue  # can't add to AGENTS_JSON without a gateway
+
         if profile in agents_by_id:
+            # Already in AGENTS_JSON — patch dashboardUrl if we just created the dashboard
+            if dash_port and not agents_by_id[profile].get("dashboardUrl"):
+                for entry in result:
+                    if entry["id"] == profile:
+                        entry["dashboardUrl"] = "http://host.docker.internal:%d" % dash_port
+                        break
             unchanged.append(profile)
             continue
-        gw_service = "hermes-gateway-%s.service" % profile
-        gw_port = get_service_port(gw_service)
-        if gw_port is None:
-            needs_gateway.append({
-                "profile": profile,
-                "hint": ("create and enable a hermes-gateway-%s.service unit "
-                         "with ExecStart containing --port <port>") % profile,
-            })
-            continue
-        dash_port = get_service_port("hermes-dashboard-%s.service" % profile)
+
         entry = {
             "id": profile,
             "name": profile,
@@ -552,8 +739,9 @@ def cmd_sync_agents(args):
         if agent["id"] not in disk_ids:
             stale.append(agent["id"])
 
+    changed = bool(added or fixed_gateway or fixed_dashboard)
     restarted = False
-    if added and not dry_run:
+    if changed and not dry_run:
         write_stack_env_key("AGENTS_JSON",
                             json.dumps(result, separators=(",", ":")))
         rc, _, _ = run_cmd(["systemctl", "--user", "restart",
@@ -562,8 +750,11 @@ def cmd_sync_agents(args):
 
     emit({
         "added": added,
+        "fixed_gateway": fixed_gateway,
+        "fixed_dashboard": fixed_dashboard,
         "unchanged": unchanged,
         "needs_gateway": needs_gateway,
+        "needs_dashboard": needs_dashboard,
         "stale": stale,
         "orchestrator_restarted": restarted,
         "dry_run": dry_run,
@@ -763,6 +954,8 @@ def main(argv=None):
                              "updates ~/hermes-stack/.env and restarts orchestrator")
     sa.add_argument("--dry-run", action="store_true",
                     help="show what would change without writing anything")
+    sa.add_argument("--fix-gateways", action="store_true",
+                    help="create missing gateway/dashboard systemd units for profiles on disk")
     sub.add_parser("heartbeat", help="POST health to the fleet dashboard (no-op until enrolled)")
     d = sub.add_parser("heartbeat-daemon", help="run the heartbeat control loop (systemd service)")
     d.add_argument("--once", action="store_true", help="run a single tick and exit (debug/test)")
