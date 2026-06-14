@@ -103,7 +103,7 @@ fi
 
 echo
 echo "==> step 3: restart any running gateways so the patches load"
-for unit in $(systemctl --user list-units --no-legend --plain 'hermes-gateway*' 2>/dev/null | awk '{print $1}'); do
+for unit in $(systemctl --user list-units --no-legend --plain --type=service --state=active 'hermes-gateway*' 2>/dev/null | awk '{print $1}'); do
   echo "    restarting ${unit}"
   systemctl --user restart "${unit}"
 done

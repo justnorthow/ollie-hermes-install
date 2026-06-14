@@ -69,7 +69,7 @@ PY
   set -e
   if [[ "${rc}" -eq 0 ]]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    for unit in $(systemctl --user list-units --no-legend --plain 'hermes-gateway*' 2>/dev/null | awk '{print $1}'); do
+    for unit in $(systemctl --user list-units --no-legend --plain --type=service --state=active 'hermes-gateway*' 2>/dev/null | awk '{print $1}'); do
       systemctl --user restart "${unit}" 2>/dev/null && echo "    restarted ${unit}" || true
     done
   elif [[ "${rc}" -ne 10 ]]; then
