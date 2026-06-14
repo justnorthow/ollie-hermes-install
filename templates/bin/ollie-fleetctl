@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 # Identify ourselves explicitly. The urllib default ("Python-urllib/x.y") is
 # flagged by Cloudflare's managed bot heuristics even with Bot Fight Mode off,
 # which 403s the heartbeat POST before it reaches Fleet. A named UA passes.
@@ -37,6 +37,8 @@ DEFAULT_INTERVAL_MINUTES = 30
 HOME = os.path.expanduser("~")
 HERMES_DIR = os.path.join(HOME, ".hermes")
 PROFILES_DIR = os.path.join(HERMES_DIR, "profiles")
+DEFAULT_GATEWAY_PORT = 8642
+DEFAULT_DASHBOARD_PORT = 9119
 STACK_DIR = os.environ.get("HERMES_STACK_DIR", os.path.join(HOME, "hermes-stack"))
 COMPOSE_FILE = os.path.join(STACK_DIR, "docker-compose.yml")
 INSTALL_DIR = os.environ.get("OLLIE_INSTALL_DIR", os.path.join(HOME, "ollie-hermes-install"))
@@ -421,6 +423,153 @@ def cmd_update(args):
     event(event="done", component=component)
 
 
+# ----------------------------------------------------------- sync-agents helpers
+
+def list_profiles():
+    """Named profiles from ~/.hermes/profiles/ (excludes 'default')."""
+    if not os.path.isdir(PROFILES_DIR):
+        return []
+    return sorted(d for d in os.listdir(PROFILES_DIR)
+                  if os.path.isdir(os.path.join(PROFILES_DIR, d)))
+
+
+def get_service_port(service_name):
+    """Parse --port N from a systemd unit's ExecStart. Returns None if absent."""
+    rc, out, _ = run_cmd(["systemctl", "--user", "cat", service_name])
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        if not line.startswith("ExecStart="):
+            continue
+        parts = line.split()
+        for i, token in enumerate(parts):
+            if token == "--port" and i + 1 < len(parts):
+                try:
+                    return int(parts[i + 1])
+                except ValueError:
+                    pass
+    return None
+
+
+def is_service_active(service_name):
+    rc, out, _ = run_cmd(["systemctl", "--user", "is-active", service_name])
+    return rc == 0 and out.strip() == "active"
+
+
+def read_agents_json():
+    raw = read_env_file(os.path.join(STACK_DIR, ".env")).get("AGENTS_JSON", "[]")
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return []
+
+
+def write_stack_env_key(key, value):
+    """Update a single KEY=value line in ~/hermes-stack/.env atomically."""
+    env_path = os.path.join(STACK_DIR, ".env")
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = []
+    new_line = "%s=%s\n" % (key, value)
+    replaced = False
+    new_lines = []
+    for line in lines:
+        if line.startswith("%s=" % key):
+            new_lines.append(new_line)
+            replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        new_lines.append(new_line)
+    tmp = env_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+    os.replace(tmp, env_path)
+
+
+def cmd_sync_agents(args):
+    """Reconcile AGENTS_JSON with running Hermes profiles and gateway services.
+
+    Ground truth: ~/.hermes/profiles/ (named profiles) + hermes-gateway.service
+    (default profile). For each profile missing from AGENTS_JSON, reads the port
+    from the systemd unit and adds an entry. Flags profiles with no gateway
+    service and AGENTS_JSON entries whose profile directory is gone. Writes
+    AGENTS_JSON and restarts the orchestrator if anything changed.
+    """
+    dry_run = getattr(args, "dry_run", False)
+    profiles_on_disk = list_profiles()
+    current = read_agents_json()
+    agents_by_id = {a["id"]: a for a in current}
+    result = list(current)
+
+    added = []
+    unchanged = []
+    needs_gateway = []  # profile dir exists but no gateway service
+    stale = []          # in AGENTS_JSON but profile dir gone
+
+    # --- named profiles (from ~/.hermes/profiles/) ---
+    for profile in profiles_on_disk:
+        if profile in agents_by_id:
+            unchanged.append(profile)
+            continue
+        gw_service = "hermes-gateway-%s.service" % profile
+        gw_port = get_service_port(gw_service)
+        if gw_port is None:
+            needs_gateway.append({
+                "profile": profile,
+                "hint": ("create and enable a hermes-gateway-%s.service unit "
+                         "with ExecStart containing --port <port>") % profile,
+            })
+            continue
+        dash_port = get_service_port("hermes-dashboard-%s.service" % profile)
+        entry = {
+            "id": profile,
+            "name": profile,
+            "gatewayUrl": "http://host.docker.internal:%d" % gw_port,
+        }
+        if dash_port:
+            entry["dashboardUrl"] = "http://host.docker.internal:%d" % dash_port
+        result.append(entry)
+        added.append(profile)
+
+    # --- default profile (hermes-gateway.service, no profiles/ entry) ---
+    if "default" not in agents_by_id and is_service_active("hermes-gateway.service"):
+        gw_port = get_service_port("hermes-gateway.service") or DEFAULT_GATEWAY_PORT
+        dash_port = get_service_port("hermes-dashboard.service") or DEFAULT_DASHBOARD_PORT
+        result.insert(0, {
+            "id": "default",
+            "name": "Ollie",
+            "gatewayUrl": "http://host.docker.internal:%d" % gw_port,
+            "dashboardUrl": "http://host.docker.internal:%d" % dash_port,
+        })
+        added.insert(0, "default")
+
+    # --- stale entries (id in AGENTS_JSON but no profile dir on disk) ---
+    disk_ids = set(profiles_on_disk) | {"default"}
+    for agent in current:
+        if agent["id"] not in disk_ids:
+            stale.append(agent["id"])
+
+    restarted = False
+    if added and not dry_run:
+        write_stack_env_key("AGENTS_JSON",
+                            json.dumps(result, separators=(",", ":")))
+        rc, _, _ = run_cmd(["systemctl", "--user", "restart",
+                            "ollie-orchestrator"], timeout=30)
+        restarted = rc == 0
+
+    emit({
+        "added": added,
+        "unchanged": unchanged,
+        "needs_gateway": needs_gateway,
+        "stale": stale,
+        "orchestrator_restarted": restarted,
+        "dry_run": dry_run,
+    })
+
+
 def post_json(url, token, payload, timeout=15):
     """POST JSON with a bearer token -> HTTP status (raises on network or HTTP error)."""
     req = urllib.request.Request(
@@ -609,6 +758,11 @@ def main(argv=None):
     u = sub.add_parser("update", help="update stack components (streams NDJSON progress)")
     u.add_argument("component", nargs="?", default="all",
                    choices=["hermes", "stack", "orchestrator", "all"])
+    sa = sub.add_parser("sync-agents",
+                        help="reconcile AGENTS_JSON with running Hermes profiles; "
+                             "updates ~/hermes-stack/.env and restarts orchestrator")
+    sa.add_argument("--dry-run", action="store_true",
+                    help="show what would change without writing anything")
     sub.add_parser("heartbeat", help="POST health to the fleet dashboard (no-op until enrolled)")
     d = sub.add_parser("heartbeat-daemon", help="run the heartbeat control loop (systemd service)")
     d.add_argument("--once", action="store_true", help="run a single tick and exit (debug/test)")
@@ -641,6 +795,8 @@ def main(argv=None):
             cmd_heartbeat(args)
         elif args.verb == "heartbeat-daemon":
             cmd_heartbeat_daemon(args)
+        elif args.verb == "sync-agents":
+            cmd_sync_agents(args)
         elif args.verb == "backup":
             cmd_backup(args)
     except SystemExit:
