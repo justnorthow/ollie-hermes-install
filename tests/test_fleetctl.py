@@ -9,6 +9,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -533,6 +534,87 @@ class TestDaemonTick(unittest.TestCase):
         mod.get_control = lambda url, token: None  # network blip
         env = {"FLEET_URL": "https://f", "FLEET_TOKEN": "t"}
         self.assertEqual(mod.daemon_tick(env, last_beat_s=42, now_s=1000), 42)
+
+
+class TestBrainBackup(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def test_backup_brain_refuses_tty(self):
+        # When stdout is a terminal, refuse (the tarball would corrupt the TTY).
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+        buf = TTY()
+        code = 0
+        try:
+            with redirect_stdout(buf):
+                self.mod.main(["backup-brain"])
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 1
+        self.assertEqual(code, 2)
+
+    def test_backup_brain_snapshots_cortex_db_and_tars_cortex(self):
+        # The live cortex.db lives in the cortex-data Docker volume, not under
+        # ~/.hermes/cortex. backup-brain must snapshot it via the container and
+        # include a `cortex/` entry in the archive.
+        calls = []
+
+        def fake_run(args, timeout=30, input_text=None):
+            calls.append(args)
+            if args[:3] == ["docker", "inspect", "-f"]:
+                return (0, "justnorthow/ollie-hermes-cortex:latest\n", "")
+            if args[:2] == ["docker", "cp"]:
+                dest = args[3]
+                if dest.endswith("cortex.db"):
+                    open(dest, "w").close()                       # simulate db copy
+                else:
+                    os.makedirs(os.path.join(dest, "brain"), exist_ok=True)  # brain copy
+            return (0, "", "")
+        self.mod.run_cmd = fake_run
+        tar_argv = {}
+
+        def fake_call(argv, stdout=None):
+            tar_argv["v"] = argv
+            return 0
+        code = 0
+        with mock.patch.object(self.mod.subprocess, "call", fake_call):
+            try:
+                with redirect_stdout(io.StringIO()):
+                    self.mod.main(["backup-brain"])
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 1
+        self.assertEqual(code, 0)
+        self.assertTrue(any(a[:3] == ["docker", "exec", "cortex"]
+                            and "sqlite3" in " ".join(a) for a in calls),
+                        "expected an online sqlite snapshot of cortex.db")
+        self.assertIn("cortex", tar_argv["v"])  # archive carries a cortex/ tree
+
+    def test_restore_brain_writes_volume_and_restarts_cortex(self):
+        calls = []
+
+        def fake_run(args, timeout=30, input_text=None):
+            calls.append(args)
+            if args[:3] == ["docker", "inspect", "-f"]:
+                return (0, "justnorthow/ollie-hermes-cortex:latest\n", "")
+            return (0, "", "")
+        self.mod.run_cmd = fake_run
+
+        def fake_call(argv, stdin=None, stdout=None):
+            if argv[:2] == ["tar", "xzf"]:
+                staging = argv[4]
+                os.makedirs(os.path.join(staging, "cortex"))
+                open(os.path.join(staging, "cortex", "cortex.db"), "w").close()
+            return 0
+        with mock.patch.object(self.mod.subprocess, "call", fake_call):
+            code, out = run_main(self.mod, ["restore-brain"])
+        self.assertEqual(code, 0)
+        self.assertTrue(any(a[:2] == ["docker", "stop"] for a in calls), "should stop cortex")
+        self.assertTrue(any(a[:2] == ["docker", "start"] for a in calls), "should restart cortex")
+        # stop precedes start
+        order = [a[1] for a in calls if a[:1] == ["docker"] and len(a) > 1 and a[1] in ("stop", "start")]
+        self.assertEqual(order, ["stop", "start"])
+        self.assertEqual(out[-1], {"restored": True, "cortexRestarted": True})
 
 
 if __name__ == "__main__":

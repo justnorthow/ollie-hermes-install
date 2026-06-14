@@ -49,6 +49,9 @@ VENV_PYTHON = os.path.join(os.path.expanduser("~"), ".hermes", "hermes-agent", "
 SYSTEMD_USER_DIR = os.path.join(os.path.expanduser("~"), ".config", "systemd", "user")
 STACK_DIR = os.environ.get("HERMES_STACK_DIR", os.path.join(HOME, "hermes-stack"))
 COMPOSE_FILE = os.path.join(STACK_DIR, "docker-compose.yml")
+# Cortex stores its memory (cortex.db + brain/) in this named Docker volume at
+# /data — NOT under ~/.hermes/cortex. brain-memory backup/restore target it.
+CORTEX_VOLUME = os.environ.get("CORTEX_VOLUME", "hermes-stack_cortex-data")
 INSTALL_DIR = os.environ.get("OLLIE_INSTALL_DIR", os.path.join(HOME, "ollie-hermes-install"))
 ORCH_DIR = os.path.join(HOME, "ollie-hermes-orchestrator")
 ORCH_URL = os.environ.get("ORCH_URL", "http://localhost:9123")
@@ -879,6 +882,106 @@ def cmd_backup(args):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _docker_image_of(container):
+    """Image ref backing a container, or "" if the container is absent."""
+    rc, out, _ = run_cmd(["docker", "inspect", "-f", "{{.Config.Image}}", container])
+    return out.strip() if rc == 0 else ""
+
+
+def cmd_backup_brain(args):
+    """Stream a tarball of cortex memory (cortex.db + brain/) and agent profiles.
+
+    Cortex keeps its data in the cortex-data Docker volume (/data), so a plain
+    host tar of ~/.hermes/cortex misses the live cortex.db. Snapshot the db via
+    sqlite's online-backup API and copy brain/ out of the running container. Fall
+    back to host ~/.hermes/cortex when no cortex container exists (host-native).
+    Archive layout (relative): cortex/cortex.db, cortex/brain/..., profiles/...
+    """
+    if sys.stdout.isatty():
+        fail("backup-brain streams a tarball; redirect stdout "
+             "(e.g. ollie-fleetctl backup-brain > brain.tgz)", 2)
+    staging = tempfile.mkdtemp(prefix="fleet-brain-")
+    try:
+        cortex_dir = os.path.join(staging, "cortex")
+        os.makedirs(cortex_dir)
+        if _docker_image_of("cortex"):
+            # Consistent cortex.db snapshot (best-effort; container may be down).
+            rc, _, _ = run_cmd(["docker", "exec", "cortex", "python", "-c",
+                                "import sqlite3; s=sqlite3.connect('/data/cortex.db'); "
+                                "d=sqlite3.connect('/data/cortex-snapshot.db'); "
+                                "s.backup(d); d.close(); s.close()"], timeout=120)
+            if rc == 0:
+                run_cmd(["docker", "cp", "cortex:/data/cortex-snapshot.db",
+                         os.path.join(cortex_dir, "cortex.db")], timeout=120)
+                run_cmd(["docker", "exec", "cortex", "rm", "-f",
+                         "/data/cortex-snapshot.db"], timeout=30)
+            # brain markdown from the volume (best-effort).
+            run_cmd(["docker", "cp", "cortex:/data/brain", cortex_dir], timeout=120)
+        tar = ["tar", "czf", "-"]
+        have = False
+        if os.path.isdir(cortex_dir) and os.listdir(cortex_dir):
+            tar += ["-C", staging, "cortex"]
+            have = True
+        elif os.path.isdir(os.path.join(HERMES_DIR, "cortex")):
+            tar += ["-C", HERMES_DIR, "cortex"]      # host-native fallback
+            have = True
+        if os.path.isdir(PROFILES_DIR):
+            tar += ["-C", HERMES_DIR, "profiles"]
+            have = True
+        if not have:
+            fail("nothing to back up (no cortex data or profiles found)")
+        rc = subprocess.call(tar, stdout=sys.stdout.buffer
+                             if hasattr(sys.stdout, "buffer") else sys.stdout)
+        sys.exit(rc)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def cmd_restore_brain(args):
+    """Restore a backup-brain tarball (read from stdin): profiles into
+    ~/.hermes/profiles, and cortex memory (cortex.db + brain/) back into the
+    cortex-data volume, then restart cortex so it reloads the restored db."""
+    staging = tempfile.mkdtemp(prefix="fleet-brain-restore-")
+    try:
+        rc = subprocess.call(["tar", "xzf", "-", "-C", staging],
+                             stdin=sys.stdin.buffer
+                             if hasattr(sys.stdin, "buffer") else sys.stdin)
+        if rc != 0:
+            fail("failed to unpack archive (tar rc=%d)" % rc)
+        prof_src = os.path.join(staging, "profiles")
+        if os.path.isdir(prof_src):
+            if not os.path.isdir(PROFILES_DIR):
+                os.makedirs(PROFILES_DIR)
+            for entry in sorted(os.listdir(prof_src)):
+                run_cmd(["cp", "-a", os.path.join(prof_src, entry),
+                         PROFILES_DIR + os.sep], timeout=120)
+        cortex_src = os.path.join(staging, "cortex")
+        restarted = False
+        if os.path.isdir(cortex_src) and os.listdir(cortex_src):
+            image = _docker_image_of("cortex")
+            if image:
+                # Stop cortex, rewrite the volume from a helper container (works
+                # whether cortex was up or down; preserves /data ownership and
+                # clears stale WAL/SHM), then restart so the new db is loaded.
+                run_cmd(["docker", "stop", "cortex"], timeout=60)
+                run_cmd(["docker", "run", "--rm",
+                         "-v", CORTEX_VOLUME + ":/data",
+                         "-v", cortex_src + ":/in:ro",
+                         "--entrypoint", "sh", image, "-c",
+                         'OW=$(stat -c "%u:%g" /data); '
+                         'rm -f /data/cortex.db /data/cortex.db-wal /data/cortex.db-shm; '
+                         '[ -f /in/cortex.db ] && cp /in/cortex.db /data/cortex.db; '
+                         'rm -rf /data/brain; [ -d /in/brain ] && cp -a /in/brain /data/brain; '
+                         'chown -R "$OW" /data'], timeout=300)
+                rc, _, _ = run_cmd(["docker", "start", "cortex"], timeout=120)
+                restarted = rc == 0
+            else:
+                run_cmd(["cp", "-a", cortex_src, HERMES_DIR + os.sep], timeout=120)
+        emit({"restored": True, "cortexRestarted": restarted})
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def cmd_heartbeat(args):
     env = read_env_file(FLEET_ENV)
     url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
@@ -975,6 +1078,10 @@ def main(argv=None):
     d.add_argument("--once", action="store_true", help="run a single tick and exit (debug/test)")
     sub.add_parser("backup", help="stream a tarball of state DBs, configs, personas, "
                                   "and auth.json (contains live OAuth tokens — store securely)")
+    sub.add_parser("backup-brain", help="stream a tarball of cortex memory "
+                                        "(cortex.db + brain, from the Docker volume) and agent profiles")
+    sub.add_parser("restore-brain", help="restore a backup-brain tarball from stdin "
+                                         "(rewrites the cortex volume and restarts cortex)")
 
     args = p.parse_args(argv)
 
@@ -1006,6 +1113,10 @@ def main(argv=None):
             cmd_sync_agents(args)
         elif args.verb == "backup":
             cmd_backup(args)
+        elif args.verb == "backup-brain":
+            cmd_backup_brain(args)
+        elif args.verb == "restore-brain":
+            cmd_restore_brain(args)
     except SystemExit:
         raise
     except Exception as e:
