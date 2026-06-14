@@ -335,11 +335,11 @@ class TestUpdateHeartbeat(unittest.TestCase):
         code, out = run_main(self.mod, ["update", "hermes"])
         self.assertEqual(code, 0)
         steps = [e["step"] for e in out if e.get("event") == "progress"]
-        self.assertEqual(steps, ["git-pull-install-repo", "hermes-update",
-                                 "reinstall-cortex-plugin", "repatch-cron-brain",
-                                 "reinstall-souls"])
+        self.assertEqual(steps, ["git-pull-install-repo", "reinstall-fleetctl",
+                                 "hermes-update", "reinstall-cortex-plugin",
+                                 "repatch-cron-brain", "reinstall-souls"])
         self.assertEqual(out[-1], {"event": "done", "component": "hermes"})
-        self.assertEqual(seen[1], ["hermes", "update"])
+        self.assertEqual(seen[2], ["hermes", "update"])
 
     def test_update_stops_and_errors_on_failed_step(self):
         calls = {"n": 0}
