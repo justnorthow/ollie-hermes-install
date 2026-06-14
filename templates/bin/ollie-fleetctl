@@ -469,6 +469,34 @@ def is_service_active(service_name):
     return rc == 0 and out.strip() == "active"
 
 
+def get_active_service_listening_port(service_name):
+    """Find the TCP port a running service is listening on via ss + MainPID."""
+    rc, out, _ = run_cmd(["systemctl", "--user", "show", "--property=MainPID", service_name])
+    if rc != 0:
+        return None
+    pid = None
+    for line in out.splitlines():
+        if line.startswith("MainPID="):
+            try:
+                pid = int(line.split("=", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+    if not pid:
+        return None
+    _, ss_out, _ = run_cmd(["ss", "-tlnp"])
+    for line in ss_out.splitlines():
+        if "pid=%d," % pid in line:
+            parts = line.split()
+            for part in parts:
+                if ":" in part and not part.endswith(":*"):
+                    port_str = part.rsplit(":", 1)[-1]
+                    try:
+                        return int(port_str)
+                    except ValueError:
+                        pass
+    return None
+
+
 def read_agents_json():
     raw = read_env_file(os.path.join(STACK_DIR, ".env")).get("AGENTS_JSON", "[]")
     try:
@@ -688,9 +716,11 @@ def cmd_sync_agents(args):
         gw_svc = "hermes-gateway-%s.service" % profile
         gw_port = get_service_port(gw_svc)
         # Native Hermes units configure port via config.yaml (no --port in ExecStart).
-        # Always fall back to config.yaml when ExecStart parse returns None.
+        # Fall back to config.yaml, then to ss MainPID lookup for running services.
         if gw_port is None:
             gw_port = read_profile_gateway_port(profile)
+        if gw_port is None and is_service_active(gw_svc):
+            gw_port = get_active_service_listening_port(gw_svc)
         dash_port = get_service_port("hermes-dashboard-%s.service" % profile)
 
         # Create missing gateway service
