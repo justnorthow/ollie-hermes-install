@@ -66,7 +66,7 @@ hermes memory status 2>&1 | head -5 || true
 
 echo "==> step 3: restart all running Hermes gateways so they pick up the provider"
 # Iterate every gateway unit on the box (default + per-profile).
-for unit in $(systemctl --user list-units --no-legend --plain --type=service 'hermes-gateway*' | awk '{print $1}'); do
+for unit in $(systemctl --user list-units --no-legend --plain --type=service --state=active 'hermes-gateway*' | awk '{print $1}'); do
   echo "    restarting ${unit}"
   systemctl --user restart "${unit}"
 done
