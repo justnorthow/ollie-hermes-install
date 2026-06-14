@@ -550,7 +550,10 @@ def _create_gateway_unit(profile):
     unit_name = "hermes-gateway-%s.service" % profile
     unit_path = os.path.join(SYSTEMD_USER_DIR, unit_name)
     if os.path.exists(unit_path):
-        return None  # unit file already exists but get_service_port failed — leave it alone
+        # Unit file exists but service isn't running — try to enable/start it.
+        run_cmd(["systemctl", "--user", "daemon-reload"])
+        run_cmd(["systemctl", "--user", "enable", "--now", unit_name], timeout=60)
+        return read_profile_gateway_port(profile)
 
     # Port: read from profile config.yaml first, then auto-assign
     port = read_profile_gateway_port(profile)
@@ -681,9 +684,9 @@ def cmd_sync_agents(args):
     for profile in profiles_on_disk:
         gw_svc = "hermes-gateway-%s.service" % profile
         gw_port = get_service_port(gw_svc)
-        # Native Hermes units read port from config.yaml (no --port in ExecStart).
-        # Fall back to config.yaml when the service is active but port isn't in the unit.
-        if gw_port is None and is_service_active(gw_svc):
+        # Native Hermes units configure port via config.yaml (no --port in ExecStart).
+        # Always fall back to config.yaml when ExecStart parse returns None.
+        if gw_port is None:
             gw_port = read_profile_gateway_port(profile)
         dash_port = get_service_port("hermes-dashboard-%s.service" % profile)
 
