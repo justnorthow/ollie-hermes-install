@@ -320,7 +320,7 @@ def resolve_target(target):
     """Map a restart/logs target -> (systemd_units, compose_services).
     Raises ValueError for unknown targets."""
     if target == "stack":
-        units = [u["unit"] for u in get_units()]
+        units = [u["unit"] for u in get_units() if u.get("active") == "active"]
         return units, ["cortex", "dashboard"]
     if target in DOCKER_SERVICES:
         return [], [DOCKER_SERVICES[target]]
