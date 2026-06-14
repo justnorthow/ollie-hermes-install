@@ -387,6 +387,9 @@ def cmd_update(args):
     if component in ("hermes", "all"):
         steps += [
             ("git-pull-install-repo", ["git", "-C", INSTALL_DIR, "pull", "--ff-only"], 120),
+            # Reinstall fleetctl from the freshly-pulled repo so the running binary
+            # stays in sync with the template on every hermes update.
+            ("reinstall-fleetctl", ["bash", os.path.join(INSTALL_DIR, "scripts", "10-install-fleetctl.sh")], 60),
             ("hermes-update", ["hermes", "update"], 900),
             # hermes update resets ~/.hermes/hermes-agent — re-apply the stack pieces it wipes:
             ("reinstall-cortex-plugin", ["bash", os.path.join(INSTALL_DIR, "scripts", "04-install-cortex-plugin.sh")], 300),
