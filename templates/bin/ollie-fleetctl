@@ -1012,6 +1012,45 @@ def cmd_restore_brain(args):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def cmd_set_dashboard_auth(args):
+    """Configure dashboard OAuth from a JSON payload on stdin.
+
+    Writes OAUTH2_PROXY_* keys into ~/hermes-stack/.env (mode 600), writes the
+    allowed-emails list to ~/hermes-stack/oauth2-emails (one per line), then
+    recreates the dashboard (plus oauth2-proxy when enabled) via compose with
+    the `oauth` profile so the auth layer is brought up/down to match.
+    """
+    payload = json.loads(sys.stdin.read() or "{}")
+    env_path = os.path.join(STACK_DIR, ".env")
+    emails_path = os.path.join(STACK_DIR, "oauth2-emails")
+    keys = {
+        "OAUTH2_PROXY_PROVIDER": payload.get("provider", "google"),
+        # When disabling, blank the client id so the dashboard tri-state falls
+        # back to "off" even though the rest of the config stays on disk.
+        "OAUTH2_PROXY_CLIENT_ID": payload.get("client_id", "") if payload.get("enabled") else "",
+        "OAUTH2_PROXY_CLIENT_SECRET": payload.get("client_secret", ""),
+        "OAUTH2_PROXY_COOKIE_SECRET": payload.get("cookie_secret", ""),
+        "OAUTH2_PROXY_REDIRECT_URL": payload.get("redirect_url", ""),
+        "OAUTH2_PROXY_EMAIL_DOMAINS": payload.get("allowed_domains") or "*",
+        "OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE": "/etc/oauth2-proxy/emails",
+        "DASHBOARD_PUBLIC_HTTPS": "true" if payload.get("cookie_secure") else "false",
+    }
+    for k, v in keys.items():
+        write_stack_env_key(k, v)
+    with open(emails_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(payload.get("allowed_emails", [])) + "\n")
+    # The .env now holds the client secret + cookie secret — lock it down.
+    try:
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
+    profile = ["--profile", "oauth"] if payload.get("enabled") else []
+    svcs = ["dashboard"] + (["oauth2-proxy"] if payload.get("enabled") else [])
+    run_cmd(["docker", "compose", "-f", COMPOSE_FILE] + profile + ["up", "-d"] + svcs,
+            timeout=300)
+    emit({"applied": True, "recreated": svcs})
+
+
 def cmd_heartbeat(args):
     env = read_env_file(FLEET_ENV)
     url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
@@ -1112,6 +1151,8 @@ def main(argv=None):
                                         "(cortex.db + brain, from the Docker volume) and agent profiles")
     sub.add_parser("restore-brain", help="restore a backup-brain tarball from stdin "
                                          "(rewrites the cortex volume and restarts cortex)")
+    sub.add_parser("set-dashboard-auth",
+                   help="configure dashboard OAuth from a JSON payload on stdin")
 
     args = p.parse_args(argv)
 
@@ -1147,6 +1188,8 @@ def main(argv=None):
             cmd_backup_brain(args)
         elif args.verb == "restore-brain":
             cmd_restore_brain(args)
+        elif args.verb == "set-dashboard-auth":
+            cmd_set_dashboard_auth(args)
     except SystemExit:
         raise
     except Exception as e:

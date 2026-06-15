@@ -617,5 +617,68 @@ class TestBrainBackup(unittest.TestCase):
         self.assertEqual(out[-1], {"restored": True, "cortexRestarted": True})
 
 
+class TestSetDashboardAuth(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def test_writes_env_and_recreates_with_oauth_profile(self):
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        payload = {"enabled": True, "provider": "google", "client_id": "cid",
+                   "client_secret": "shh", "cookie_secret": "ck",
+                   "redirect_url": "https://b/oauth2/callback",
+                   "allowed_emails": ["a@x.io"], "allowed_domains": "", "cookie_secure": True}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        # .env got the OAuth keys, mode 600
+        env = open(os.path.join(d, ".env")).read()
+        self.assertIn("OAUTH2_PROXY_CLIENT_ID=cid", env)
+        self.assertIn("OAUTH2_PROXY_REDIRECT_URL=https://b/oauth2/callback", env)
+        # POSIX-only: Windows ignores chmod mode bits. Fleet runs the verb on Linux.
+        if os.name == "posix":
+            self.assertEqual(oct(os.stat(os.path.join(d, ".env")).st_mode)[-3:], "600")
+        # emails file
+        self.assertIn("a@x.io", open(os.path.join(d, "oauth2-emails")).read())
+        # recreate ran with the oauth profile
+        self.assertTrue(any(a[:3] == ["docker", "compose", "-f"] and "--profile" in a and "oauth" in a
+                            for a in calls))
+
+    def test_disabled_clears_client_id_and_no_oauth_profile(self):
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        payload = {"enabled": False, "provider": "google", "client_id": "cid",
+                   "client_secret": "shh", "cookie_secret": "ck",
+                   "redirect_url": "https://b/oauth2/callback",
+                   "allowed_emails": [], "allowed_domains": "", "cookie_secure": False}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        env = open(os.path.join(d, ".env")).read()
+        # disabling clears CLIENT_ID so the dashboard tri-state falls back to off
+        self.assertIn("OAUTH2_PROXY_CLIENT_ID=\n", env)
+        # recreate runs without the oauth profile, and only the dashboard service
+        recreate = [a for a in calls if a[:3] == ["docker", "compose", "-f"] and "up" in a]
+        self.assertTrue(recreate)
+        self.assertNotIn("--profile", recreate[0])
+        self.assertIn("dashboard", recreate[0])
+        self.assertNotIn("oauth2-proxy", recreate[0])
+        self.assertEqual(out[0]["recreated"], ["dashboard"])
+
+
 if __name__ == "__main__":
     unittest.main()
