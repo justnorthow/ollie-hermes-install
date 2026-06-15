@@ -50,10 +50,43 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: oauth2-proxy
+    restart: unless-stopped
+    profiles: ["oauth"]            # only runs when Fleet enables OAuth
+    # Not published — only the dashboard's nginx reaches it over the compose network.
+    environment:
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
+      - OAUTH2_PROXY_UPSTREAMS=static://202
+      - OAUTH2_PROXY_COOKIE_SECURE=${DASHBOARD_PUBLIC_HTTPS:-true}
+      - OAUTH2_PROXY_PROVIDER=${OAUTH2_PROXY_PROVIDER:-google}
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID:-}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_CLIENT_SECRET:-}
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET:-}
+      - OAUTH2_PROXY_REDIRECT_URL=${OAUTH2_PROXY_REDIRECT_URL:-}
+      - OAUTH2_PROXY_EMAIL_DOMAINS=${OAUTH2_PROXY_EMAIL_DOMAINS:-*}
+      - OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE=${OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE:-}
+      - OAUTH2_PROXY_CUSTOM_TEMPLATES_DIR=/etc/oauth2-proxy/templates
+    volumes:
+      - ./oauth2-emails:/etc/oauth2-proxy/emails:ro
+      - ./oauth2-templates:/etc/oauth2-proxy/templates:ro
+
   dashboard:
     image: justnorthow/ollie-hermes-frontend:latest
     container_name: ollie-dashboard
     restart: unless-stopped
+    depends_on:
+      oauth2-proxy:
+        condition: service_started
+        # Soft dependency: oauth2-proxy lives in the "oauth" profile, so when
+        # OAuth is disabled the service is inactive. required:false lets the
+        # dashboard (always active) reference it without erroring in that case;
+        # when the profile is enabled, nginx still starts after the proxy.
+        required: false
     ports:
       - "3000:3000"
     environment:
@@ -81,6 +114,12 @@ services:
       # the nginx proxy paths, NOT these URLs directly. To list sessions
       # across profiles, the frontend queries each agent's dashboard.
       - AGENTS_JSON=${AGENTS_JSON:-[{"id":"default","name":"Ollie","gatewayUrl":"http://host.docker.internal:8642","dashboardUrl":"http://host.docker.internal:9119"}]}
+      # OAuth activation vars, read by generate-auth.sh INSIDE this container to
+      # decide whether to enter OAuth mode (proxy /oauth2/ to the oauth2-proxy
+      # service). Set by Fleet when it enables OAuth; the oauth2-proxy service
+      # keeps its own copies of the full OAuth config above.
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID:-}
+      - OAUTH2_PROXY_PROVIDER=${OAUTH2_PROXY_PROVIDER:-google}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
