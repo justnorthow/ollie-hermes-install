@@ -35,6 +35,10 @@ preserve_env_keys() {
            OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS; do
     line=$(grep -E "^${k}=" "$1" | tail -1) && [ -n "$line" ] && echo "$line" >> "$2"
   done
+  # The last loop iteration's status leaks out as the function's exit status under
+  # set -e (e.g. DASHBOARD_PUBLIC_HTTPS is usually absent → && chain returns 1).
+  # Return 0 explicitly so a missing key never aborts the script before chmod/up.
+  return 0
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -159,7 +163,7 @@ HERMES_UI_URL=${HERMES_UI_URL}
 EOF
 # Carry forward any OAuth keys Fleet wrote before the rewrite, then drop the snapshot.
 if [[ -n "${ENV_OLD}" ]]; then
-  preserve_env_keys "${ENV_OLD}" "${STACK_ENV}"
+  preserve_env_keys "${ENV_OLD}" "${STACK_ENV}" || true
   rm -f "${ENV_OLD}"
 fi
 chmod 600 "${STACK_ENV}"
