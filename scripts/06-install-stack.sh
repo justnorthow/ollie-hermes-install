@@ -26,6 +26,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_SRC="${SCRIPT_DIR}/../templates/docker-compose.yml"
+OAUTH_TEMPLATES_SRC="${SCRIPT_DIR}/../templates/oauth2-templates"
 STACK_DIR="${HOME}/hermes-stack"
 STACK_ENV="${STACK_DIR}/.env"
 HERMES_ENV="${HOME}/.hermes/.env"
@@ -34,6 +35,10 @@ ORCH_ENV="${HOME}/.config/ollie-orchestrator/.env"
 echo "==> step 1: stage ${STACK_DIR}/docker-compose.yml"
 mkdir -p "${STACK_DIR}"
 cp "${COMPOSE_SRC}" "${STACK_DIR}/docker-compose.yml"
+# Stage the oauth2-proxy custom templates (friendly "not authorized" page,
+# bind-mounted into the oauth2-proxy container via docker-compose.yml).
+mkdir -p "${STACK_DIR}/oauth2-templates"
+cp "${OAUTH_TEMPLATES_SRC}/"* "${STACK_DIR}/oauth2-templates/"
 
 echo "==> step 2: derive secrets from host config"
 if [[ ! -f "${HERMES_ENV}" ]]; then

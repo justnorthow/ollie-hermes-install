@@ -70,8 +70,10 @@ services:
       - OAUTH2_PROXY_REDIRECT_URL=${OAUTH2_PROXY_REDIRECT_URL:-}
       - OAUTH2_PROXY_EMAIL_DOMAINS=${OAUTH2_PROXY_EMAIL_DOMAINS:-*}
       - OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE=${OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE:-}
+      - OAUTH2_PROXY_CUSTOM_TEMPLATES_DIR=/etc/oauth2-proxy/templates
     volumes:
       - ./oauth2-emails:/etc/oauth2-proxy/emails:ro
+      - ./oauth2-templates:/etc/oauth2-proxy/templates:ro
 
   dashboard:
     image: justnorthow/ollie-hermes-frontend:latest
