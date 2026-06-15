@@ -114,6 +114,12 @@ services:
       # the nginx proxy paths, NOT these URLs directly. To list sessions
       # across profiles, the frontend queries each agent's dashboard.
       - AGENTS_JSON=${AGENTS_JSON:-[{"id":"default","name":"Ollie","gatewayUrl":"http://host.docker.internal:8642","dashboardUrl":"http://host.docker.internal:9119"}]}
+      # OAuth activation vars, read by generate-auth.sh INSIDE this container to
+      # decide whether to enter OAuth mode (proxy /oauth2/ to the oauth2-proxy
+      # service). Set by Fleet when it enables OAuth; the oauth2-proxy service
+      # keeps its own copies of the full OAuth config above.
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID:-}
+      - OAUTH2_PROXY_PROVIDER=${OAUTH2_PROXY_PROVIDER:-google}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
