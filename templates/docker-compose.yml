@@ -120,9 +120,17 @@ services:
       # keeps its own copies of the full OAuth config above.
       - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID:-}
       - OAUTH2_PROXY_PROVIDER=${OAUTH2_PROXY_PROVIDER:-google}
+    volumes:
+      # Persist user uploads (e.g. the agent avatar saved to /uploads/avatar.jpg
+      # by /save-avatar) across container recreation. Without this, /uploads
+      # lives in the container's ephemeral layer and is wiped on every
+      # `docker compose up -d`, leaving the dashboard pointing at a now-404
+      # avatar URL stored in the browser's localStorage.
+      - uploads-data:/uploads
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
 volumes:
   cortex-data:
   cortex-plugin:
+  uploads-data:
