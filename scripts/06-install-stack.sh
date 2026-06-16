@@ -32,7 +32,8 @@ preserve_env_keys() {
   [ -f "$1" ] || return 0
   for k in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET \
            OAUTH2_PROXY_REDIRECT_URL OAUTH2_PROXY_PROVIDER OAUTH2_PROXY_EMAIL_DOMAINS \
-           OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS; do
+           OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS \
+           DASHBOARD_USER DASHBOARD_PASS; do
     line=$(grep -E "^${k}=" "$1" | tail -1) && [ -n "$line" ] && echo "$line" >> "$2"
   done
   # The last loop iteration's status leaks out as the function's exit status under
