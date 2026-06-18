@@ -21,9 +21,10 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 # Identify ourselves explicitly. The urllib default ("Python-urllib/x.y") is
 # flagged by Cloudflare's managed bot heuristics even with Bot Fight Mode off,
 # which 403s the heartbeat POST before it reaches Fleet. A named UA passes.
@@ -576,6 +577,22 @@ def _next_free_port(base, used):
     return p
 
 
+def reserved_infra_ports():
+    """Ports owned by machine infra that the per-agent port allocator must never
+    hand out: cortex (9120) and the orchestrator (derived from ORCH_URL, 9123).
+    Without this the dashboard allocator could assign e.g. 9123, where
+    `hermes dashboard` finds the port already bound, prints "already running",
+    exits 0, and Restart=always restart-loops the unit forever."""
+    ports = {9120}  # cortex, mapped on the docker bridge
+    try:
+        orch_port = urllib.parse.urlsplit(ORCH_URL).port
+        if orch_port:
+            ports.add(orch_port)
+    except ValueError:
+        pass
+    return ports
+
+
 def _create_gateway_unit(profile):
     """Create, enable and start a hermes-gateway-{profile}.service. Returns port or None."""
     unit_name = "hermes-gateway-%s.service" % profile
@@ -652,7 +669,7 @@ def _create_dashboard_unit(profile):
     if os.path.exists(unit_path):
         return get_service_port(unit_name)  # already exists — return its port
 
-    used = scan_used_ports("dashboard") | {DEFAULT_DASHBOARD_PORT}
+    used = scan_used_ports("dashboard") | {DEFAULT_DASHBOARD_PORT} | reserved_infra_ports()
     port = _next_free_port(DASHBOARD_BASE_PORT, used)
 
     hermes_shim = os.path.join(HOME, ".local", "bin", "hermes")
@@ -660,6 +677,11 @@ def _create_dashboard_unit(profile):
         "[Unit]\n"
         "Description=Hermes dashboard for %s\n"
         "After=network.target\n"
+        # StartLimit* belong in [Unit], not [Service] — systemd ignores them in
+        # [Service], which disables the restart cap and lets a broken dashboard
+        # loop forever instead of failing after StartLimitBurst tries.
+        "StartLimitBurst=10\n"
+        "StartLimitIntervalSec=60\n"
         "\n"
         "[Service]\n"
         "Type=simple\n"
@@ -667,8 +689,6 @@ def _create_dashboard_unit(profile):
         "ExecStart=%s -p %s dashboard --host 0.0.0.0 --port %d --insecure --no-open\n"
         "Restart=always\n"
         "RestartSec=5\n"
-        "StartLimitBurst=10\n"
-        "StartLimitIntervalSec=60\n"
         "\n"
         "[Install]\n"
         "WantedBy=default.target\n"
