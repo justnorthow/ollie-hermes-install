@@ -101,6 +101,10 @@ services:
       # unset the nginx /orchestrator-proxy/ block emits a 503 and the UI
       # gracefully hides agent management.
       - ORCHESTRATOR_KEY=${ORCHESTRATOR_KEY:-}
+      # Base origin of the central Home Inspection Advisor app (e.g. its Railway
+      # URL). When set, the container's generate-nginx.sh adds an /apps/hia/
+      # proxy to it so the embedded HIA tile loads same-origin. Unset = no proxy.
+      - HIA_BASE_URL=${HIA_BASE_URL:-}
       # Browser-facing HTTPS URL of the native Hermes dashboard, used by the
       # frontend's "Backend Settings" link. Leave unset and the link falls back
       # to http://<host>:9119 — which HTTPS-First browsers refuse, producing
