@@ -88,7 +88,13 @@ services:
         # when the profile is enabled, nginx still starts after the proxy.
         required: false
     ports:
-      - "3000:3000"
+      # Bind to host loopback by default. The dashboard is meant to be reached
+      # through a TLS reverse-proxy / Cloudflare tunnel terminating on the host
+      # (cloudflared dials localhost:3000), so it does NOT need to be published
+      # on 0.0.0.0. Publishing it publicly exposed the dashboard (basic-auth over
+      # cleartext HTTP, bypassing the tunnel) to internet IP-scanners. Override
+      # with DASHBOARD_BIND=0.0.0.0 only for a dev box with no proxy in front.
+      - "${DASHBOARD_BIND:-127.0.0.1}:3000:3000"
     environment:
       - BACKEND=hermes
       - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
