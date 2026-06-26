@@ -680,5 +680,15 @@ class TestSetDashboardAuth(unittest.TestCase):
         self.assertEqual(out[0]["recreated"], ["dashboard"])
 
 
+class TestDockerComposeTemplate(unittest.TestCase):
+    """The dashboard service must pass SUPABASE_URL/SUPABASE_ANON_KEY through from
+    the stack .env so Fleet's Supabase apply has somewhere to write them."""
+
+    def test_dashboard_has_supabase_passthrough(self):
+        compose = (ROOT / "templates" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("- SUPABASE_URL=${SUPABASE_URL:-}", compose)
+        self.assertIn("- SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}", compose)
+
+
 if __name__ == "__main__":
     unittest.main()
