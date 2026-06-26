@@ -701,13 +701,15 @@ class TestSetDashboardAuth(unittest.TestCase):
         finally:
             self.mod.sys.stdin = old
         self.assertEqual(code, 0)
-        stack_env = open(os.path.join(d, ".env")).read()
+        with open(os.path.join(d, ".env")) as f:
+            stack_env = f.read()
         self.assertIn("SUPABASE_URL=https://abc.supabase.co", stack_env)
         self.assertIn("SUPABASE_ANON_KEY=sb_publishable_xyz", stack_env)
         # oauth gate cleared so the dashboard tri-state falls through to Supabase
         self.assertIn("OAUTH2_PROXY_CLIENT_ID=\n", stack_env)
         # orchestrator .env got URL + service-role key (mode 600)
-        orch = open(orch_env).read()
+        with open(orch_env) as f:
+            orch = f.read()
         self.assertIn("SUPABASE_URL=https://abc.supabase.co", orch)
         self.assertIn("SUPABASE_SERVICE_ROLE_KEY=sb_secret_123", orch)
         if os.name == "posix":

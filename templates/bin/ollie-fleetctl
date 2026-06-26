@@ -506,10 +506,15 @@ def read_agents_json():
         return []
 
 
-def write_env_key(path, key, value):
+def write_env_key(path, key, value, mode=None):
     """Insert-or-replace a single KEY=value line in the env file at `path`,
     creating parent dirs and writing atomically. Used for both the dashboard
-    stack .env and the orchestrator .env."""
+    stack .env and the orchestrator .env.
+
+    If `mode` is not None, chmod the .tmp file to that mode before it is
+    published via os.replace so the secret is never visible at the target
+    path with a permissive mode (closes the TOCTOU window a post-hoc chmod
+    leaves open)."""
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
@@ -532,6 +537,11 @@ def write_env_key(path, key, value):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
+    if mode is not None:
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
     os.replace(tmp, path)
 
 
@@ -1063,12 +1073,10 @@ def set_dashboard_auth_supabase(payload):
     write_stack_env_key("OAUTH2_PROXY_CLIENT_SECRET", "")
 
     # Orchestrator .env — URL + service-role key, locked to mode 600.
-    write_env_key(ORCH_ENV, "SUPABASE_URL", supabase_url)
-    write_env_key(ORCH_ENV, "SUPABASE_SERVICE_ROLE_KEY", service_role_key)
-    try:
-        os.chmod(ORCH_ENV, 0o600)
-    except OSError:
-        pass
+    # Pass mode=0o600 so each write chmods the .tmp before os.replace publishes
+    # it, closing the TOCTOU window where the secret would be world-readable.
+    write_env_key(ORCH_ENV, "SUPABASE_URL", supabase_url, mode=0o600)
+    write_env_key(ORCH_ENV, "SUPABASE_SERVICE_ROLE_KEY", service_role_key, mode=0o600)
 
     # Recreate the dashboard WITHOUT the oauth profile, then drop the proxy.
     run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "up", "-d",
@@ -1080,12 +1088,18 @@ def set_dashboard_auth_supabase(payload):
 
 
 def cmd_set_dashboard_auth(args):
-    """Configure dashboard OAuth from a JSON payload on stdin.
+    """Configure dashboard auth from a JSON payload on stdin.
 
-    Writes OAUTH2_PROXY_* keys into ~/hermes-stack/.env (mode 600), writes the
-    allowed-emails list to ~/hermes-stack/oauth2-emails (one per line), then
-    recreates the dashboard (plus oauth2-proxy when enabled) via compose with
-    the `oauth` profile so the auth layer is brought up/down to match.
+    When payload["mode"] == "supabase", dispatches to set_dashboard_auth_supabase
+    which writes SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY into the orchestrator .env
+    (mode 600) and SUPABASE_URL/SUPABASE_ANON_KEY into the stack .env, clears the
+    oauth2-proxy gate, recreates the dashboard, and removes the oauth2-proxy container.
+
+    Otherwise (oauth2-proxy path): writes OAUTH2_PROXY_* keys into
+    ~/hermes-stack/.env (mode 600), writes the allowed-emails list to
+    ~/hermes-stack/oauth2-emails (one per line), then recreates the dashboard
+    (plus oauth2-proxy when enabled) via compose with the `oauth` profile so the
+    auth layer is brought up/down to match.
     """
     payload = json.loads(sys.stdin.read() or "{}")
     if payload.get("mode") == "supabase":
