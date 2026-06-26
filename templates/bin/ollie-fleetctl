@@ -511,10 +511,10 @@ def write_env_key(path, key, value, mode=None):
     creating parent dirs and writing atomically. Used for both the dashboard
     stack .env and the orchestrator .env.
 
-    If `mode` is not None, chmod the .tmp file to that mode before it is
-    published via os.replace so the secret is never visible at the target
-    path with a permissive mode (closes the TOCTOU window a post-hoc chmod
-    leaves open)."""
+    If `mode` is not None, the temp file is created already at that mode via
+    os.open(O_CREAT|O_EXCL) so there is no permissive window between open and
+    chmod — the secret is never visible at a predictable .tmp path with loose
+    permissions."""
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
@@ -535,13 +535,19 @@ def write_env_key(path, key, value, mode=None):
     if parent:
         os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
     if mode is not None:
         try:
-            os.chmod(tmp, mode)
-        except OSError:
+            os.unlink(tmp)
+        except FileNotFoundError:
             pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    else:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
     os.replace(tmp, path)
 
 
