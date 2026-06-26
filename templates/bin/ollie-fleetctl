@@ -506,11 +506,12 @@ def read_agents_json():
         return []
 
 
-def write_stack_env_key(key, value):
-    """Update a single KEY=value line in ~/hermes-stack/.env atomically."""
-    env_path = os.path.join(STACK_DIR, ".env")
+def write_env_key(path, key, value):
+    """Insert-or-replace a single KEY=value line in the env file at `path`,
+    creating parent dirs and writing atomically. Used for both the dashboard
+    stack .env and the orchestrator .env."""
     try:
-        with open(env_path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
     except OSError:
         lines = []
@@ -525,10 +526,18 @@ def write_stack_env_key(key, value):
             new_lines.append(line)
     if not replaced:
         new_lines.append(new_line)
-    tmp = env_path + ".tmp"
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
-    os.replace(tmp, env_path)
+    os.replace(tmp, path)
+
+
+def write_stack_env_key(key, value):
+    """Update a single KEY=value line in ~/hermes-stack/.env atomically."""
+    write_env_key(os.path.join(STACK_DIR, ".env"), key, value)
 
 
 def read_profile_gateway_port(profile):
@@ -1032,6 +1041,44 @@ def cmd_restore_brain(args):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def set_dashboard_auth_supabase(payload):
+    """Configure Supabase cookie-gate auth from a `mode: "supabase"` payload.
+
+    Writes SUPABASE_URL/SUPABASE_ANON_KEY into the dashboard stack .env (anon key
+    is public) and SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY into the orchestrator
+    .env (secret, mode 600), clears the OAUTH2_PROXY_* gate so the dashboard
+    tri-state falls through to Supabase, recreates the dashboard WITHOUT the oauth
+    profile, removes any oauth2-proxy container, and restarts the orchestrator.
+    """
+    enabled = bool(payload.get("enabled"))
+    supabase_url = payload.get("supabase_url", "") if enabled else ""
+    anon_key = payload.get("anon_key", "") if enabled else ""
+    service_role_key = payload.get("service_role_key", "") if enabled else ""
+
+    # Dashboard stack .env — public URL + anon key.
+    write_stack_env_key("SUPABASE_URL", supabase_url)
+    write_stack_env_key("SUPABASE_ANON_KEY", anon_key)
+    # Clear the oauth2-proxy gate (CLIENT_ID is the tri-state trigger checked first).
+    write_stack_env_key("OAUTH2_PROXY_CLIENT_ID", "")
+    write_stack_env_key("OAUTH2_PROXY_CLIENT_SECRET", "")
+
+    # Orchestrator .env — URL + service-role key, locked to mode 600.
+    write_env_key(ORCH_ENV, "SUPABASE_URL", supabase_url)
+    write_env_key(ORCH_ENV, "SUPABASE_SERVICE_ROLE_KEY", service_role_key)
+    try:
+        os.chmod(ORCH_ENV, 0o600)
+    except OSError:
+        pass
+
+    # Recreate the dashboard WITHOUT the oauth profile, then drop the proxy.
+    run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "up", "-d",
+             "--force-recreate", "dashboard"], timeout=300)
+    run_cmd(["docker", "rm", "-f", "oauth2-proxy"], timeout=60)
+    rc, _, _ = run_cmd(["systemctl", "--user", "restart", "ollie-orchestrator"],
+                       timeout=60)
+    emit({"applied": True, "recreated": ["dashboard"], "orchestratorRestarted": rc == 0})
+
+
 def cmd_set_dashboard_auth(args):
     """Configure dashboard OAuth from a JSON payload on stdin.
 
@@ -1041,6 +1088,8 @@ def cmd_set_dashboard_auth(args):
     the `oauth` profile so the auth layer is brought up/down to match.
     """
     payload = json.loads(sys.stdin.read() or "{}")
+    if payload.get("mode") == "supabase":
+        return set_dashboard_auth_supabase(payload)
     env_path = os.path.join(STACK_DIR, ".env")
     emails_path = os.path.join(STACK_DIR, "oauth2-emails")
     keys = {

@@ -679,6 +679,49 @@ class TestSetDashboardAuth(unittest.TestCase):
         self.assertNotIn("oauth2-proxy", recreate[0])
         self.assertEqual(out[0]["recreated"], ["dashboard"])
 
+    def test_supabase_mode_writes_both_envs_and_recreates_without_oauth(self):
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        orch_env = os.path.join(d, "orch", ".env")
+        self.mod.ORCH_ENV = orch_env
+        # Seed a stale oauth client id to prove it gets cleared.
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write("OAUTH2_PROXY_CLIENT_ID=stale.apps.googleusercontent.com\n")
+        payload = {"mode": "supabase", "enabled": True,
+                   "supabase_url": "https://abc.supabase.co",
+                   "anon_key": "sb_publishable_xyz",
+                   "service_role_key": "sb_secret_123"}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        stack_env = open(os.path.join(d, ".env")).read()
+        self.assertIn("SUPABASE_URL=https://abc.supabase.co", stack_env)
+        self.assertIn("SUPABASE_ANON_KEY=sb_publishable_xyz", stack_env)
+        # oauth gate cleared so the dashboard tri-state falls through to Supabase
+        self.assertIn("OAUTH2_PROXY_CLIENT_ID=\n", stack_env)
+        # orchestrator .env got URL + service-role key (mode 600)
+        orch = open(orch_env).read()
+        self.assertIn("SUPABASE_URL=https://abc.supabase.co", orch)
+        self.assertIn("SUPABASE_SERVICE_ROLE_KEY=sb_secret_123", orch)
+        if os.name == "posix":
+            self.assertEqual(oct(os.stat(orch_env).st_mode)[-3:], "600")
+        # recreate runs WITHOUT the oauth profile, force-recreating only the dashboard
+        recreate = [a for a in calls if a[:3] == ["docker", "compose", "-f"] and "up" in a]
+        self.assertTrue(recreate)
+        self.assertNotIn("--profile", recreate[0])
+        self.assertIn("dashboard", recreate[0])
+        # the oauth2-proxy container is removed and the orchestrator restarted
+        self.assertTrue(any(a[:3] == ["docker", "rm", "-f"] and "oauth2-proxy" in a for a in calls))
+        self.assertTrue(any(a == ["systemctl", "--user", "restart", "ollie-orchestrator"] for a in calls))
+        self.assertEqual(out[0], {"applied": True, "recreated": ["dashboard"], "orchestratorRestarted": True})
+
 
 class TestDockerComposeTemplate(unittest.TestCase):
     """The dashboard service must pass SUPABASE_URL/SUPABASE_ANON_KEY through from
