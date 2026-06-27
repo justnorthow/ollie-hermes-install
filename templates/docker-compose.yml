@@ -136,6 +136,15 @@ services:
       # is public by design (shipped to the browser). Set by Fleet on Apply.
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
+      # When set (e.g. ".jnow.io"), Domain for the Supabase session cookie so the
+      # login is shared with the dedicated Hermes-dashboard hostname below
+      # (generate-config.sh writes it into config.js → supabaseClient.ts).
+      - SUPABASE_COOKIE_DOMAIN=${SUPABASE_COOKIE_DOMAIN:-}
+      # When set, generate-hermes-host.sh publishes the native Hermes dashboard
+      # (loopback :9119) at the ROOT of this hostname, reusing the dashboard's
+      # auth gate. cloudflared routes this hostname to :3000; HERMES_UI_URL above
+      # points here. See docs/runbooks/hermes-dashboard-cloudflare.md.
+      - HERMES_UI_HOSTNAME=${HERMES_UI_HOSTNAME:-}
     volumes:
       # Persist user uploads (e.g. the agent avatar saved to /uploads/avatar.jpg
       # by /save-avatar) across container recreation. Without this, /uploads
