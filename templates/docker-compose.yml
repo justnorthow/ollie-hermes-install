@@ -114,8 +114,8 @@ services:
       # Browser-facing HTTPS URL of the native Hermes dashboard, used by the
       # frontend's "Backend Settings" link. Leave unset and the link falls back
       # to http://<host>:9119 — which HTTPS-First browsers refuse, producing
-      # ERR_SSL_PROTOCOL_ERROR. Point this at a TLS reverse-proxy to the
-      # dashboard, e.g. https://ollie.example.com:9443.
+      # ERR_SSL_PROTOCOL_ERROR. Point this at the Cloudflare Access URL for the
+      # dashboard; see docs/runbooks/hermes-dashboard-cloudflare.md.
       - HERMES_UI_URL=${HERMES_UI_URL:-}
       # One entry per agent on the host. `gatewayUrl` is the agent's Hermes
       # Gateway (browser → /gateway-proxy/<id>/* → nginx → gatewayUrl).
