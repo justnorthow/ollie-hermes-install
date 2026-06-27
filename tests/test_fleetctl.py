@@ -735,5 +735,25 @@ class TestDockerComposeTemplate(unittest.TestCase):
         self.assertIn("- SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}", compose)
 
 
+class TestDashboardBindsLoopback(unittest.TestCase):
+    REPO = pathlib.Path(__file__).resolve().parents[1]
+
+    def _text(self, rel):
+        return (self.REPO / rel).read_text(encoding="utf-8")
+
+    def test_dashboard_execstart_uses_loopback_everywhere(self):
+        sources = [
+            "scripts/02-install-hermes.sh",
+            "scripts/03-install-profile.sh",
+            "templates/bin/ollie-fleetctl",
+        ]
+        for rel in sources:
+            text = self._text(rel)
+            # The dashboard ExecStart must not publicly bind or use --insecure.
+            self.assertNotIn("dashboard --host 0.0.0.0", text, rel)
+            self.assertNotIn("--insecure", text, rel)
+            self.assertIn("dashboard --host 127.0.0.1", text, rel)
+
+
 if __name__ == "__main__":
     unittest.main()

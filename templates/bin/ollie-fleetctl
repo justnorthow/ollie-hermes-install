@@ -711,7 +711,7 @@ def _create_dashboard_unit(profile):
         "[Service]\n"
         "Type=simple\n"
         "Environment=PATH=%s/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        "ExecStart=%s -p %s dashboard --host 0.0.0.0 --port %d --insecure --no-open\n"
+        "ExecStart=%s -p %s dashboard --host 127.0.0.1 --port %d --no-open\n"
         "Restart=always\n"
         "RestartSec=5\n"
         "\n"

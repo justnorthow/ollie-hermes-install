@@ -137,7 +137,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=%h/.local/bin/hermes -p ${NAME} dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT} --insecure --no-open
+ExecStart=%h/.local/bin/hermes -p ${NAME} dashboard --host 127.0.0.1 --port ${DASHBOARD_PORT} --no-open
 Restart=always
 RestartSec=5
 StartLimitBurst=10
