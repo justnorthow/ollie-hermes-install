@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -733,6 +734,71 @@ class TestDockerComposeTemplate(unittest.TestCase):
         compose = (ROOT / "templates" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("- SUPABASE_URL=${SUPABASE_URL:-}", compose)
         self.assertIn("- SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}", compose)
+
+
+class TestDashboardBindsLoopback(unittest.TestCase):
+    REPO = pathlib.Path(__file__).resolve().parents[1]
+
+    def _text(self, rel):
+        return (self.REPO / rel).read_text(encoding="utf-8")
+
+    def test_dashboard_execstart_uses_loopback_everywhere(self):
+        sources = [
+            "scripts/02-install-hermes.sh",
+            "scripts/03-install-profile.sh",
+            "templates/bin/ollie-fleetctl",
+        ]
+        for rel in sources:
+            text = self._text(rel)
+            # The dashboard ExecStart must not publicly bind or use --insecure.
+            self.assertNotIn("dashboard --host 0.0.0.0", text, rel)
+            self.assertNotIn("--insecure", text, rel)
+            self.assertIn("dashboard --host 127.0.0.1", text, rel)
+
+
+class TestSetHermesUiUrl(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+        self.tmp = tempfile.mkdtemp()
+        self.mod.STACK_DIR = self.tmp
+        self.mod.COMPOSE_FILE = os.path.join(self.tmp, "docker-compose.yml")
+        self.calls = []
+        self.mod.run_cmd = lambda argv, timeout=None, input_text=None: (
+            self.calls.append(argv) or (0, "", ""))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _env(self):
+        return self.mod.read_env_file(os.path.join(self.tmp, ".env"))
+
+    def _run(self, argv, stdin_str):
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(stdin_str)
+            code, out = run_main(self.mod, argv)
+        finally:
+            self.mod.sys.stdin = old
+        return code, out
+
+    def test_writes_url_and_recreates_dashboard(self):
+        code, out = self._run(["set-hermes-ui-url"],
+                              '{"url": "https://ollie-hermes.jnow.io"}')
+        self.assertEqual(code, 0)
+        self.assertEqual(self._env().get("HERMES_UI_URL"), "https://ollie-hermes.jnow.io")
+        self.assertIn(["docker", "compose", "-f", self.mod.COMPOSE_FILE,
+                       "up", "-d", "--force-recreate", "dashboard"], self.calls)
+        self.assertEqual(out[0].get("applied"), True)
+        self.assertEqual(out[0].get("recreated"), ["dashboard"])
+
+    def test_empty_url_clears_key(self):
+        self._run(["set-hermes-ui-url"], '{"url": "https://x.jnow.io"}')
+        self._run(["set-hermes-ui-url"], '{"url": ""}')
+        self.assertEqual(self._env().get("HERMES_UI_URL"), "")
+
+    def test_non_http_url_fails(self):
+        code, out = self._run(["set-hermes-ui-url"], '{"url": "javascript:alert(1)"}')
+        self.assertNotEqual(code, 0)
 
 
 if __name__ == "__main__":

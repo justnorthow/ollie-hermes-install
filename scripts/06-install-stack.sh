@@ -138,8 +138,8 @@ FIRECRAWL_API_KEY="${FIRECRAWL_API_KEY:-${EXISTING_FIRECRAWL}}"
 # HERMES_UI_URL is operator-supplied (browser-facing TLS URL for the native Hermes
 # dashboard, used by the frontend's "Backend Settings" link). Same precedence as
 # FIRECRAWL_API_KEY: env var > existing .env value > empty. Unset is safe — the link
-# falls back to http://<host>:9119, which HTTPS-First browsers reject; set this to a
-# TLS reverse-proxy to :9119 (e.g. https://<host>:9443) to fix that.
+# falls back to http://<host>:9119, which HTTPS-First browsers reject; set this to the
+# Cloudflare Access URL for the dashboard (see docs/runbooks/hermes-dashboard-cloudflare.md).
 EXISTING_HERMES_UI_URL="$(grep -E '^HERMES_UI_URL=' "${STACK_ENV}" 2>/dev/null | cut -d= -f2- || true)"
 HERMES_UI_URL="${HERMES_UI_URL:-${EXISTING_HERMES_UI_URL}}"
 
@@ -158,7 +158,8 @@ ORCHESTRATOR_KEY=${ORCH_KEY}
 AGENTS_JSON=${AGENTS_JSON}
 # Brain Discovery: set this to enable website crawling (uploads work without it).
 FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
-# Browser-facing TLS URL for the native Hermes dashboard ("Backend Settings" link).
+# Browser-facing HTTPS URL for the Hermes dashboard ("Backend Settings" link).
+# Use the Cloudflare Access URL; see docs/runbooks/hermes-dashboard-cloudflare.md.
 # Unset → link falls back to http://<host>:9119, which HTTPS-First browsers reject.
 HERMES_UI_URL=${HERMES_UI_URL}
 EOF
@@ -198,7 +199,8 @@ fi
 if [[ -z "${HERMES_UI_URL}" ]]; then
   echo "    note: HERMES_UI_URL unset — the dashboard's \"Backend Settings\" link points to"
   echo "          http://<host>:9119, which HTTPS-First browsers reject (ERR_SSL_PROTOCOL_ERROR)."
-  echo "          Set HERMES_UI_URL in ${STACK_ENV} to a TLS reverse-proxy of :9119 to fix it."
+  echo "          Set HERMES_UI_URL in ${STACK_ENV} to the Cloudflare Access URL for the dashboard"
+  echo "          (see docs/runbooks/hermes-dashboard-cloudflare.md)."
 fi
 set -e
 

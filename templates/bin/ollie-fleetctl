@@ -15,6 +15,7 @@ whatever the current install scripts set up.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 # Identify ourselves explicitly. The urllib default ("Python-urllib/x.y") is
 # flagged by Cloudflare's managed bot heuristics even with Bot Fight Mode off,
 # which 403s the heartbeat POST before it reaches Fleet. A named UA passes.
@@ -711,7 +712,7 @@ def _create_dashboard_unit(profile):
         "[Service]\n"
         "Type=simple\n"
         "Environment=PATH=%s/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        "ExecStart=%s -p %s dashboard --host 0.0.0.0 --port %d --insecure --no-open\n"
+        "ExecStart=%s -p %s dashboard --host 127.0.0.1 --port %d --no-open\n"
         "Restart=always\n"
         "RestartSec=5\n"
         "\n"
@@ -1140,6 +1141,24 @@ def cmd_set_dashboard_auth(args):
     emit({"applied": True, "recreated": svcs})
 
 
+def set_hermes_ui_url(url):
+    """Set HERMES_UI_URL in the dashboard stack .env and recreate the dashboard
+    so generate-config.sh re-emits hermesUiUrl into the served config.js. An
+    empty string clears it (the frontend link falls back to its in-app default)."""
+    url = (url or "").strip()
+    if url and not re.match(r"^https?://", url):
+        fail("hermes ui url must be an http(s) URL")
+    write_stack_env_key("HERMES_UI_URL", url)
+    run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "up", "-d",
+             "--force-recreate", "dashboard"], timeout=300)
+    emit({"applied": True, "recreated": ["dashboard"]})
+
+
+def cmd_set_hermes_ui_url(args):
+    payload = json.loads(sys.stdin.read() or "{}")
+    return set_hermes_ui_url(payload.get("url", ""))
+
+
 def cmd_heartbeat(args):
     env = read_env_file(FLEET_ENV)
     url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
@@ -1242,6 +1261,9 @@ def main(argv=None):
                                          "(rewrites the cortex volume and restarts cortex)")
     sub.add_parser("set-dashboard-auth",
                    help="configure dashboard OAuth from a JSON payload on stdin")
+    sub.add_parser("set-hermes-ui-url",
+                   help="set HERMES_UI_URL in the dashboard .env and recreate the "
+                        "dashboard ({\"url\": ...} JSON on stdin; empty clears)")
 
     args = p.parse_args(argv)
 
@@ -1279,6 +1301,8 @@ def main(argv=None):
             cmd_restore_brain(args)
         elif args.verb == "set-dashboard-auth":
             cmd_set_dashboard_auth(args)
+        elif args.verb == "set-hermes-ui-url":
+            cmd_set_hermes_ui_url(args)
     except SystemExit:
         raise
     except Exception as e:
