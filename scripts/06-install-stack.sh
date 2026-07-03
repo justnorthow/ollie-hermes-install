@@ -143,6 +143,14 @@ FIRECRAWL_API_KEY="${FIRECRAWL_API_KEY:-${EXISTING_FIRECRAWL}}"
 EXISTING_HERMES_UI_URL="$(grep -E '^HERMES_UI_URL=' "${STACK_ENV}" 2>/dev/null | cut -d= -f2- || true)"
 HERMES_UI_URL="${HERMES_UI_URL:-${EXISTING_HERMES_UI_URL}}"
 
+# VERTICAL is operator/Fleet-supplied (customer vertical slug, e.g. real-estate —
+# drives vertical-specific frontend UI). Same precedence as HERMES_UI_URL:
+# env var > existing .env value > empty. Set at provision by Fleet, or later
+# via `ollie-fleetctl set-vertical`. Handled here (not preserve_env_keys) because
+# this script rewrites .env from scratch each run.
+EXISTING_VERTICAL="$(grep -E '^VERTICAL=' "${STACK_ENV}" 2>/dev/null | cut -d= -f2- || true)"
+VERTICAL="${VERTICAL:-${EXISTING_VERTICAL}}"
+
 echo "==> step 4: write ${STACK_ENV} (rewrites every run to keep it canonical)"
 # Snapshot the current .env so we can carry forward OAuth keys Fleet wrote (this
 # script doesn't manage them but must not wipe them — see preserve_env_keys).
@@ -162,6 +170,8 @@ FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
 # Use the Cloudflare Access URL; see docs/runbooks/hermes-dashboard-cloudflare.md.
 # Unset → link falls back to http://<host>:9119, which HTTPS-First browsers reject.
 HERMES_UI_URL=${HERMES_UI_URL}
+# Customer vertical slug (e.g. real-estate) — Fleet-managed; empty = generic.
+VERTICAL=${VERTICAL}
 EOF
 # Carry forward any OAuth keys Fleet wrote before the rewrite, then drop the snapshot.
 if [[ -n "${ENV_OLD}" ]]; then
