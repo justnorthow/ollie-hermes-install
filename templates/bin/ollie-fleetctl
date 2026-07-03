@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 # Identify ourselves explicitly. The urllib default ("Python-urllib/x.y") is
 # flagged by Cloudflare's managed bot heuristics even with Bot Fight Mode off,
 # which 403s the heartbeat POST before it reaches Fleet. A named UA passes.
@@ -1159,6 +1159,27 @@ def cmd_set_hermes_ui_url(args):
     return set_hermes_ui_url(payload.get("url", ""))
 
 
+VERTICAL_RE = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
+
+
+def set_vertical(vertical):
+    """Set VERTICAL in the dashboard stack .env and recreate the dashboard so
+    generate-config.sh re-emits `vertical` into the served config.js. An empty
+    string clears it (the frontend falls back to the generic profile)."""
+    vertical = (vertical or "").strip()
+    if vertical and not VERTICAL_RE.match(vertical):
+        fail("vertical must be a lowercase slug ([a-z][a-z0-9-]{0,40})")
+    write_stack_env_key("VERTICAL", vertical)
+    run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "up", "-d",
+             "--force-recreate", "dashboard"], timeout=300)
+    emit({"applied": True, "recreated": ["dashboard"]})
+
+
+def cmd_set_vertical(args):
+    payload = json.loads(sys.stdin.read() or "{}")
+    return set_vertical(payload.get("vertical", ""))
+
+
 def cmd_heartbeat(args):
     env = read_env_file(FLEET_ENV)
     url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
@@ -1264,6 +1285,9 @@ def main(argv=None):
     sub.add_parser("set-hermes-ui-url",
                    help="set HERMES_UI_URL in the dashboard .env and recreate the "
                         "dashboard ({\"url\": ...} JSON on stdin; empty clears)")
+    sub.add_parser("set-vertical",
+                   help="set VERTICAL in the dashboard .env and recreate the "
+                        "dashboard ({\"vertical\": ...} JSON on stdin; empty clears)")
 
     args = p.parse_args(argv)
 
@@ -1303,6 +1327,8 @@ def main(argv=None):
             cmd_set_dashboard_auth(args)
         elif args.verb == "set-hermes-ui-url":
             cmd_set_hermes_ui_url(args)
+        elif args.verb == "set-vertical":
+            cmd_set_vertical(args)
     except SystemExit:
         raise
     except Exception as e:

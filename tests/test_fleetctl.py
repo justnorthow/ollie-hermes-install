@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -799,6 +800,50 @@ class TestSetHermesUiUrl(unittest.TestCase):
     def test_non_http_url_fails(self):
         code, out = self._run(["set-hermes-ui-url"], '{"url": "javascript:alert(1)"}')
         self.assertNotEqual(code, 0)
+
+
+class TestSetVertical(unittest.TestCase):
+    def _run(self, mod, payload):
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+            return run_main(mod, ["set-vertical"])
+
+    def test_writes_env_and_recreates_dashboard(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            mod.STACK_DIR = d
+            with open(os.path.join(d, ".env"), "w") as f:
+                f.write("HERMES_GATEWAY_KEY=k\n")
+            with mock.patch.object(mod, "run_cmd") as rc:
+                code, out = self._run(mod, {"vertical": "real-estate"})
+            self.assertEqual(code, 0)
+            self.assertEqual(out[-1], {"applied": True, "recreated": ["dashboard"]})
+            env = mod.read_env_file(os.path.join(d, ".env"))
+            self.assertEqual(env["VERTICAL"], "real-estate")
+            # dashboard force-recreated so generate-config.sh re-emits config.js
+            argv = rc.call_args[0][0]
+            self.assertIn("--force-recreate", argv)
+            self.assertIn("dashboard", argv)
+
+    def test_empty_clears_the_vertical(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            mod.STACK_DIR = d
+            with open(os.path.join(d, ".env"), "w") as f:
+                f.write("VERTICAL=real-estate\n")
+            with mock.patch.object(mod, "run_cmd"):
+                code, out = self._run(mod, {"vertical": ""})
+            self.assertEqual(code, 0)
+            env = mod.read_env_file(os.path.join(d, ".env"))
+            self.assertEqual(env.get("VERTICAL", ""), "")
+
+    def test_rejects_invalid_slug(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            mod.STACK_DIR = d
+            with mock.patch.object(mod, "run_cmd") as rc:
+                code, _ = self._run(mod, {"vertical": "Bad Slug!"})
+            self.assertNotEqual(code, 0)
+            rc.assert_not_called()
 
 
 if __name__ == "__main__":
