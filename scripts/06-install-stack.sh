@@ -24,16 +24,20 @@ if ! id -nG | grep -qw docker; then
   exit 1
 fi
 
-# OAuth keys are written into the stack .env by Fleet (a later plan), NOT by this
-# script. Step 4 rewrites .env from scratch each run, so without this it would wipe
-# them. preserve_env_keys re-emits any of these keys that are set in the old .env
-# into the freshly-written one.  $1 = old .env, $2 = new .env
+# OAuth AND Supabase-cookie-gate keys are written into the stack .env by Fleet
+# (ollie-fleetctl set-dashboard-auth), NOT by this script. Step 4 rewrites .env from
+# scratch each run, so without this it would wipe them — which silently breaks the
+# dashboard auth gate on the next frontend recreate (SUPABASE_URL empty -> generate-auth
+# falls through to "open", no identity injected). preserve_env_keys re-emits any of
+# these keys that are set in the old .env into the freshly-written one.
+# $1 = old .env, $2 = new .env
 preserve_env_keys() {
   [ -f "$1" ] || return 0
   for k in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET \
            OAUTH2_PROXY_REDIRECT_URL OAUTH2_PROXY_PROVIDER OAUTH2_PROXY_EMAIL_DOMAINS \
            OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS \
-           DASHBOARD_USER DASHBOARD_PASS; do
+           DASHBOARD_USER DASHBOARD_PASS \
+           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN; do
     line=$(grep -E "^${k}=" "$1" | tail -1) && [ -n "$line" ] && echo "$line" >> "$2"
   done
   # The last loop iteration's status leaks out as the function's exit status under
