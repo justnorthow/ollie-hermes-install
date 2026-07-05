@@ -406,8 +406,9 @@ def _step_cmd(args_list, timeout, input_text=None):
     return rc == 0, (err.strip() or out.strip())[-500:]
 
 
-def cmd_update(args):
-    component = args.component
+def build_update_steps(component):
+    """Ordered (name, argv, timeout) steps for `update <component>`.
+    Pure: constructs the list, runs nothing (used by cmd_update and --dry-run)."""
     steps = []
     if component in ("hermes", "all"):
         steps += [
@@ -434,6 +435,16 @@ def cmd_update(args):
                              os.path.join(ORCH_DIR, "requirements.txt")], 600),
             ("restart-orchestrator", ["systemctl", "--user", "restart", "ollie-orchestrator"], 60),
         ]
+    return steps
+
+
+def cmd_update(args):
+    component = args.component
+    steps = build_update_steps(component)
+    if getattr(args, "dry_run", False):
+        emit({"component": component, "dry_run": True,
+              "steps": [{"name": n, "cmd": a, "timeout": t} for (n, a, t) in steps]})
+        return
     for name, cmd_args, timeout in steps:
         event(event="progress", step=name)
         # hermes update prompts interactively (same CLI behavior 02-install-hermes.sh
@@ -1320,6 +1331,8 @@ def main(argv=None):
     u = sub.add_parser("update", help="update stack components (streams NDJSON progress)")
     u.add_argument("component", nargs="?", default="all",
                    choices=["hermes", "stack", "orchestrator", "all"])
+    u.add_argument("--dry-run", action="store_true",
+                   help="print the planned steps as JSON without running them")
     sa = sub.add_parser("sync-agents",
                         help="reconcile AGENTS_JSON with running Hermes profiles; "
                              "updates ~/hermes-stack/.env and restarts orchestrator")
