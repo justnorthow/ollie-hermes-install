@@ -33,10 +33,13 @@ GATEWAY_PORT="${GATEWAY_PORT:-8642}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-9119}"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 HERMES_ENV="${HOME}/.hermes/.env"
+HERMES_INSTALL_REF="${HERMES_INSTALL_REF:-abf9638f4eb3dc02d4159bae5c3af86457edd323}"
+HERMES_INSTALL_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_INSTALL_REF}/scripts/install.sh"
 
 echo "==> step 1: install Hermes Agent (if not already present)"
 if [[ ! -x "${HOME}/.local/bin/hermes" ]]; then
-  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+  echo "    using hermes-agent ref ${HERMES_INSTALL_REF}"
+  curl -fsSL "${HERMES_INSTALL_URL}" | bash
   # The installer adds ~/.local/bin to PATH via .bashrc; load it for this script run.
   export PATH="${HOME}/.local/bin:${PATH}"
 else

@@ -103,7 +103,28 @@ echo "==> step 4b: inherit the default agent's inference provider + credentials"
 DEFAULT_CONFIG="${HOME}/.hermes/config.yaml"
 DEFAULT_AUTH="${HOME}/.hermes/auth.json"
 read_default_model() {
-  python3 -c "import yaml,os; c=yaml.safe_load(open(os.path.expanduser('${DEFAULT_CONFIG}'))) or {}; m=c.get('model') or {}; print(m.get('$1','') or '')" 2>/dev/null
+  python3 - "${DEFAULT_CONFIG}" "$1" <<'PY' 2>/dev/null
+import sys
+
+
+def read_model_key(path, key):
+    in_model = False
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if not line.startswith((" ", "\t")):
+                in_model = stripped == "model:"
+                continue
+            if in_model and stripped.startswith(key + ":"):
+                return stripped.split(":", 1)[1].strip().strip("'\"")
+    return ""
+
+
+print(read_model_key(sys.argv[1], sys.argv[2]))
+PY
 }
 DEF_PROVIDER="$(read_default_model provider)"
 DEF_MODEL="$(read_default_model default)"

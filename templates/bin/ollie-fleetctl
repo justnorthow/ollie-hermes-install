@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -113,6 +114,13 @@ def read_env_file(path):
     except OSError:
         pass
     return env
+
+
+def require_single_line_env(key, value):
+    if not key or any(ch in key for ch in "=\r\n"):
+        raise ValueError("env key must be non-empty and single-line without '='")
+    if "\r" in str(value) or "\n" in str(value):
+        raise ValueError("%s must be a single-line env value" % key)
 
 
 # ------------------------------------------------------- orchestrator client
@@ -516,6 +524,8 @@ def write_env_key(path, key, value, mode=None):
     os.open(O_CREAT|O_EXCL) so there is no permissive window between open and
     chmod — the secret is never visible at a predictable .tmp path with loose
     permissions."""
+    value = "" if value is None else str(value)
+    require_single_line_env(key, value)
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
@@ -1013,15 +1023,42 @@ def cmd_backup_brain(args):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def validate_restore_archive(path):
+    """Reject archive members that can write outside the restore staging dir."""
+    with tarfile.open(path, "r:*") as tf:
+        for member in tf.getmembers():
+            name = member.name.replace("\\", "/").rstrip("/")
+            parts = name.split("/")
+            if (
+                not name
+                or name.startswith("/")
+                or any(part in ("", ".", "..") for part in parts)
+                or parts[0] not in ("cortex", "profiles")
+                or not (member.isfile() or member.isdir())
+                or member.issym()
+                or member.islnk()
+            ):
+                raise ValueError("unsafe restore archive member: %s" % member.name)
+
+
 def cmd_restore_brain(args):
     """Restore a backup-brain tarball (read from stdin): profiles into
     ~/.hermes/profiles, and cortex memory (cortex.db + brain/) back into the
     cortex-data volume, then restart cortex so it reloads the restored db."""
     staging = tempfile.mkdtemp(prefix="fleet-brain-restore-")
     try:
-        rc = subprocess.call(["tar", "xzf", "-", "-C", staging],
-                             stdin=sys.stdin.buffer
-                             if hasattr(sys.stdin, "buffer") else sys.stdin)
+        archive = os.path.join(staging, "restore.tgz")
+        raw_stdin = sys.stdin.buffer if hasattr(sys.stdin, "buffer") else sys.stdin
+        data = raw_stdin.read()
+        if isinstance(data, str):
+            data = data.encode()
+        with open(archive, "wb") as f:
+            f.write(data)
+        try:
+            validate_restore_archive(archive)
+        except (tarfile.TarError, ValueError) as e:
+            fail("unsafe restore archive: %s" % e, 2)
+        rc = subprocess.call(["tar", "xzf", archive, "-C", staging])
         if rc != 0:
             fail("failed to unpack archive (tar rc=%d)" % rc)
         prof_src = os.path.join(staging, "profiles")
@@ -1071,6 +1108,15 @@ def set_dashboard_auth_supabase(payload):
     supabase_url = payload.get("supabase_url", "") if enabled else ""
     anon_key = payload.get("anon_key", "") if enabled else ""
     service_role_key = payload.get("service_role_key", "") if enabled else ""
+    for key, value in {
+        "SUPABASE_URL": supabase_url,
+        "SUPABASE_ANON_KEY": anon_key,
+        "SUPABASE_SERVICE_ROLE_KEY": service_role_key,
+    }.items():
+        try:
+            require_single_line_env(key, value)
+        except ValueError as e:
+            fail(str(e), 2)
 
     # Dashboard stack .env — public URL + anon key.
     write_stack_env_key("SUPABASE_URL", supabase_url)
@@ -1126,6 +1172,14 @@ def cmd_set_dashboard_auth(args):
         "DASHBOARD_PUBLIC_HTTPS": "true" if payload.get("cookie_secure") else "false",
     }
     for k, v in keys.items():
+        try:
+            require_single_line_env(k, v)
+        except ValueError as e:
+            fail(str(e), 2)
+    for email in payload.get("allowed_emails", []):
+        if "\n" in str(email) or "\r" in str(email):
+            fail("allowed email entries must be single-line values", 2)
+    for k, v in keys.items():
         write_stack_env_key(k, v)
     with open(emails_path, "w", encoding="utf-8") as f:
         f.write("\n".join(payload.get("allowed_emails", [])) + "\n")
@@ -1146,6 +1200,8 @@ def set_hermes_ui_url(url):
     so generate-config.sh re-emits hermesUiUrl into the served config.js. An
     empty string clears it (the frontend link falls back to its in-app default)."""
     url = (url or "").strip()
+    if "\n" in url or "\r" in url:
+        fail("hermes ui url must be a single-line http(s) URL", 2)
     if url and not re.match(r"^https?://", url):
         fail("hermes ui url must be an http(s) URL")
     write_stack_env_key("HERMES_UI_URL", url)

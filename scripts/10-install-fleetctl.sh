@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_BIN="${SCRIPT_DIR}/../templates/bin/ollie-fleetctl"
 SRC_SVC="${SCRIPT_DIR}/../templates/systemd/ollie-fleet-heartbeat.service"
 DEST_BIN="${HOME}/.local/bin/ollie-fleetctl"
+SERVICE_USER="$(id -un)"
 
 for f in "${SRC_BIN}" "${SRC_SVC}"; do
   [[ -f "${f}" ]] || { echo "error: ${f} not found" >&2; exit 1; }
@@ -36,7 +37,10 @@ echo "==> smoke test"
 ollie-fleetctl version
 
 echo "==> installing ollie-fleet-heartbeat system service"
-sudo cp "${SRC_SVC}" /etc/systemd/system/ollie-fleet-heartbeat.service
+TMP_SVC="$(mktemp)"
+trap 'rm -f "${TMP_SVC}"' EXIT
+sed "s|__OLLIE_SERVICE_USER__|${SERVICE_USER}|g" "${SRC_SVC}" > "${TMP_SVC}"
+sudo install -m 0644 "${TMP_SVC}" /etc/systemd/system/ollie-fleet-heartbeat.service
 # Retire the old per-user timer if a previous install left one behind.
 systemctl --user disable --now fleet-heartbeat.timer 2>/dev/null || true
 rm -f "${HOME}/.config/systemd/user/fleet-heartbeat.service" "${HOME}/.config/systemd/user/fleet-heartbeat.timer"

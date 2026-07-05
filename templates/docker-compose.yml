@@ -19,7 +19,7 @@
 
 services:
   cortex:
-    image: justnorthow/ollie-hermes-cortex:latest
+    image: ${CORTEX_IMAGE:?CORTEX_IMAGE must be set to a pinned tag or digest}
     container_name: cortex
     restart: unless-stopped
     ports:
@@ -76,7 +76,7 @@ services:
       - ./oauth2-templates:/etc/oauth2-proxy/templates:ro
 
   dashboard:
-    image: justnorthow/ollie-hermes-frontend:latest
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE must be set to a pinned tag or digest}
     container_name: ollie-dashboard
     restart: unless-stopped
     depends_on:

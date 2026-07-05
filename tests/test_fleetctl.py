@@ -10,6 +10,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest import mock
 from contextlib import redirect_stdout
@@ -608,8 +609,19 @@ class TestBrainBackup(unittest.TestCase):
                 os.makedirs(os.path.join(staging, "cortex"))
                 open(os.path.join(staging, "cortex", "cortex.db"), "w").close()
             return 0
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tf:
+            info = tarfile.TarInfo("cortex/cortex.db")
+            data = b"db"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        class FakeStdin:
+            buffer = io.BytesIO(archive.getvalue())
+
         with mock.patch.object(self.mod.subprocess, "call", fake_call):
-            code, out = run_main(self.mod, ["restore-brain"])
+            with mock.patch.object(self.mod.sys, "stdin", FakeStdin()):
+                code, out = run_main(self.mod, ["restore-brain"])
         self.assertEqual(code, 0)
         self.assertTrue(any(a[:2] == ["docker", "stop"] for a in calls), "should stop cortex")
         self.assertTrue(any(a[:2] == ["docker", "start"] for a in calls), "should restart cortex")
@@ -727,6 +739,95 @@ class TestSetDashboardAuth(unittest.TestCase):
         self.assertEqual(out[0], {"applied": True, "recreated": ["dashboard"], "orchestratorRestarted": True})
 
 
+class TestEnvSafety(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def test_write_env_key_rejects_multiline_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, ".env")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("SAFE=1\n")
+            with self.assertRaises(ValueError):
+                self.mod.write_env_key(path, "SAFE", "ok\nEVIL=1")
+            self.assertEqual(open(path, encoding="utf-8").read(), "SAFE=1\n")
+
+    def test_set_hermes_ui_url_rejects_newline_in_url(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.mod.STACK_DIR = d
+            self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+            self.mod.run_cmd = lambda *a, **k: (0, "", "")
+            with mock.patch.object(self.mod.sys, "stdin",
+                                   io.StringIO('{"url":"https://ok.example\\nEVIL=1"}')):
+                code, out = run_main(self.mod, ["set-hermes-ui-url"])
+            self.assertNotEqual(code, 0)
+
+    def test_write_env_key_rejects_invalid_key_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                self.mod.write_env_key(os.path.join(d, ".env"), "BAD\nKEY", "value")
+
+
+class TestRestoreSafety(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_fleetctl()
+
+    def _tar_with_member(self, name):
+        path = tempfile.NamedTemporaryFile(delete=False, suffix=".tgz")
+        path.close()
+        try:
+            with tarfile.open(path.name, "w:gz") as tf:
+                info = tarfile.TarInfo(name)
+                data = b"x"
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+            return path.name
+        except Exception:
+            os.unlink(path.name)
+            raise
+
+    def test_restore_rejects_parent_traversal_members(self):
+        archive = self._tar_with_member("../escape")
+        try:
+            with self.assertRaises(ValueError):
+                self.mod.validate_restore_archive(archive)
+        finally:
+            os.unlink(archive)
+
+    def test_restore_rejects_symlink_members(self):
+        path = tempfile.NamedTemporaryFile(delete=False, suffix=".tgz")
+        path.close()
+        try:
+            with tarfile.open(path.name, "w:gz") as tf:
+                link = tarfile.TarInfo("profiles/default/escape")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "/etc/passwd"
+                tf.addfile(link)
+            with self.assertRaises(ValueError):
+                self.mod.validate_restore_archive(path.name)
+        finally:
+            os.unlink(path.name)
+
+    def test_restore_accepts_expected_relative_members(self):
+        archive = self._tar_with_member("cortex/cortex.db")
+        try:
+            self.mod.validate_restore_archive(archive)
+        finally:
+            os.unlink(archive)
+
+    def test_restore_accepts_expected_directory_members(self):
+        path = tempfile.NamedTemporaryFile(delete=False, suffix=".tgz")
+        path.close()
+        try:
+            with tarfile.open(path.name, "w:gz") as tf:
+                directory = tarfile.TarInfo("cortex/")
+                directory.type = tarfile.DIRTYPE
+                tf.addfile(directory)
+            self.mod.validate_restore_archive(path.name)
+        finally:
+            os.unlink(path.name)
+
+
 class TestDockerComposeTemplate(unittest.TestCase):
     """The dashboard service must pass SUPABASE_URL/SUPABASE_ANON_KEY through from
     the stack .env so Fleet's Supabase apply has somewhere to write them."""
@@ -735,6 +836,37 @@ class TestDockerComposeTemplate(unittest.TestCase):
         compose = (ROOT / "templates" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("- SUPABASE_URL=${SUPABASE_URL:-}", compose)
         self.assertIn("- SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}", compose)
+
+    def test_images_are_not_mutable_latest_defaults(self):
+        compose = (ROOT / "templates" / "docker-compose.yml").read_text(encoding="utf-8")
+        installer = (ROOT / "scripts" / "06-install-stack.sh").read_text(encoding="utf-8")
+        self.assertNotIn("ollie-hermes-cortex:latest", compose)
+        self.assertNotIn("ollie-hermes-frontend:latest", compose)
+        self.assertIn("CORTEX_IMAGE=", installer)
+        self.assertIn("FRONTEND_IMAGE=", installer)
+
+
+class TestInstallScriptContracts(unittest.TestCase):
+    def _text(self, rel):
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    def test_fleet_heartbeat_service_user_is_templated(self):
+        service = self._text("templates/systemd/ollie-fleet-heartbeat.service")
+        install = self._text("scripts/10-install-fleetctl.sh")
+        self.assertIn("User=__OLLIE_SERVICE_USER__", service)
+        self.assertNotIn("User=ollie", service)
+        self.assertIn("SERVICE_USER=\"$(id -un)\"", install)
+        self.assertIn("__OLLIE_SERVICE_USER__", install)
+
+    def test_profile_inheritance_does_not_require_pyyaml(self):
+        install = self._text("scripts/03-install-profile.sh")
+        self.assertNotIn("import yaml", install)
+        self.assertIn("def read_model_key", install)
+
+    def test_hermes_installer_uses_pinned_ref_by_default(self):
+        install = self._text("scripts/02-install-hermes.sh")
+        self.assertIn("HERMES_INSTALL_REF", install)
+        self.assertNotIn("raw.githubusercontent.com/NousResearch/hermes-agent/main", install)
 
 
 class TestDashboardBindsLoopback(unittest.TestCase):

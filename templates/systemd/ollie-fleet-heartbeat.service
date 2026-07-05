@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ollie
+User=__OLLIE_SERVICE_USER__
 ExecStart=/usr/local/bin/ollie-fleetctl heartbeat-daemon
 # Clean exit (state=disabled) must NOT restart; only crashes restart.
 Restart=on-failure
