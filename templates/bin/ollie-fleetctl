@@ -421,6 +421,9 @@ def build_update_steps(component):
             ("reinstall-cortex-plugin", ["bash", os.path.join(INSTALL_DIR, "scripts", "04-install-cortex-plugin.sh")], 300),
             ("repatch-cron-brain", ["bash", os.path.join(INSTALL_DIR, "scripts", "07-patch-cron-brain.sh")], 120),
             ("reinstall-souls", ["bash", os.path.join(INSTALL_DIR, "scripts", "08-install-souls.sh")], 120),
+            # hermes update also resets ~/.hermes/config.yaml — re-apply the command
+            # allowlist so ollie-set-identity runs without an approval prompt.
+            ("reinstall-identity-sync", ["bash", os.path.join(INSTALL_DIR, "scripts", "09-install-identity-sync.sh")], 60),
         ]
     if component in ("stack", "all"):
         # Re-run 06 (not a bare compose pull/up): it restages docker-compose.yml from

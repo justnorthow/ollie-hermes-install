@@ -10,13 +10,14 @@ if [ -z "$PY" ]; then echo "FAIL: python3 not found on PATH (required to run oll
 steps_for() { "$PY" "$FLEETCTL" update "$1" --dry-run 2>/dev/null | grep -oE '"name": ?"[^"]+"' | sed -E 's/.*"name": ?"([^"]+)".*/\1/'; }
 has_step()  { steps_for "$1" | grep -qx "$2"; }
 
-# CURRENT behavior (pre-Tasks-2-4):
-test_hermes_current() {
+# CURRENT behavior (post-Tasks-2-4):
+test_hermes_reapply() {
   assert_eq "hermes has git-pull-install-repo" "$(has_step hermes git-pull-install-repo && echo y)" "y"
   assert_eq "hermes has hermes-update"         "$(has_step hermes hermes-update && echo y)" "y"
   assert_eq "hermes has reinstall-cortex-plugin" "$(has_step hermes reinstall-cortex-plugin && echo y)" "y"
   assert_eq "hermes has repatch-cron-brain"    "$(has_step hermes repatch-cron-brain && echo y)" "y"
   assert_eq "hermes has reinstall-souls"       "$(has_step hermes reinstall-souls && echo y)" "y"
+  assert_eq "hermes re-applies identity-sync (09)" "$(has_step hermes reinstall-identity-sync && echo y)" "y"
 }
 # Stack update must re-run 06 (restages compose + refreshes pins), not a bare compose pull/up.
 test_stack_reinstalls_06() {
@@ -27,7 +28,7 @@ test_orch_current() {
   assert_eq "orchestrator has git-pull-orchestrator" "$(has_step orchestrator git-pull-orchestrator && echo y)" "y"
   assert_eq "orchestrator has restart-orchestrator"  "$(has_step orchestrator restart-orchestrator && echo y)" "y"
 }
-test_hermes_current
+test_hermes_reapply
 test_stack_reinstalls_06
 test_orch_current
 finish
