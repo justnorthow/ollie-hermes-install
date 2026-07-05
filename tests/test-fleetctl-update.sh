@@ -18,15 +18,16 @@ test_hermes_current() {
   assert_eq "hermes has repatch-cron-brain"    "$(has_step hermes repatch-cron-brain && echo y)" "y"
   assert_eq "hermes has reinstall-souls"       "$(has_step hermes reinstall-souls && echo y)" "y"
 }
-test_stack_current() {
-  assert_eq "stack has compose-pull" "$(has_step stack compose-pull && echo y)" "y"
-  assert_eq "stack has compose-up"   "$(has_step stack compose-up && echo y)" "y"
+# Stack update must re-run 06 (restages compose + refreshes pins), not a bare compose pull/up.
+test_stack_reinstalls_06() {
+  assert_eq "stack has reinstall-stack" "$(has_step stack reinstall-stack && echo y)" "y"
+  assert_eq "stack no longer bare compose-pull" "$(has_step stack compose-pull && echo y)" ""
 }
 test_orch_current() {
   assert_eq "orchestrator has git-pull-orchestrator" "$(has_step orchestrator git-pull-orchestrator && echo y)" "y"
   assert_eq "orchestrator has restart-orchestrator"  "$(has_step orchestrator restart-orchestrator && echo y)" "y"
 }
 test_hermes_current
-test_stack_current
+test_stack_reinstalls_06
 test_orch_current
 finish

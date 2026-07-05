@@ -423,9 +423,12 @@ def build_update_steps(component):
             ("reinstall-souls", ["bash", os.path.join(INSTALL_DIR, "scripts", "08-install-souls.sh")], 120),
         ]
     if component in ("stack", "all"):
+        # Re-run 06 (not a bare compose pull/up): it restages docker-compose.yml from
+        # templates/, refreshes the CORTEX_IMAGE/FRONTEND_IMAGE pins, preserves the .env,
+        # then does compose pull + up. `compose pull` alone would re-pull the same old
+        # digest already pinned in .env and miss any compose/pin change.
         steps += [
-            ("compose-pull", ["docker", "compose", "-f", COMPOSE_FILE, "pull"], 600),
-            ("compose-up", ["docker", "compose", "-f", COMPOSE_FILE, "up", "-d"], 300),
+            ("reinstall-stack", ["bash", os.path.join(INSTALL_DIR, "scripts", "06-install-stack.sh")], 900),
         ]
     if component in ("orchestrator", "all"):
         steps += [
