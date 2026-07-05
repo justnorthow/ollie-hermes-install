@@ -75,4 +75,24 @@ test_cortex_api_key_forwarded() {
 }
 
 test_cortex_api_key_forwarded
+
+# Operator-set dashboard/host tunables must survive a re-run instead of drifting
+# back to the compose defaults.
+test_operator_tunables_preserved() {
+  local old new; old="$(mktemp)"; new="$(mktemp)"
+  cat > "$old" <<'OLD'
+HERMES_UI_HOSTNAME=hermes.jnow.io
+DASHBOARD_BIND=0.0.0.0
+HIA_BASE_URL=https://hia.example.com
+OLD
+  ( unset HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL \
+          CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL
+    render_stack_env "$new" "$old" )
+  assert_eq "HERMES_UI_HOSTNAME preserved" "$(grep -E '^HERMES_UI_HOSTNAME=' "$new" | cut -d= -f2-)" "hermes.jnow.io"
+  assert_eq "DASHBOARD_BIND preserved"     "$(grep -E '^DASHBOARD_BIND=' "$new" | cut -d= -f2-)" "0.0.0.0"
+  assert_eq "HIA_BASE_URL preserved"       "$(grep -E '^HIA_BASE_URL=' "$new" | cut -d= -f2-)" "https://hia.example.com"
+  rm -f "$old" "$new"
+}
+
+test_operator_tunables_preserved
 finish
