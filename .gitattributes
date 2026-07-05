@@ -1,5 +1,9 @@
 # Shell scripts MUST be LF — they run on Linux servers
 scripts/*.sh text eol=lf
+scripts/lib/*.sh text eol=lf
+# Test harness scripts are bash too (run via Git Bash on Windows or bash on Linux CI)
+tests/*.sh text eol=lf
+tests/lib/*.sh text eol=lf
 # Systemd units + docker-compose are Linux-only too
 templates/*.service text eol=lf
 templates/*.yml text eol=lf
