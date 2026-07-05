@@ -262,9 +262,81 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
+### Task 5: Re-key #5 auto-apply to the box's `ssh_host` + copy config forward (#5 fix) — repo: `ollie-fleet`
+
+**Why:** the cross-repo final review found Task 4's #5 is unreachable on a real rebuild — `finalizeEnrollment` mints a FRESH `instanceId = randomUUID()` (`enroll-core.ts:82`), then looks up `getSupabaseConfigView(instanceId)` for that brand-new id, which never has a stored config (the config lives under the OLD id). Decision (John, 2026-07-05): **re-key the lookup to the box's stable `ssh_host`.** And copy the found config FORWARD onto the new instance — otherwise the new instance row shows "disabled" and a later Access-tab apply would blank the box (a foot-gun).
+
+**Files:**
+- Modify: `src/server/enroll-core.ts` (`finalizeEnrollment` #5 block, lines ~94-106; add `saveSupabaseConfig` import)
+- Modify: `tests/unit/enroll.test.ts` (rewrite the 3 Supabase tests to seed a PRIOR instance for the same host)
+
+**Interfaces (confirmed):** `saveSupabaseConfig(inst: {id,name,frontend_url}, input: {enabled, supabaseUrl?, anonKey?, serviceRoleKey?, cookieDomain?})`; `buildSupabaseApplyPayload(inst)` returns `{mode, enabled, supabase_url, anon_key, service_role_key (decrypted), cookie_domain}`; `p.sshHost` is the stable host; the `instances` table has an `ssh_host` column.
+
+- [ ] **Step 1: Rewrite the failing tests to the ssh_host model**
+
+In `tests/unit/enroll.test.ts`, change the 3 Supabase scenarios so they seed a **PRIOR** instance (a different instance id, same `ssh_host` as the enroll request) with an enabled `instance_supabase` config, instead of seeding the config under the new/pinned id. Scenarios: (a) prior enabled config for the same host → after enroll, the NEW instance's config row is populated (`getSupabaseConfigView(newId).enabled === true` and its `cookieDomain` matches) AND `setDashboardAuth` was called once with `mode:'supabase'` + the cookie domain; (b) no prior config for the host → `setDashboardAuth` NOT called, enroll still 201; (c) non-fatal: `setDashboardAuth.mockRejectedValueOnce(...)` → enroll still 201 and the new instances row exists. (You can drop the `vi.mock('crypto')` id-pinning now — the lookup no longer depends on the new id matching a seed; instead insert a prior `instances` row + its `instance_supabase` row with a fixed old id and the same `ssh_host` the enroll request uses.)
+
+- [ ] **Step 2: Run to verify FAIL**
+
+Run (in `ollie-fleet`): `npx vitest run tests/unit/enroll.test.ts`
+Expected: FAIL — current code looks up by the new id (finds nothing), so the "applies + copies forward" assertions fail.
+
+- [ ] **Step 3: Re-key the #5 block**
+
+In `src/server/enroll-core.ts`: add `saveSupabaseConfig` to the import from `./lib/supabase-config.js`. Replace the current `try { … getSupabaseConfigView(instanceId) … }` block (lines ~97-106) with:
+```ts
+  // #5 re-keyed to the box's ssh_host: a rebuild/re-enroll mints a NEW instance id,
+  // so the just-created row has no Supabase config. Find the most-recent PRIOR
+  // instance for the SAME ssh_host with an enabled config, copy it forward onto this
+  // new instance (so Fleet stays consistent and a later apply can't blank the box),
+  // then apply it to the box. Non-fatal: enrollment never fails on this.
+  try {
+    const prior = getDb().prepare(
+      `SELECT s.instance_id AS id FROM instance_supabase s
+         JOIN instances i ON i.id = s.instance_id
+        WHERE i.ssh_host = ? AND s.enabled = 1 AND s.instance_id != ?
+        ORDER BY s.updated_at DESC LIMIT 1`
+    ).get(p.sshHost, instanceId) as { id: string } | undefined
+    if (prior) {
+      const src = buildSupabaseApplyPayload({ id: prior.id, name: p.name, frontend_url: p.frontendUrl ?? null })
+      saveSupabaseConfig(
+        { id: instanceId, name: p.name, frontend_url: p.frontendUrl ?? null },
+        { enabled: true, supabaseUrl: src.supabase_url, anonKey: src.anon_key,
+          serviceRoleKey: src.service_role_key, cookieDomain: src.cookie_domain },
+      )
+      const payload = buildSupabaseApplyPayload({ id: instanceId, name: p.name, frontend_url: p.frontendUrl ?? null })
+      await setDashboardAuth(p.target, payload)
+    }
+  } catch (e) {
+    console.warn(`[enroll] supabase auto-apply skipped/failed for ${instanceId}: ${(e as Error).message}`)
+  }
+```
+Keep `getSupabaseConfigView` imported only if still used elsewhere in the file; otherwise drop it from the import to avoid an unused-import lint/tsc error.
+
+- [ ] **Step 4: Run to verify PASS + full suite + tsc**
+
+Run: `npx vitest run tests/unit/enroll.test.ts` → pass. Then `npm test` → full green. Then `npx tsc --noEmit` → clean (watch for an unused `getSupabaseConfigView` import).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/server/enroll-core.ts tests/unit/enroll.test.ts
+git commit -m "fix(fleet): re-key enroll Supabase auto-apply to ssh_host + copy forward (#5)
+
+Task 4's auto-apply keyed on the freshly-minted instance id, so it never matched a
+stored config on a real rebuild. Now it finds the most-recent prior instance for the
+same ssh_host, copies its enabled Supabase config onto the new instance (keeping
+Fleet consistent so a later apply can't blank the box), and applies it. Still guarded
++ non-fatal.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+```
+
+---
+
 ## Out of Scope
 
-- **#4a skip-write-when-empty — DROPPED** (John, 2026-07-05): it would break the deliberate-disable workflow. Disable still blanks the keys (correct); S72 durability comes from #5 + Phase 1 preserve instead.
+- **#4a skip-write-when-empty — DROPPED** (John, 2026-07-05): it would break the deliberate-disable workflow. Disable still blanks the keys (correct); S72 durability comes from #5 (Task 4 + the Task 5 ssh_host re-key) + Phase 1 preserve.
 
 ## Self-Review
 
