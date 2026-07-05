@@ -39,6 +39,9 @@ services:
       # Multi-agent cortex routing is a follow-up.
       - HERMES_GATEWAY_URL=http://host.docker.internal:8642
       - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
+      # Cortex enforces this bearer on all routes but /health when set. UNSET =
+      # open on the private Docker network (today's behavior). Fleet/operator flip.
+      - CORTEX_API_KEY=${CORTEX_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Brain Discovery: web crawl needs a Firecrawl API key (uploads work without it).
       # Tunables have sensible defaults in code; override here if needed.
@@ -98,6 +101,10 @@ services:
     environment:
       - BACKEND=hermes
       - HERMES_GATEWAY_KEY=${HERMES_GATEWAY_KEY}
+      # generate-cortex-auth.sh (this container's nginx) injects
+      # "Authorization: Bearer $CORTEX_API_KEY" on /cortex-proxy when set. UNSET =
+      # no header (matches cortex being open on the Docker network).
+      - CORTEX_API_KEY=${CORTEX_API_KEY:-}
       # Front-door HTTP Basic Auth. Set both to require login at the dashboard.
       # When unset the dashboard is open (container logs a warning at startup).
       - DASHBOARD_USER=${DASHBOARD_USER:-}

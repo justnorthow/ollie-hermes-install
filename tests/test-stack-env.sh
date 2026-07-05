@@ -53,4 +53,26 @@ OLD
 
 test_baseline
 test_pins_single_and_new
+
+# CORTEX_API_KEY must survive a re-run (forwarded from old .env), and default to
+# empty when neither env var nor old .env set it (stays UNSET on boxes this pass).
+test_cortex_api_key_forwarded() {
+  local old new; old="$(mktemp)"; new="$(mktemp)"
+  printf 'CORTEX_API_KEY=secret-token\n' > "$old"
+  ( unset CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL \
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+    render_stack_env "$new" "$old" )
+  assert_eq "CORTEX_API_KEY preserved" "$(grep -E '^CORTEX_API_KEY=' "$new" | cut -d= -f2-)" "secret-token"
+
+  local old2 new2; old2="$(mktemp)"; new2="$(mktemp)"
+  : > "$old2"
+  ( unset CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL \
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+    render_stack_env "$new2" "$old2" )
+  assert_count "CORTEX_API_KEY line present (empty ok)" "$new2" "CORTEX_API_KEY" 1
+  assert_eq "CORTEX_API_KEY empty by default" "$(grep -E '^CORTEX_API_KEY=' "$new2" | cut -d= -f2-)" ""
+  rm -f "$old" "$new" "$old2" "$new2"
+}
+
+test_cortex_api_key_forwarded
 finish
