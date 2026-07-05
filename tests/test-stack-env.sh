@@ -95,4 +95,52 @@ OLD
 }
 
 test_operator_tunables_preserved
+
+# Comprehensive golden regression: every operator/Fleet key + old pins survive a
+# stack re-render exactly once with the right value; pins bump to the new digest.
+test_golden_full_env() {
+  local old new; old="$(mktemp)"; new="$(mktemp)"
+  cat > "$old" <<'OLD'
+CORTEX_IMAGE=justnorthow/cortex@sha256:OLD
+FRONTEND_IMAGE=justnorthow/frontend@sha256:OLD
+OAUTH2_PROXY_CLIENT_ID=cid
+OAUTH2_PROXY_CLIENT_SECRET=csecret
+OAUTH2_PROXY_COOKIE_SECRET=cookiesecret
+OAUTH2_PROXY_REDIRECT_URL=https://x/oauth2/callback
+OAUTH2_PROXY_PROVIDER=google
+OAUTH2_PROXY_EMAIL_DOMAINS=*
+OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE=/etc/oauth2-proxy/emails
+DASHBOARD_PUBLIC_HTTPS=true
+DASHBOARD_USER=admin
+DASHBOARD_PASS=pw
+SUPABASE_URL=https://x.supabase.co
+SUPABASE_ANON_KEY=sb_anon
+SUPABASE_COOKIE_DOMAIN=.jnow.io
+FIRECRAWL_API_KEY=fc_key
+HERMES_UI_URL=https://ui.jnow.io
+VERTICAL=real-estate
+CORTEX_API_KEY=cortex-secret
+HERMES_UI_HOSTNAME=hermes.jnow.io
+DASHBOARD_BIND=0.0.0.0
+HIA_BASE_URL=https://hia
+OLD
+  ( unset FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL CORTEX_API_KEY \
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+    render_stack_env "$new" "$old" )
+  local k
+  for k in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET \
+           OAUTH2_PROXY_REDIRECT_URL OAUTH2_PROXY_PROVIDER OAUTH2_PROXY_EMAIL_DOMAINS \
+           OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS DASHBOARD_USER \
+           DASHBOARD_PASS SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN \
+           FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL CORTEX_API_KEY HERMES_UI_HOSTNAME \
+           DASHBOARD_BIND HIA_BASE_URL CORTEX_IMAGE FRONTEND_IMAGE; do
+    assert_count "exactly one ${k}" "$new" "$k" 1
+  done
+  assert_eq "pin bumped to new" "$(grep -E '^CORTEX_IMAGE=' "$new" | cut -d= -f2-)" "justnorthow/cortex@sha256:NEW"
+  assert_eq "supabase cookie domain preserved" "$(grep -E '^SUPABASE_COOKIE_DOMAIN=' "$new" | cut -d= -f2-)" ".jnow.io"
+  assert_eq "apollo-not-a-key sanity: vertical preserved" "$(grep -E '^VERTICAL=' "$new" | cut -d= -f2-)" "real-estate"
+  rm -f "$old" "$new"
+}
+
+test_golden_full_env
 finish
