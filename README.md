@@ -98,15 +98,27 @@ Each script prints what it's doing and is idempotent — re-running won't break 
 
 A `hermes update` (run from the CLI or the dashboard's "update gateway") **resets host state to stock** — it re-patches `hermes-agent` internals and reverts the agents' `SOUL.md` persona files to the default Hermes persona. Your customized personas, brain-tool cron patch, etc. are **not** preserved.
 
-**Every time you update Hermes, re-run these two:**
+**Preferred: one command.** If `ollie-fleetctl` is installed:
 
 ```bash
-cd ~/ollie-hermes-install && git pull   # get the latest templates/personas
-bash scripts/07-patch-cron-brain.sh     # re-apply the cron brain-tools patch
-bash scripts/08-install-souls.sh        # restore Ollie/Karl/Paige personas from templates/souls/
+ollie-fleetctl update hermes
 ```
 
-> If `ollie-fleetctl` is installed, `ollie-fleetctl update hermes` is the one-command equivalent of the three lines above.
+This git-pulls the install repo and, after `hermes update`, re-applies everything the
+update wipes: the Cortex memory plugin (`04-install-cortex-plugin.sh`), the cron
+brain-tools patch (`07-patch-cron-brain.sh`), the agent personas
+(`08-install-souls.sh`), and the `ollie-set-identity` command allowlist
+(`09-install-identity-sync.sh`).
+
+**By hand (no fleetctl):** run the same set, in order:
+
+```bash
+cd ~/ollie-hermes-install && git pull
+bash scripts/04-install-cortex-plugin.sh
+bash scripts/07-patch-cron-brain.sh
+bash scripts/08-install-souls.sh
+bash scripts/09-install-identity-sync.sh
+```
 
 - `08` is marker-aware: it rewrites a host `SOUL.md` only when it's missing or still the stock default, and skips any persona you've since customized on the host. So it restores what the update wiped without clobbering live edits.
 - The canonical persona text lives in `templates/souls/{default,karl,paige}.md`. Edit those (and commit) if you want a change to survive future updates; editing only the host copy means the next update reverts it.

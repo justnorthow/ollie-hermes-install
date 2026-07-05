@@ -30,7 +30,15 @@ test_orch_reinstalls_05() {
   assert_eq "orchestrator has reinstall-orchestrator" "$(has_step orchestrator reinstall-orchestrator && echo y)" "y"
   assert_eq "orchestrator no longer bare git-pull-orchestrator" "$(has_step orchestrator git-pull-orchestrator && echo y)" ""
 }
+# The README's after-update section must name every script the code re-applies.
+test_readme_matches_code() {
+  local readme="$HERE/../README.md"
+  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh; do
+    assert_eq "README names $s" "$(grep -q "$s" "$readme" && echo y)" "y"
+  done
+}
 test_hermes_reapply
 test_stack_reinstalls_06
 test_orch_reinstalls_05
+test_readme_matches_code
 finish
