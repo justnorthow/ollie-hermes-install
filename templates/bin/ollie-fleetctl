@@ -434,12 +434,12 @@ def build_update_steps(component):
             ("reinstall-stack", ["bash", os.path.join(INSTALL_DIR, "scripts", "06-install-stack.sh")], 900),
         ]
     if component in ("orchestrator", "all"):
+        # Re-run 05 (not just git-pull + pip + restart): 05 also (re)installs the
+        # ollie-orchestrator.service systemd unit, regenerates ORCHESTRATOR_KEY via the
+        # orchestrator's own install.sh, and re-wires HERMES_GATEWAY_KEY from ~/.hermes/.env
+        # — all of which a bare pull/restart would miss when the unit or key contract changes.
         steps += [
-            ("git-pull-orchestrator", ["git", "-C", ORCH_DIR, "pull", "--ff-only"], 120),
-            ("pip-install", [os.path.join(ORCH_DIR, ".venv", "bin", "pip"),
-                             "install", "-q", "-r",
-                             os.path.join(ORCH_DIR, "requirements.txt")], 600),
-            ("restart-orchestrator", ["systemctl", "--user", "restart", "ollie-orchestrator"], 60),
+            ("reinstall-orchestrator", ["bash", os.path.join(INSTALL_DIR, "scripts", "05-install-orchestrator.sh")], 600),
         ]
     return steps
 

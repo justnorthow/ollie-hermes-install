@@ -24,11 +24,13 @@ test_stack_reinstalls_06() {
   assert_eq "stack has reinstall-stack" "$(has_step stack reinstall-stack && echo y)" "y"
   assert_eq "stack no longer bare compose-pull" "$(has_step stack compose-pull && echo y)" ""
 }
-test_orch_current() {
-  assert_eq "orchestrator has git-pull-orchestrator" "$(has_step orchestrator git-pull-orchestrator && echo y)" "y"
-  assert_eq "orchestrator has restart-orchestrator"  "$(has_step orchestrator restart-orchestrator && echo y)" "y"
+# Orchestrator update must re-run 05 (restores systemd unit + HERMES_GATEWAY_KEY wiring),
+# not just git-pull + pip + restart.
+test_orch_reinstalls_05() {
+  assert_eq "orchestrator has reinstall-orchestrator" "$(has_step orchestrator reinstall-orchestrator && echo y)" "y"
+  assert_eq "orchestrator no longer bare git-pull-orchestrator" "$(has_step orchestrator git-pull-orchestrator && echo y)" ""
 }
 test_hermes_reapply
 test_stack_reinstalls_06
-test_orch_current
+test_orch_reinstalls_05
 finish
