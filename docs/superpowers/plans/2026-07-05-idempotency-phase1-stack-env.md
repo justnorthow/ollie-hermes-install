@@ -21,7 +21,7 @@
 
 ## File Structure
 
-- **Create `scripts/lib/stack-env.sh`** — pure helper. Defines `preserve_env_keys` (OAuth/dashboard/Supabase allowlist, **no image pins**) and `render_stack_env NEW_ENV OLD_ENV` (writes the canonical `.env` heredoc from caller-exported derived values + inline-forwards the operator keys from `OLD_ENV`). No docker, no host reads beyond `OLD_ENV`. Sourceable + unit-testable.
+- **Create `scripts/lib/stack-env.sh`** — pure helper. Defines `preserve_env_keys` (OAuth/dashboard/Supabase allowlist; image pins are dropped from it in Task 2) and `render_stack_env NEW_ENV OLD_ENV` (writes the canonical `.env` heredoc from caller-exported derived values + inline-forwards the operator keys from `OLD_ENV`). No docker, no host reads beyond `OLD_ENV`. Sourceable + unit-testable.
 - **Modify `scripts/06-install-stack.sh`** — remove the inline `preserve_env_keys` definition (lines ~34-48), the three inline read-forward blocks (lines ~139-159), and the heredoc+preserve block (lines ~161-189); source the lib and call `render_stack_env`. Keep the snapshot-to-`ENV_OLD`, `chmod 600`, and everything else unchanged.
 - **Modify `templates/docker-compose.yml`** — add `- CORTEX_API_KEY=${CORTEX_API_KEY:-}` to the `cortex` service env (it enforces the key) and the `dashboard` service env (its nginx injects the bearer via `generate-cortex-auth.sh`).
 - **Create `tests/lib/assert.sh`** — assert helpers (`assert_eq`, `assert_count`, `finish`).
@@ -32,7 +32,7 @@
 
 ### Task 1: Test harness + extract `.env` rendering into a pure helper (no behavior change)
 
-Characterization-first: stand up the harness and lock **current** behavior with a test, then move the logic verbatim (minus the image-pin preserve, which Task 2 asserts) so the refactor is guarded.
+Characterization-first: stand up the harness and lock **current** behavior with a test, then move the logic **verbatim** (image pins still in `preserve_env_keys` — Task 2 removes them red-green) so this task is a true no-op refactor.
 
 **Files:**
 - Create: `tests/lib/assert.sh`
@@ -131,8 +131,11 @@ _forward() { # VARNAME OLDENV
 }
 
 # Carry forward keys this script does not manage but must not wipe (Fleet/operator
-# writes them via set-dashboard-auth etc.). NOTE: image pins are intentionally NOT
-# here — the script-derived pin is authoritative (see render_stack_env).
+# writes them via set-dashboard-auth etc.).
+# NOTE: this is a VERBATIM extract of 06's current preserve list — image pins
+# INCLUDED — so Task 1 is a true no-op refactor. Task 2 removes CORTEX_IMAGE /
+# FRONTEND_IMAGE from this list (red-green) so the script-derived pin is the
+# single authoritative .env line.
 # $1 = old .env, $2 = new .env
 preserve_env_keys() {
   [ -f "$1" ] || return 0
@@ -141,7 +144,8 @@ preserve_env_keys() {
            OAUTH2_PROXY_REDIRECT_URL OAUTH2_PROXY_PROVIDER OAUTH2_PROXY_EMAIL_DOMAINS \
            OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS \
            DASHBOARD_USER DASHBOARD_PASS \
-           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN; do
+           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN \
+           CORTEX_IMAGE FRONTEND_IMAGE; do
     line=$(grep -E "^${k}=" "$1" | tail -1) && [ -n "$line" ] && echo "$line" >> "$2"
   done
   # The last iteration's status leaks as the function's exit status under set -e;
@@ -222,15 +226,15 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ### Task 2: Image pins are single-line and script-authoritative (fix #1)
 
 **Files:**
-- Modify: `tests/test-stack-env.sh`
-- (helper already correct — `preserve_env_keys` excludes the pins as of Task 1)
+- Modify: `tests/test-stack-env.sh` (add the failing regression test)
+- Modify: `scripts/lib/stack-env.sh` (remove the image pins from `preserve_env_keys`)
 
 **Interfaces:**
 - Consumes: `render_stack_env`, `assert_count`, `assert_eq` from Task 1.
 
-- [ ] **Step 1: Write the failing test — old pin must NOT survive**
+- [ ] **Step 1: Write the failing test — old pin must NOT survive as a duplicate**
 
-Add to `tests/test-stack-env.sh` (before `finish`):
+Add to `tests/test-stack-env.sh` (before the `finish` call at the end):
 ```bash
 # A box already carrying an OLD pin must end up with exactly ONE pin line = the
 # NEW script-derived digest (the duplicate-key/last-wins trap must be gone).
@@ -254,21 +258,38 @@ OLD
 
 test_pins_single_and_new
 ```
-(Move the `test_pins_single_and_new` call above `finish`.)
+(Place the `test_pins_single_and_new` call above `finish`.)
 
-- [ ] **Step 2: Run to verify it passes (helper already excludes pins from preserve)**
+- [ ] **Step 2: Run to verify it FAILS**
 
 Run: `bash tests/test-stack-env.sh`
-Expected: PASS. If `assert_count ... 2` had appeared for a pin, the helper still preserved it — re-check that `CORTEX_IMAGE`/`FRONTEND_IMAGE` are absent from `preserve_env_keys`. Expected here: all green.
+Expected: FAIL — with pins still in `preserve_env_keys`, the rendered `.env` has TWO `CORTEX_IMAGE=` lines (heredoc NEW + preserved OLD), so `assert_count "exactly one CORTEX_IMAGE line" == 1` fails (actual `2`); same for `FRONTEND_IMAGE`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Remove the image pins from `preserve_env_keys`**
+
+In `scripts/lib/stack-env.sh`, delete `CORTEX_IMAGE FRONTEND_IMAGE` from the `for k in …` allowlist (the last entry on the line ending `SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN`), and update the function comment to state the script-derived pin (written in the heredoc) is the single authoritative line — pins are intentionally NOT preserved. Result:
+```bash
+  for k in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET \
+           OAUTH2_PROXY_REDIRECT_URL OAUTH2_PROXY_PROVIDER OAUTH2_PROXY_EMAIL_DOMAINS \
+           OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS \
+           DASHBOARD_USER DASHBOARD_PASS \
+           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN; do
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `bash tests/test-stack-env.sh`
+Expected: PASS — one pin line each, equal to the new digest; `test_baseline` still green (its fixture has no pins).
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tests/test-stack-env.sh
-git commit -m "test(install): pin single-line + new-digest-wins regression (fix #1)
+git add scripts/lib/stack-env.sh tests/test-stack-env.sh
+git commit -m "fix(install): drop image pins from preserve — script pin is authoritative (#1)
 
-Locks the fix for the CORTEX_IMAGE/FRONTEND_IMAGE duplicate-key last-wins trap:
-a box carrying an old pin now renders exactly one pin line = the script digest.
+Removes the CORTEX_IMAGE/FRONTEND_IMAGE duplicate-key last-wins trap: a box
+carrying an old pin now renders exactly one pin line = the script digest, so a
+digest bump actually ships. Regression test locks it.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
