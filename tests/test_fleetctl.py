@@ -360,7 +360,8 @@ class TestUpdateHeartbeat(unittest.TestCase):
         steps = [e["step"] for e in out if e.get("event") == "progress"]
         self.assertEqual(steps, ["git-pull-install-repo", "reinstall-fleetctl",
                                  "hermes-update", "reinstall-cortex-plugin",
-                                 "repatch-cron-brain", "reinstall-souls"])
+                                 "repatch-cron-brain", "reinstall-souls",
+                                 "reinstall-identity-sync"])
         self.assertEqual(out[-1], {"event": "done", "component": "hermes"})
         self.assertEqual(seen[2], ["hermes", "update"])
 
@@ -380,7 +381,7 @@ class TestUpdateHeartbeat(unittest.TestCase):
         self.mod.run_cmd = lambda *a, **k: (0, "", "")
         code, out = run_main(self.mod, ["update", "stack"])
         steps = [e["step"] for e in out if e.get("event") == "progress"]
-        self.assertEqual(steps, ["compose-pull", "compose-up"])
+        self.assertEqual(steps, ["reinstall-stack"])
 
     def test_update_hermes_pipes_yes_into_hermes_update(self):
         seen = []
