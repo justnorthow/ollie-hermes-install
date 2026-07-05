@@ -739,6 +739,51 @@ class TestSetDashboardAuth(unittest.TestCase):
         self.assertTrue(any(a == ["systemctl", "--user", "restart", "ollie-orchestrator"] for a in calls))
         self.assertEqual(out[0], {"applied": True, "recreated": ["dashboard"], "orchestratorRestarted": True})
 
+    def test_supabase_mode_writes_cookie_domain(self):
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        self.mod.ORCH_ENV = os.path.join(d, "orch", ".env")
+        payload = {"mode": "supabase", "enabled": True,
+                   "supabase_url": "https://abc.supabase.co",
+                   "anon_key": "sb_publishable_xyz",
+                   "service_role_key": "sb_secret_123",
+                   "cookie_domain": ".jnow.io"}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        with open(os.path.join(d, ".env")) as f:
+            stack_env = f.read()
+        self.assertIn("SUPABASE_COOKIE_DOMAIN=.jnow.io", stack_env)
+
+    def test_supabase_disabled_blanks_cookie_domain(self):
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        self.mod.ORCH_ENV = os.path.join(d, "orch", ".env")
+        # Seed a stale cookie domain to prove disabling blanks it.
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write("SUPABASE_COOKIE_DOMAIN=.stale.io\n")
+        payload = {"mode": "supabase", "enabled": False}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        with open(os.path.join(d, ".env")) as f:
+            stack_env = f.read()
+        self.assertIn("SUPABASE_COOKIE_DOMAIN=\n", stack_env)
+
 
 class TestEnvSafety(unittest.TestCase):
     def setUp(self):

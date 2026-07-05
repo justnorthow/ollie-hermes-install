@@ -1115,29 +1115,33 @@ def cmd_restore_brain(args):
 def set_dashboard_auth_supabase(payload):
     """Configure Supabase cookie-gate auth from a `mode: "supabase"` payload.
 
-    Writes SUPABASE_URL/SUPABASE_ANON_KEY into the dashboard stack .env (anon key
-    is public) and SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY into the orchestrator
-    .env (secret, mode 600), clears the OAUTH2_PROXY_* gate so the dashboard
-    tri-state falls through to Supabase, recreates the dashboard WITHOUT the oauth
-    profile, removes any oauth2-proxy container, and restarts the orchestrator.
+    Writes SUPABASE_URL/SUPABASE_ANON_KEY/SUPABASE_COOKIE_DOMAIN into the
+    dashboard stack .env (anon key and cookie domain are public) and
+    SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY into the orchestrator .env (secret,
+    mode 600), clears the OAUTH2_PROXY_* gate so the dashboard tri-state falls
+    through to Supabase, recreates the dashboard WITHOUT the oauth profile,
+    removes any oauth2-proxy container, and restarts the orchestrator.
     """
     enabled = bool(payload.get("enabled"))
     supabase_url = payload.get("supabase_url", "") if enabled else ""
     anon_key = payload.get("anon_key", "") if enabled else ""
     service_role_key = payload.get("service_role_key", "") if enabled else ""
+    cookie_domain = payload.get("cookie_domain", "") if enabled else ""
     for key, value in {
         "SUPABASE_URL": supabase_url,
         "SUPABASE_ANON_KEY": anon_key,
         "SUPABASE_SERVICE_ROLE_KEY": service_role_key,
+        "SUPABASE_COOKIE_DOMAIN": cookie_domain,
     }.items():
         try:
             require_single_line_env(key, value)
         except ValueError as e:
             fail(str(e), 2)
 
-    # Dashboard stack .env — public URL + anon key.
+    # Dashboard stack .env — public URL + anon key + cookie domain.
     write_stack_env_key("SUPABASE_URL", supabase_url)
     write_stack_env_key("SUPABASE_ANON_KEY", anon_key)
+    write_stack_env_key("SUPABASE_COOKIE_DOMAIN", cookie_domain)
     # Clear the oauth2-proxy gate (CLIENT_ID is the tri-state trigger checked first).
     write_stack_env_key("OAUTH2_PROXY_CLIENT_ID", "")
     write_stack_env_key("OAUTH2_PROXY_CLIENT_SECRET", "")
@@ -1162,8 +1166,9 @@ def cmd_set_dashboard_auth(args):
 
     When payload["mode"] == "supabase", dispatches to set_dashboard_auth_supabase
     which writes SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY into the orchestrator .env
-    (mode 600) and SUPABASE_URL/SUPABASE_ANON_KEY into the stack .env, clears the
-    oauth2-proxy gate, recreates the dashboard, and removes the oauth2-proxy container.
+    (mode 600) and SUPABASE_URL/SUPABASE_ANON_KEY/SUPABASE_COOKIE_DOMAIN into the
+    stack .env, clears the oauth2-proxy gate, recreates the dashboard, and removes
+    the oauth2-proxy container.
 
     Otherwise (oauth2-proxy path): writes OAUTH2_PROXY_* keys into
     ~/hermes-stack/.env (mode 600), writes the allowed-emails list to
