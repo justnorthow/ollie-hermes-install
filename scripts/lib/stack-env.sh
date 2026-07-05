@@ -14,10 +14,8 @@ _forward() { # VARNAME OLDENV
 
 # Carry forward keys this script does not manage but must not wipe (Fleet/operator
 # writes them via set-dashboard-auth etc.).
-# NOTE: this is a VERBATIM extract of 06's current preserve list — image pins
-# INCLUDED — so Task 1 is a true no-op refactor. Task 2 removes CORTEX_IMAGE /
-# FRONTEND_IMAGE from this list (red-green) so the script-derived pin is the
-# single authoritative .env line.
+# NOTE: Image pins (CORTEX_IMAGE, FRONTEND_IMAGE) are intentionally NOT preserved — the
+# script-derived values in the heredoc are the single authoritative .env lines.
 # $1 = old .env, $2 = new .env
 preserve_env_keys() {
   [ -f "$1" ] || return 0
@@ -26,8 +24,7 @@ preserve_env_keys() {
            OAUTH2_PROXY_REDIRECT_URL OAUTH2_PROXY_PROVIDER OAUTH2_PROXY_EMAIL_DOMAINS \
            OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS \
            DASHBOARD_USER DASHBOARD_PASS \
-           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN \
-           CORTEX_IMAGE FRONTEND_IMAGE; do
+           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN; do
     line=$(grep -E "^${k}=" "$1" | tail -1) && [ -n "$line" ] && echo "$line" >> "$2"
   done
   # The last iteration's status leaks as the function's exit status under set -e;

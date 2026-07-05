@@ -31,5 +31,26 @@ OLD
   rm -f "$old" "$new"
 }
 
+# A box already carrying an OLD pin must end up with exactly ONE pin line = the
+# NEW script-derived digest (the duplicate-key/last-wins trap must be gone).
+test_pins_single_and_new() {
+  local old new; old="$(mktemp)"; new="$(mktemp)"
+  cat > "$old" <<'OLD'
+CORTEX_IMAGE=justnorthow/cortex@sha256:OLD
+FRONTEND_IMAGE=justnorthow/frontend@sha256:OLD
+OAUTH2_PROXY_CLIENT_ID=keepme
+OLD
+  ( unset FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL \
+          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+    render_stack_env "$new" "$old" )
+  assert_count "exactly one CORTEX_IMAGE line"   "$new" "CORTEX_IMAGE" 1
+  assert_count "exactly one FRONTEND_IMAGE line" "$new" "FRONTEND_IMAGE" 1
+  assert_eq "CORTEX_IMAGE = new digest"   "$(grep -E '^CORTEX_IMAGE=' "$new" | cut -d= -f2-)"   "justnorthow/cortex@sha256:NEW"
+  assert_eq "FRONTEND_IMAGE = new digest" "$(grep -E '^FRONTEND_IMAGE=' "$new" | cut -d= -f2-)" "justnorthow/frontend@sha256:NEW"
+  assert_eq "unrelated OAuth key still preserved" "$(grep -E '^OAUTH2_PROXY_CLIENT_ID=' "$new" | cut -d= -f2-)" "keepme"
+  rm -f "$old" "$new"
+}
+
 test_baseline
+test_pins_single_and_new
 finish
