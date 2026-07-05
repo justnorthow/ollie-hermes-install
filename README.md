@@ -84,7 +84,7 @@ bash scripts/09-install-identity-sync.sh
 #     Safe to install on un-enrolled boxes. Re-running after `hermes update` is not
 #     required (fleetctl lives outside ~/.hermes/hermes-agent), but is always safe.
 #     Note: `ollie-fleetctl update hermes` encodes the full post-update runbook
-#     (re-runs scripts 04, 07, 08) in one command when fleetctl is installed.
+#     (re-runs scripts 04, 07, 08, 09) in one command when fleetctl is installed.
 bash scripts/10-install-fleetctl.sh
 ```
 

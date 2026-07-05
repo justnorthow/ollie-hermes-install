@@ -33,8 +33,9 @@ test_orch_reinstalls_05() {
 # The README's after-update section must name every script the code re-applies.
 test_readme_matches_code() {
   local readme="$HERE/../README.md"
+  local section; section="$(awk '/^## After a .hermes update/{f=1;next} f&&/^## /{f=0} f' "$readme")"
   for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh; do
-    assert_eq "README names $s" "$(grep -q "$s" "$readme" && echo y)" "y"
+    assert_eq "after-update section names $s" "$(printf '%s' "$section" | grep -q "$s" && echo y)" "y"
   done
 }
 test_hermes_reapply
