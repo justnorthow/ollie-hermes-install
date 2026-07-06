@@ -108,7 +108,9 @@ This git-pulls the install repo and, after `hermes update`, re-applies everythin
 update wipes: the Cortex memory plugin (`04-install-cortex-plugin.sh`), the cron
 brain-tools patch (`07-patch-cron-brain.sh`), the agent personas
 (`08-install-souls.sh`), and the `ollie-set-identity` command allowlist
-(`09-install-identity-sync.sh`).
+(`09-install-identity-sync.sh`). It also heals any dashboard systemd unit still stuck
+on a stale `--host 0.0.0.0` (`scripts/lib/heal-dashboard-units.sh`), rewriting it to
+`127.0.0.1` and restarting it if it isn't running.
 
 **By hand (no fleetctl):** run the same set, in order:
 

@@ -18,6 +18,7 @@ test_hermes_reapply() {
   assert_eq "hermes has repatch-cron-brain"    "$(has_step hermes repatch-cron-brain && echo y)" "y"
   assert_eq "hermes has reinstall-souls"       "$(has_step hermes reinstall-souls && echo y)" "y"
   assert_eq "hermes re-applies identity-sync (09)" "$(has_step hermes reinstall-identity-sync && echo y)" "y"
+  assert_eq "hermes heals dashboard units"     "$(has_step hermes heal-dashboard-units && echo y)" "y"
 }
 # Stack update must re-run 06 (restages compose + refreshes pins), not a bare compose pull/up.
 test_stack_reinstalls_06() {
@@ -34,7 +35,7 @@ test_orch_reinstalls_05() {
 test_readme_matches_code() {
   local readme="$HERE/../README.md"
   local section; section="$(awk '/^## After a .hermes update/{f=1;next} f&&/^## /{f=0} f' "$readme")"
-  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh; do
+  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh; do
     assert_eq "after-update section names $s" "$(printf '%s' "$section" | grep -q "$s" && echo y)" "y"
   done
 }

@@ -424,6 +424,9 @@ def build_update_steps(component):
             # hermes update also resets ~/.hermes/config.yaml — re-apply the command
             # allowlist so ollie-set-identity runs without an approval prompt.
             ("reinstall-identity-sync", ["bash", os.path.join(INSTALL_DIR, "scripts", "09-install-identity-sync.sh")], 60),
+            # Heal stale per-profile dashboard units still on --host 0.0.0.0 (crash-loop
+            # under current Hermes). Idempotent; a correct unit is left byte-identical.
+            ("heal-dashboard-units", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "heal-dashboard-units.sh")], 60),
         ]
     if component in ("stack", "all"):
         # Re-run 06 (not a bare compose pull/up): it restages docker-compose.yml from
