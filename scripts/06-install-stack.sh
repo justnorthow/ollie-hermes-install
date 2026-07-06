@@ -85,34 +85,11 @@ for prof_env in "${HOME}"/.hermes/profiles/*/.env; do
 done
 DETECTED="[$(IFS=,; echo "${det_entries[*]}")]"
 
-# Merge detection with the EXISTING AGENTS_JSON so the orchestrator wizard's
-# displayName/color/model survive a re-run. Ports/URLs are refreshed from
-# detection; agents whose profile is gone are dropped.
+# Merge detection with the EXISTING AGENTS_JSON so operator/wizard-set fields
+# (displayName/color/model/scope/manager_visible) survive a re-run; ports/URLs are
+# refreshed from detection; agents whose profile is gone are dropped.
 EXISTING_AGENTS="$(grep -E '^AGENTS_JSON=' "${STACK_ENV}" 2>/dev/null | cut -d= -f2- || true)"
-AGENTS_JSON="$(EXISTING_AGENTS="${EXISTING_AGENTS}" DETECTED="${DETECTED}" python3 <<'PY'
-import json, os
-try:
-    prev = {a["id"]: a for a in json.loads(os.environ.get("EXISTING_AGENTS") or "[]")}
-except Exception:
-    prev = {}
-out = []
-for d in json.loads(os.environ["DETECTED"]):
-    p = prev.get(d["id"], {})
-    entry = {
-        "id": d["id"],
-        # Preserve a wizard-set displayName; else default (capitalized id; "Ollie" for default).
-        "name": p.get("name") or ("Ollie" if d["id"] == "default" else d["id"].capitalize()),
-        "gatewayUrl": f'http://host.docker.internal:{d["gw"]}',
-        "dashboardUrl": f'http://host.docker.internal:{d["dash"]}',
-    }
-    if p.get("color"):
-        entry["color"] = p["color"]
-    if p.get("model"):
-        entry["model"] = p["model"]
-    out.append(entry)
-print(json.dumps(out, separators=(",", ":")))
-PY
-)"
+AGENTS_JSON="$(EXISTING_AGENTS="${EXISTING_AGENTS}" DETECTED="${DETECTED}" python3 "${SCRIPT_DIR}/lib/merge-agents-json.py")"
 echo "    detected agents: $(echo "${AGENTS_JSON}" | python3 -c 'import sys,json; print(", ".join(a["id"] for a in json.load(sys.stdin)))')"
 
 echo "==> step 4: write ${STACK_ENV} (rewrites every run to keep it canonical)"
