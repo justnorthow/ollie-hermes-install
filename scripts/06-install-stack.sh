@@ -122,6 +122,15 @@ fi
 docker compose -f "${STACK_DIR}/docker-compose.yml" ${PROFILE_ARGS} pull --quiet
 docker compose -f "${STACK_DIR}/docker-compose.yml" ${PROFILE_ARGS} up -d
 
+# Cortex runs as non-root (uid 100) since the 2026-07-05 security batch, but
+# volumes created by the earlier root-running image are root-owned — sqlite
+# writes then fail with "attempt to write a readonly database" (bit jnow prod
+# 2026-07-07 on POST /brain/discover). Normalize ownership every run; no-op on
+# healthy volumes.
+docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T -u 0 cortex \
+  chown -R 100:101 /data /plugin 2>/dev/null \
+  || echo "    (cortex volume chown skipped — container not running)"
+
 echo
 echo "==> verification (give nginx 5s to finish its agents.conf regen)"
 sleep 5
