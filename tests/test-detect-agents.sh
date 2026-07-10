@@ -32,6 +32,16 @@ test_idempotent() {
   assert_eq "two runs identical" "$a" "$b"
 }
 
+test_empty_profiles() {
+  local d out; d="$(mktemp -d)"
+  printf 'API_SERVER_PORT=8642\nAPI_SERVER_KEY=k\n' > "$d/hermes.env"
+  mkdir -p "$d/profiles" "$d/units"
+  out="$(HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" SYSTEMD_USER_DIR="$d/units" \
+    bash -c ". '$HERE/../scripts/lib/detect-agents.sh' && detect_agents" 2>/dev/null)"
+  assert_eq "empty profiles returns default only" "$out" '[{"id":"default","gw":8642,"dash":9119}]'
+}
+
 test_detects_default_and_profile
 test_idempotent
+test_empty_profiles
 finish

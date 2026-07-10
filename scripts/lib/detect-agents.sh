@@ -16,7 +16,6 @@ detect_agents() {
   default_port="$(grep '^API_SERVER_PORT=' "${hermes_env}" | cut -d= -f2-)"
   entries+=("$(printf '{"id":"default","gw":%s,"dash":%s}' "${default_port}" "${default_dash}")")
 
-  shopt -s nullglob
   for prof_env in "${profiles_dir}"/*/.env; do
     [[ -f "${prof_env}" ]] || continue
     prof_name="$(basename "$(dirname "${prof_env}")")"
