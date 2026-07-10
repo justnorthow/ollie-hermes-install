@@ -553,8 +553,10 @@ test_validate_rejects_partial_and_malformed() {
   assert_eq "empty key rejected" "$rc" "1"
   (supabase_validate_inputs "http://abc.supabase.co" "k") >/dev/null 2>&1; rc=$?
   assert_eq "non-https rejected" "$rc" "1"
-  (supabase_validate_inputs "https://evil.example.com" "k") >/dev/null 2>&1; rc=$?
-  assert_eq "non-supabase host rejected" "$rc" "1"
+  (supabase_validate_inputs "https://supabase.internal.lan:8443" "k") >/dev/null 2>&1; rc=$?
+  assert_eq "self-hosted https origin accepted" "$rc" "0"
+  (supabase_validate_inputs "https://abc.supabase.co/extra/path" "k") >/dev/null 2>&1; rc=$?
+  assert_eq "url with path rejected" "$rc" "1"
   (supabase_validate_inputs "https://abc.supabase.co" "$(printf 'a\nb')") >/dev/null 2>&1; rc=$?
   assert_eq "multiline key rejected" "$rc" "1"
   (supabase_validate_inputs "https://abc.supabase.co" "sk-ok") >/dev/null 2>&1; rc=$?
@@ -608,8 +610,8 @@ supabase_validate_inputs() {
   if [[ -z "${url}" || -z "${key}" ]]; then
     echo "error: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are both required" >&2; return 1
   fi
-  if [[ ! "${url}" =~ ^https://[a-z0-9-]+\.supabase\.co/?$ ]]; then
-    echo "error: SUPABASE_URL must look like https://<ref>.supabase.co (got: ${url})" >&2; return 1
+  if [[ ! "${url}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]]; then
+    echo "error: SUPABASE_URL must be an https origin with no path — hosted (https://<ref>.supabase.co) or self-hosted (got: ${url})" >&2; return 1
   fi
   if [[ "${key}" == *$'\n'* || "${key}" == *" "* ]]; then
     echo "error: SUPABASE_SERVICE_ROLE_KEY must be a single-line value" >&2; return 1
@@ -1273,7 +1275,7 @@ it('instances has access_state column', () => {
 - Test: `tests/unit/provision-route.test.ts`
 
 **Interfaces:**
-- Produces: `ProvisionBody` + `ProvisionArgs` gain `supabaseUrl: string`, `supabaseAnonKey: string`, `supabaseServiceRoleKey: string`, `cookieDomain?: string | null`, `accessMode: 'direct' | 'tunnel'`. Validation (400 with `{error}`): all three Supabase values required; `supabaseUrl` must match `^https:\/\/[a-z0-9-]+\.supabase\.co\/?$`; keys must be single-line non-empty (`/^\S+$/`); `accessMode` must be exactly `'direct'` or `'tunnel'`.
+- Produces: `ProvisionBody` + `ProvisionArgs` gain `supabaseUrl: string`, `supabaseAnonKey: string`, `supabaseServiceRoleKey: string`, `cookieDomain?: string | null`, `accessMode: 'direct' | 'tunnel'`. Validation (400 with `{error}`): all three Supabase values required; `supabaseUrl` must match `^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/?$` (any https origin — hosted or self-hosted; no path); keys must be single-line non-empty (`/^\S+$/`); `accessMode` must be exactly `'direct'` or `'tunnel'`.
 
 - [ ] **Step 1: Failing tests** — in `tests/unit/provision-route.test.ts` (copy the existing auth/login helper pattern):
 

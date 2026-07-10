@@ -62,7 +62,7 @@ Optional keys observed on sandbox (`HIA_*`, `FRED_API_KEY`, `GUARDRAIL_ENFORCE_A
 
 Inputs (env): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_COOKIE_DOMAIN` (optional; empty = no cross-subdomain cookie).
 
-1. **Refuses partial input:** all of URL + anon + service-role present, or exit 1 with a clear message. URL must match `https://<ref>.supabase.co`.
+1. **Refuses partial input:** all of URL + anon + service-role present, or exit 1 with a clear message. URL must be a well-formed `https://` origin (optional port, no path) — hosted `<ref>.supabase.co` or self-hosted (decision 2026-07-10: keep the self-hosted door open; John may consolidate low-usage instances onto a shared or self-hosted Supabase to escape free-tier pausing).
 2. Writes `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` into the orchestrator `.env` (create-or-replace per key, preserving all other lines; single-line-value guard reused from the security batch).
 3. **Verifies the project is provision-ready** (operator applied the runbook SQL): `GET {SUPABASE_URL}/rest/v1/user_roles?select=user_id&limit=1` with the service-role key must return 200. Anything else = exit 1 with "project is not provision-ready — run docs/runbooks/supabase-ollie-core-provisioning.md". (PostgREST cannot execute DDL; see Decisions.)
 4. Restarts `ollie-orchestrator` (systemd user unit) and waits for its health endpoint.
