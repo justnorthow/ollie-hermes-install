@@ -64,6 +64,13 @@ echo "==> step 3b: render agent proxy maps into orchestrator .env"
 . "${SCRIPT_DIR}/lib/detect-agents.sh"
 detect_agents | python3 "${SCRIPT_DIR}/lib/render-proxy-maps.py"
 
+echo "==> step 3c: ensure stable dashboard session token + drop-ins"
+ENSURE_TOKEN_NO_RESTART=1 bash "${SCRIPT_DIR}/lib/ensure-dashboard-token.sh"
+systemctl --user daemon-reload
+for u in "${HOME}/.config/systemd/user"/hermes-dashboard*.service; do
+  [[ -f "$u" ]] && systemctl --user restart "$(basename "$u")" || true
+done
+
 echo "==> step 4: restart orchestrator + verify"
 systemctl --user restart ollie-orchestrator
 sleep 3
