@@ -26,6 +26,7 @@ fi
 # medium found". Linger (enabled in 01-bootstrap.sh) guarantees /run/user/<uid>.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCH_REPO="${ORCH_REPO:-https://github.com/justnorthow/ollie-hermes-orchestrator.git}"
 ORCH_DIR="${HOME}/ollie-hermes-orchestrator"
 ORCH_ENV="${HOME}/.config/ollie-orchestrator/.env"
@@ -58,6 +59,10 @@ if grep -q '^HERMES_GATEWAY_KEY=' "${ORCH_ENV}"; then
 else
   echo "HERMES_GATEWAY_KEY=${GATEWAY_KEY}" >> "${ORCH_ENV}"
 fi
+
+echo "==> step 3b: render agent proxy maps into orchestrator .env"
+. "${SCRIPT_DIR}/lib/detect-agents.sh"
+detect_agents | python3 "${SCRIPT_DIR}/lib/render-proxy-maps.py"
 
 echo "==> step 4: restart orchestrator + verify"
 systemctl --user restart ollie-orchestrator
