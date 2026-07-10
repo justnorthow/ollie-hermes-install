@@ -24,6 +24,8 @@ A Fleet provision runs every install script (01–09) and reports success, but t
 - **Architecture:** Approach A — extend the approved ownership model. Install scripts own what is derivable/generatable on-box; Fleet owns what only it knows (instance UUID, operator identity, form inputs) and instructs the box. The manual (non-Fleet) runbook path stays viable.
 - **Validation:** the GetBilled box is wiped and re-provisioned through the new flow as the end-to-end acceptance test. sandbox/jnow are grandfathered (no forced migration; the same pieces can heal them via the normal `update` paths).
 - Carried from 2026-07-06: `INSTANCE_ID` = Fleet instance UUID for new boxes; Fleet never gets Supabase write access; existing slug IDs grandfathered.
+- **Migrations (added 2026-07-10, post-exploration):** PostgREST cannot execute DDL, so `11` cannot apply SQL with the service-role key. The operator makes the project **provision-ready** per the committed runbook (`docs/runbooks/supabase-ollie-core-provisioning.md`: SQL Editor paste of `supabase/ollie-core/*.sql`, JWT-hook registration, Google provider, Site URL) *before* provisioning; `11-install-supabase.sh` **verifies** the schema via a REST probe and fails fast with a run-the-runbook message. No DB password or Management API token is collected.
+- **Operator identity (verified 2026-07-10):** Fleet's `FinalizeParams.userId` is a Fleet-local UUID, *not* a Supabase auth id. P6 therefore keys on the operator's **email**: the box helper resolves the Supabase auth user by email via the admin API, creating it with `email_confirm: true` if absent (Google sign-in auto-links — the proven sandbox pattern), then seeds `user_roles` with the returned id.
 
 ## Ownership model (extended)
 
@@ -46,7 +48,7 @@ Everything from the 2026-07-06 inventory, **plus** the rows that spec missed:
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_COOKIE_DOMAIN` | stack `.env` | Fleet → preserved keys | provision form / `instance_supabase` |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | orchestrator `.env` | install (`11`) | provision form, passed as env |
 | `DASHBOARD_BIND` | stack `.env` | Fleet (access mode) | form choice; already a preserved key |
-| core schema migrations | the instance's Supabase project | install (`11`) | `supabase/ollie-core/*.sql` in this repo (0001–0006 + runbook README, committed `14f8bc9`) |
+| core schema migrations | the instance's Supabase project | operator (runbook), **verified** by install (`11`) | `supabase/ollie-core/*.sql` in this repo (0001–0006 + runbook README, committed `14f8bc9`) |
 | `INSTANCE_ID` | orchestrator `.env` | Fleet (P5) | instance UUID |
 | `HERMES_GATEWAY_URLS`, `HERMES_DASHBOARD_URLS` | orchestrator `.env` | install (P3) | derived from profiles |
 | `HERMES_DASHBOARD_TOKEN` + `session-token.conf` drop-ins | orchestrator `.env` + systemd user dir | install (P4) | generated once, reused |
@@ -62,7 +64,7 @@ Inputs (env): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, 
 
 1. **Refuses partial input:** all of URL + anon + service-role present, or exit 1 with a clear message. URL must match `https://<ref>.supabase.co`.
 2. Writes `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` into the orchestrator `.env` (create-or-replace per key, preserving all other lines; single-line-value guard reused from the security batch).
-3. Runs the committed core migrations (`supabase/ollie-core/*.sql`, filename order) against the project via the service-role key (each migration is already idempotent — guards on existence). Failure of any migration = script failure with the migration name.
+3. **Verifies the project is provision-ready** (operator applied the runbook SQL): `GET {SUPABASE_URL}/rest/v1/user_roles?select=user_id&limit=1` with the service-role key must return 200. Anything else = exit 1 with "project is not provision-ready — run docs/runbooks/supabase-ollie-core-provisioning.md". (PostgREST cannot execute DDL; see Decisions.)
 4. Restarts `ollie-orchestrator` (systemd user unit) and waits for its health endpoint.
 5. Idempotent: re-run with the same creds is a no-op apart from the restart; re-run with *different* creds replaces them (that is the repoint-a-box path, deliberate).
 
@@ -82,7 +84,7 @@ After `10-install-fleetctl.sh`, Fleet writes `INSTANCE_ID=<instance UUID>` into 
 
 ### P6 — Fleet-instructs-box RBAC seed (fleet repo + box-local execution)
 
-Immediately after P5: Fleet passes the enrolling operator's Supabase `user_id` (from `FinalizeParams.userId` — the plan must verify this is the Supabase auth user id, not a Fleet-local id) + `INSTANCE_ID` to the box; the box runs a small install-repo helper (`scripts/lib/seed-operator-role.sh`) that upserts `user_roles(instance_id, user_id, role='platform_operator')` via its own `SUPABASE_SERVICE_ROLE_KEY` with `Prefer: resolution=merge-duplicates`. Exit non-zero if the orchestrator `.env` has no service-role key (ordering bug — S1 must have run).
+Immediately after P5: Fleet passes the enrolling operator's **email** (`FinalizeParams.userEmail`; Fleet's `userId` is Fleet-local — see Decisions) + `INSTANCE_ID` to the box; the box runs a small install-repo helper (`scripts/lib/seed-operator-role.py`) that resolves the Supabase auth user by email via the admin API (creating it with `email_confirm: true` if absent, so Google sign-in auto-links), then upserts `user_roles(instance_id, user_id, tier='platform_operator')` via its own `SUPABASE_SERVICE_ROLE_KEY` with `Prefer: resolution=merge-duplicates`. Exit non-zero if the orchestrator `.env` has no service-role key (ordering bug — S1 must have run).
 
 ### S2 — access mode (fleet repo)
 
