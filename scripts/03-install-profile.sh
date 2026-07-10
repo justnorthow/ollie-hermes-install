@@ -56,6 +56,7 @@ for p in "${GATEWAY_PORT}" "${DASHBOARD_PORT}"; do
   fi
 done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="${HOME}/.local/bin:${PATH}"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 PROFILE_DIR="${HOME}/.hermes/profiles/${NAME}"
@@ -169,6 +170,14 @@ WantedBy=default.target
 EOF
 systemctl --user daemon-reload
 systemctl --user enable --now "hermes-dashboard-${NAME}"
+
+echo "==> step 6b: refresh orchestrator proxy maps + dashboard token for the new agent"
+. "${SCRIPT_DIR}/lib/detect-agents.sh"
+detect_agents | python3 "${SCRIPT_DIR}/lib/render-proxy-maps.py"
+bash "${SCRIPT_DIR}/lib/ensure-dashboard-token.sh"
+if systemctl --user is-active --quiet ollie-orchestrator; then
+  systemctl --user restart ollie-orchestrator
+fi
 
 echo
 echo "==> verification (waiting for ports — first start can be slow)"
