@@ -383,6 +383,16 @@ class TestUpdateHeartbeat(unittest.TestCase):
         steps = [e["step"] for e in out if e.get("event") == "progress"]
         self.assertEqual(steps, ["reinstall-stack"])
 
+    def test_update_orchestrator_includes_supabase_verify(self):
+        mod = load_fleetctl()
+        steps = mod.build_update_steps("orchestrator")
+        names = [s[0] for s in steps]
+        self.assertIn("verify-supabase-config", names)
+        self.assertGreater(names.index("verify-supabase-config"), names.index("reinstall-orchestrator"))
+        argv = dict((s[0], s[1]) for s in steps)["verify-supabase-config"]
+        self.assertIn("11-install-supabase.sh", " ".join(argv))
+        self.assertIn("--verify-only", argv)
+
     def test_update_hermes_pipes_yes_into_hermes_update(self):
         seen = []
         def fake_run(args, timeout=30, input_text=None):
@@ -1022,6 +1032,40 @@ class TestSetVertical(unittest.TestCase):
                 code, _ = self._run(mod, {"vertical": "Bad Slug!"})
             self.assertNotEqual(code, 0)
             rc.assert_not_called()
+
+
+class TestCheckConfig(unittest.TestCase):
+    def test_check_config_emits_ok_and_gaps(self):
+        mod = load_fleetctl()
+        with mock.patch.object(mod, "run_cmd") as rc:
+            rc.return_value = (1, "PASS: INSTANCE_ID set\nFAIL: stack SUPABASE_ANON_KEY missing\nGAPS: 1\n", "")
+            with mock.patch.object(sys, "stdin", io.StringIO('{"operator_email":"jb@x.com"}')):
+                code, out = run_main(mod, ["check-config"])
+        result = out[-1]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["gaps"], 1)
+        self.assertIn("FAIL: stack SUPABASE_ANON_KEY missing", result["output"])
+
+    def test_check_config_passes_operator_email_into_env(self):
+        mod = load_fleetctl()
+        with mock.patch.object(mod, "run_cmd") as rc:
+            rc.return_value = (0, "PASS: INSTANCE_ID set\n", "")
+            with mock.patch.object(sys, "stdin", io.StringIO('{"operator_email":"jb@x.com"}')):
+                code, out = run_main(mod, ["check-config"])
+        env = rc.call_args[1].get("env")
+        self.assertIsNotNone(env)
+        self.assertEqual(env.get("OPERATOR_EMAIL"), "jb@x.com")
+        self.assertTrue(out[-1]["ok"])
+        self.assertEqual(out[-1]["gaps"], 0)
+
+    def test_check_config_defaults_with_no_stdin_payload(self):
+        mod = load_fleetctl()
+        with mock.patch.object(mod, "run_cmd") as rc:
+            rc.return_value = (0, "PASS: INSTANCE_ID set\n", "")
+            with mock.patch.object(sys, "stdin", io.StringIO("")):
+                code, out = run_main(mod, ["check-config"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out[-1]["ok"])
 
 
 if __name__ == "__main__":

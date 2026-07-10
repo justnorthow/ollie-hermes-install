@@ -30,12 +30,13 @@ test_stack_reinstalls_06() {
 test_orch_reinstalls_05() {
   assert_eq "orchestrator has reinstall-orchestrator" "$(has_step orchestrator reinstall-orchestrator && echo y)" "y"
   assert_eq "orchestrator no longer bare git-pull-orchestrator" "$(has_step orchestrator git-pull-orchestrator && echo y)" ""
+  assert_eq "orchestrator has verify-supabase-config" "$(has_step orchestrator verify-supabase-config && echo y)" "y"
 }
 # The README's after-update section must name every script the code re-applies.
 test_readme_matches_code() {
   local readme="$HERE/../README.md"
   local section; section="$(awk '/^## After a .hermes update/{f=1;next} f&&/^## /{f=0} f' "$readme")"
-  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh; do
+  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh 11-install-supabase.sh; do
     assert_eq "after-update section names $s" "$(printf '%s' "$section" | grep -q "$s" && echo y)" "y"
   done
 }

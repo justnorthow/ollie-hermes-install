@@ -83,9 +83,9 @@ def event(**kw):
     print(json.dumps(kw), flush=True)
 
 
-def run_cmd(args, timeout=30, input_text=None):
+def run_cmd(args, timeout=30, input_text=None, env=None):
     """Run a command; return (rc, stdout, stderr). Never raises on non-zero."""
-    env = dict(os.environ)
+    env = dict(env) if env is not None else dict(os.environ)
     env["PATH"] = LOCAL_BIN + os.pathsep + env.get("PATH", "")
     try:
         p = subprocess.run(args, capture_output=True, text=True,
@@ -443,6 +443,9 @@ def build_update_steps(component):
         # — all of which a bare pull/restart would miss when the unit or key contract changes.
         steps += [
             ("reinstall-orchestrator", ["bash", os.path.join(INSTALL_DIR, "scripts", "05-install-orchestrator.sh")], 600),
+            # Re-verify Supabase dashboard-auth config didn't drift. --verify-only exits 0
+            # with SKIP on boxes that don't use Supabase, so this can't break plain installs.
+            ("verify-supabase-config", ["bash", os.path.join(INSTALL_DIR, "scripts", "11-install-supabase.sh"), "--verify-only"], 120),
         ]
     return steps
 
@@ -1261,6 +1264,30 @@ def cmd_set_vertical(args):
     return set_vertical(payload.get("vertical", ""))
 
 
+def cmd_check_config(args):
+    """Run the done-done parity gate (scripts/check-box-config.sh) and emit
+    {"ok": bool, "gaps": int, "output": [lines]} for the Fleet dashboard.
+    Optional stdin payload {"operator_email": ...} is passed through as
+    OPERATOR_EMAIL so the gate can check operator-role seeding."""
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        payload = {}
+    env = dict(os.environ)
+    email = str(payload.get("operator_email") or "").strip()
+    if email:
+        env["OPERATOR_EMAIL"] = email
+    code, out, err = run_cmd(
+        ["bash", os.path.join(INSTALL_DIR, "scripts", "check-box-config.sh")],
+        timeout=180, env=env)
+    lines = [l for l in (out or "").splitlines() if l.strip()]
+    gaps = 0
+    for l in lines:
+        if l.startswith("GAPS:"):
+            gaps = int(l.split(":", 1)[1].strip() or 0)
+    emit({"ok": code == 0, "gaps": gaps, "output": lines})
+
+
 def cmd_heartbeat(args):
     env = read_env_file(FLEET_ENV)
     url, token = env.get("FLEET_URL", ""), env.get("FLEET_TOKEN", "")
@@ -1371,6 +1398,7 @@ def main(argv=None):
     sub.add_parser("set-vertical",
                    help="set VERTICAL in the dashboard .env and recreate the "
                         "dashboard ({\"vertical\": ...} JSON on stdin; empty clears)")
+    sub.add_parser("check-config", help="run the done-done parity gate")
 
     args = p.parse_args(argv)
 
@@ -1412,6 +1440,8 @@ def main(argv=None):
             cmd_set_hermes_ui_url(args)
         elif args.verb == "set-vertical":
             cmd_set_vertical(args)
+        elif args.verb == "check-config":
+            cmd_check_config(args)
     except SystemExit:
         raise
     except Exception as e:
