@@ -42,6 +42,20 @@ def build_role_payload(instance_id, user_id):
     return [{"instance_id": instance_id, "user_id": user_id, "tier": "platform_operator"}]
 
 
+def extract_users(data):
+    """Extract users list from data dict or pass through if already a list.
+
+    Handles three cases:
+    - dict with "users" key: return users if it's a list, else []
+    - list: return as-is
+    - other: return []
+    """
+    if isinstance(data, dict):
+        users = data.get("users", [])
+        return users if isinstance(users, list) else []
+    return data if isinstance(data, list) else []
+
+
 def _req(url, key, method="GET", body=None, extra_headers=None):
     headers = {"apikey": key, "Authorization": "Bearer " + key, "Content-Type": "application/json"}
     headers.update(extra_headers or {})
@@ -54,8 +68,8 @@ def _req(url, key, method="GET", body=None, extra_headers=None):
 
 def resolve_or_create_uid(base, key, email):
     for page in range(1, 11):
-        status, data = _req(f"{base}/auth/v1/admin/users?page={page}&per_page=200", key)
-        users = data.get("users", data if isinstance(data, list) else [])
+        _, data = _req(f"{base}/auth/v1/admin/users?page={page}&per_page=200", key)
+        users = extract_users(data)
         uid = find_user(users, email)
         if uid:
             return uid

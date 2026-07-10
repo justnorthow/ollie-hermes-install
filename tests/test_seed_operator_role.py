@@ -23,6 +23,27 @@ class TestHelpers(unittest.TestCase):
             [{"instance_id": "inst-1", "user_id": "u1", "tier": "platform_operator"}],
         )
 
+    def test_extract_users_from_dict(self):
+        m = load_mod()
+        data = {"users": [{"id": "u1", "email": "test@example.com"}]}
+        self.assertEqual(m.extract_users(data), [{"id": "u1", "email": "test@example.com"}])
+
+    def test_extract_users_from_list(self):
+        m = load_mod()
+        data = [{"id": "u2", "email": "test2@example.com"}]
+        self.assertEqual(m.extract_users(data), [{"id": "u2", "email": "test2@example.com"}])
+
+    def test_extract_users_dict_with_garbage_users(self):
+        m = load_mod()
+        data = {"users": "garbage"}
+        self.assertEqual(m.extract_users(data), [])
+
+    def test_extract_users_with_garbage_input(self):
+        m = load_mod()
+        self.assertEqual(m.extract_users("garbage"), [])
+        self.assertEqual(m.extract_users(None), [])
+        self.assertEqual(m.extract_users(123), [])
+
     def test_load_supabase_env(self):
         m = load_mod()
         with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
