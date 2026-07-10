@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/assert.sh"
+. "$HERE/../scripts/lib/supabase-env.sh"
+
+test_validate_rejects_partial_and_malformed() {
+  local rc
+  (supabase_validate_inputs "" "key") >/dev/null 2>&1; rc=$?
+  assert_eq "empty url rejected" "$rc" "1"
+  (supabase_validate_inputs "https://abc.supabase.co" "") >/dev/null 2>&1; rc=$?
+  assert_eq "empty key rejected" "$rc" "1"
+  (supabase_validate_inputs "http://abc.supabase.co" "k") >/dev/null 2>&1; rc=$?
+  assert_eq "non-https rejected" "$rc" "1"
+  (supabase_validate_inputs "https://supabase.internal.lan:8443" "k") >/dev/null 2>&1; rc=$?
+  assert_eq "self-hosted https origin accepted" "$rc" "0"
+  (supabase_validate_inputs "https://abc.supabase.co/extra/path" "k") >/dev/null 2>&1; rc=$?
+  assert_eq "url with path rejected" "$rc" "1"
+  (supabase_validate_inputs "https://abc.supabase.co" "$(printf 'a\nb')") >/dev/null 2>&1; rc=$?
+  assert_eq "multiline key rejected" "$rc" "1"
+  (supabase_validate_inputs "https://abc.supabase.co" "sk-ok") >/dev/null 2>&1; rc=$?
+  assert_eq "valid pair accepted" "$rc" "0"
+}
+
+test_write_orch_env_idempotent_and_600() {
+  local d; d="$(mktemp -d)"
+  export ORCH_ENV="$d/orch.env"
+  printf 'ORCHESTRATOR_KEY=x\n' > "$ORCH_ENV"
+  supabase_write_orch_env "https://abc.supabase.co" "svc-key-1"
+  assert_count "one URL line" "$ORCH_ENV" SUPABASE_URL 1
+  assert_count "one key line" "$ORCH_ENV" SUPABASE_SERVICE_ROLE_KEY 1
+  # chmod is a no-op on NTFS — only assert mode where the filesystem enforces it
+  _mode_probe="$(mktemp)"; chmod 600 "$_mode_probe"
+  if [[ "$(stat -c %a "$_mode_probe")" == "600" ]]; then
+    assert_eq "mode 600" "$(stat -c %a "$ORCH_ENV")" "600"
+  else
+    echo "SKIP: mode-600 assertion (filesystem does not enforce POSIX modes)"
+  fi
+  rm -f "$_mode_probe"
+  local a; a="$(cat "$ORCH_ENV")"
+  supabase_write_orch_env "https://abc.supabase.co" "svc-key-1"
+  assert_eq "re-run zero drift" "$(cat "$ORCH_ENV")" "$a"
+  supabase_write_orch_env "https://abc.supabase.co" "svc-key-2"
+  assert_eq "replace on new creds" "$(grep '^SUPABASE_SERVICE_ROLE_KEY=' "$ORCH_ENV" | cut -d= -f2-)" "svc-key-2"
+  assert_count "still one key line" "$ORCH_ENV" SUPABASE_SERVICE_ROLE_KEY 1
+  unset ORCH_ENV
+}
+
+test_probe_url() {
+  assert_eq "probe url" "$(supabase_schema_probe_url "https://abc.supabase.co")" \
+    "https://abc.supabase.co/rest/v1/user_roles?select=user_id&limit=1"
+}
+
+test_validate_rejects_partial_and_malformed
+test_write_orch_env_idempotent_and_600
+test_probe_url
+finish
