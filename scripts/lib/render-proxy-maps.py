@@ -60,6 +60,7 @@ def main():
     for key, rendered in maps.items():
         label = "gateway-urls" if "GATEWAY" in key else "dashboard-urls"
         if covers(current_value(lines, key), ids):
+            lines = set_key(lines, key, current_value(lines, key))
             print(f"{label}: kept")
             continue
         lines = set_key(lines, key, rendered)
