@@ -1292,9 +1292,10 @@ it('rejects provision without supabase creds', async () => {
   expect((await res.json()).error).toMatch(/supabase/i)
 })
 
-it('rejects a non-supabase url', async () => {
-  const res = await post('/api/provision', { ...good, supabaseUrl: 'https://evil.example.com' })
-  expect(res.status).toBe(400)
+it('rejects a non-https or path-carrying supabase url', async () => {
+  expect((await post('/api/provision', { ...good, supabaseUrl: 'http://abc.supabase.co' })).status).toBe(400)
+  expect((await post('/api/provision', { ...good, supabaseUrl: 'https://abc.supabase.co/extra' })).status).toBe(400)
+  expect((await post('/api/provision', { ...good, supabaseUrl: 'https://supabase.internal.lan:8443' })).status).toBe(202)
 })
 
 it('rejects a missing/invalid accessMode', async () => {
@@ -1321,8 +1322,8 @@ const cookieDomain = body.cookieDomain?.trim() || null
 const accessMode = body.accessMode
 if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey)
   return c.json({ error: 'supabaseUrl, supabaseAnonKey, and supabaseServiceRoleKey are required — create the project per the runbook first' }, 400)
-if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(supabaseUrl))
-  return c.json({ error: 'supabaseUrl must look like https://<ref>.supabase.co' }, 400)
+if (!/^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/?$/.test(supabaseUrl))
+  return c.json({ error: 'supabaseUrl must be an https origin with no path (hosted <ref>.supabase.co or self-hosted)' }, 400)
 if (!/^\S+$/.test(supabaseAnonKey) || !/^\S+$/.test(supabaseServiceRoleKey))
   return c.json({ error: 'supabase keys must be single-line values' }, 400)
 if (accessMode !== 'direct' && accessMode !== 'tunnel')
@@ -1478,7 +1479,8 @@ const good = { name: 'x', sshHost: 'h', rootKey: 'k', supabaseUrl: 'https://abc.
 it('accepts a complete form', () => expect(provisionReady(good)).toBeNull())
 it('requires supabase fields', () => expect(provisionReady({ ...good, supabaseUrl: '' })).toMatch(/supabase/i))
 it('requires an access mode', () => expect(provisionReady({ ...good, accessMode: '' })).toMatch(/access mode/i))
-it('rejects a bad supabase url', () => expect(provisionReady({ ...good, supabaseUrl: 'https://x.com' })).toMatch(/supabase\.co/))
+it('rejects a bad supabase url', () => expect(provisionReady({ ...good, supabaseUrl: 'http://abc.supabase.co' })).toMatch(/https/))
+it('accepts a self-hosted https origin', () => expect(provisionReady({ ...good, supabaseUrl: 'https://supabase.internal.lan:8443' })).toBeNull())
 ```
 
 - [ ] **Step 2: Run** `npx vitest run tests/unit/provision-form-logic.test.ts` — Expected: FAIL
@@ -1496,8 +1498,8 @@ export function provisionReady(f: ProvisionFields): string | null {
   if (!f.rootKey?.trim() && !f.rootPassword?.trim()) return 'a root credential is required'
   if (!f.supabaseUrl.trim() || !f.supabaseAnonKey.trim() || !f.supabaseServiceRoleKey.trim())
     return 'all three Supabase values are required — create the project per the runbook first'
-  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(f.supabaseUrl.trim()))
-    return 'Supabase URL must look like https://<ref>.supabase.co'
+  if (!/^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/?$/.test(f.supabaseUrl.trim()))
+    return 'Supabase URL must be an https origin with no path (hosted <ref>.supabase.co or self-hosted)'
   if (f.accessMode !== 'direct' && f.accessMode !== 'tunnel') return 'choose an access mode'
   return null
 }
