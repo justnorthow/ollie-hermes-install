@@ -60,30 +60,8 @@ GATEWAY_KEY="$(grep '^API_SERVER_KEY=' "${HERMES_ENV}" | cut -d= -f2-)"
 ORCH_KEY="$(grep '^ORCHESTRATOR_KEY=' "${ORCH_ENV}" | cut -d= -f2-)"
 
 echo "==> step 3: build AGENTS_JSON (auto-detect profiles, preserve wizard-set fields)"
-# Default profile is always present. Use its port from .env.
-DEFAULT_PORT="$(grep '^API_SERVER_PORT=' "${HERMES_ENV}" | cut -d= -f2-)"
-DEFAULT_DASH=9119
-# Detected profiles: just id + ports. Hand-rolled JSON (numbers unquoted) for portability.
-det_entries=()
-det_entries+=("$(printf '{"id":"default","gw":%s,"dash":%s}' "${DEFAULT_PORT}" "${DEFAULT_DASH}")")
-for prof_env in "${HOME}"/.hermes/profiles/*/.env; do
-  [[ -f "${prof_env}" ]] || continue
-  prof_name="$(basename "$(dirname "${prof_env}")")"
-  gw_port="$(grep '^API_SERVER_PORT=' "${prof_env}" | cut -d= -f2-)"
-  # Resolve the dashboard port from the systemd unit ExecStart line.
-  unit="${HOME}/.config/systemd/user/hermes-dashboard-${prof_name}.service"
-  if [[ -f "${unit}" ]]; then
-    dash_port="$(grep -oE -- '--port [0-9]+' "${unit}" | awk '{print $2}' | head -1)"
-  else
-    dash_port=""
-  fi
-  if [[ -z "${gw_port}" || -z "${dash_port}" ]]; then
-    echo "    skipping profile '${prof_name}' (missing port info)" >&2
-    continue
-  fi
-  det_entries+=("$(printf '{"id":"%s","gw":%s,"dash":%s}' "${prof_name}" "${gw_port}" "${dash_port}")")
-done
-DETECTED="[$(IFS=,; echo "${det_entries[*]}")]"
+. "${SCRIPT_DIR}/lib/detect-agents.sh"
+DETECTED="$(HERMES_ENV_FILE="${HERMES_ENV}" detect_agents)"
 
 # Merge detection with the EXISTING AGENTS_JSON so operator/wizard-set fields
 # (displayName/color/model/scope/manager_visible) survive a re-run; ports/URLs are
