@@ -51,7 +51,24 @@ test_probe_url() {
     "https://abc.supabase.co/rest/v1/user_roles?select=user_id&limit=1"
 }
 
+test_metacharacter_values_survive() {
+  local d; d="$(mktemp -d)"
+  export ORCH_ENV="$d/orch.env"
+  supabase_write_orch_env "https://abc.supabase.co" 'k3y&with|meta\chars'
+  local stored; stored="$(grep '^SUPABASE_SERVICE_ROLE_KEY=' "$ORCH_ENV" | cut -d= -f2-)"
+  assert_eq "metacharacter value stored literally" "$stored" 'k3y&with|meta\chars'
+  local before; before="$(cat "$ORCH_ENV")"
+  supabase_write_orch_env "https://abc.supabase.co" 'k3y&with|meta\chars'
+  assert_eq "re-run with same metachar value zero drift" "$(cat "$ORCH_ENV")" "$before"
+  supabase_write_orch_env "https://abc.supabase.co" 'a&b'
+  assert_count "still one key line after replace" "$ORCH_ENV" SUPABASE_SERVICE_ROLE_KEY 1
+  local final; final="$(grep '^SUPABASE_SERVICE_ROLE_KEY=' "$ORCH_ENV" | cut -d= -f2-)"
+  assert_eq "replaced with second metachar value" "$final" 'a&b'
+  unset ORCH_ENV
+}
+
 test_validate_rejects_partial_and_malformed
 test_write_orch_env_idempotent_and_600
 test_probe_url
+test_metacharacter_values_survive
 finish

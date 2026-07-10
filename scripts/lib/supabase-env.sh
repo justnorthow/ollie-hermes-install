@@ -17,9 +17,10 @@ supabase_validate_inputs() {
 }
 
 _supabase_set_env_key() {
-  local file="$1" k="$2" v="$3"
+  local file="$1" k="$2" v="$3" v_esc
+  v_esc="$(printf '%s' "${v}" | sed -e 's/[\\&|]/\\&/g')"
   if grep -q "^${k}=" "${file}" 2>/dev/null; then
-    sed -i "s|^${k}=.*|${k}=${v}|" "${file}"
+    sed -i "s|^${k}=.*|${k}=${v_esc}|" "${file}"
   else
     echo "${k}=${v}" >> "${file}"
   fi
@@ -30,9 +31,9 @@ supabase_write_orch_env() {
   local env_file="${ORCH_ENV:-$HOME/.config/ollie-orchestrator/.env}"
   mkdir -p "$(dirname "${env_file}")"
   touch "${env_file}"
+  chmod 600 "${env_file}"
   _supabase_set_env_key "${env_file}" SUPABASE_URL "${url}"
   _supabase_set_env_key "${env_file}" SUPABASE_SERVICE_ROLE_KEY "${key}"
-  chmod 600 "${env_file}"
 }
 
 supabase_schema_probe_url() {

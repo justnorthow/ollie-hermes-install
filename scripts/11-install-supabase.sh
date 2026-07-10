@@ -31,7 +31,7 @@ MODE="apply"
 
 if [[ "${MODE}" == "apply" ]]; then
   SUPABASE_URL="" ; SUPABASE_SERVICE_ROLE_KEY=""
-  while IFS='=' read -r k v; do
+  while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
     case "${k}" in
       SUPABASE_URL) SUPABASE_URL="${v}" ;;
       SUPABASE_SERVICE_ROLE_KEY) SUPABASE_SERVICE_ROLE_KEY="${v}" ;;
