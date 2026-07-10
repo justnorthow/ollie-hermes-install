@@ -61,6 +61,44 @@ test_each_gap_flagged() {
   assert_eq "stack anon gap exit 1" "$rc" "1"
 }
 
+test_detection_failure_fails_loudly() {
+  local d rc out
+  d="$(setup_healthy)"
+  # Point HERMES_ENV_FILE at nonexistent path to trigger detection failure
+  out="$(ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="/nonexistent/path/.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "detection failure exit 1" "$rc" "1"
+  assert_eq "detection error mentioned" "$(echo "$out" | grep -c 'could not detect agents')" "1"
+  # Both map keys should emit coverage-unverifiable FAILs
+  assert_eq "HERMES_GATEWAY_URLS unverifiable" "$(echo "$out" | grep -c 'FAIL: HERMES_GATEWAY_URLS coverage unverifiable')" "1"
+  assert_eq "HERMES_DASHBOARD_URLS unverifiable" "$(echo "$out" | grep -c 'FAIL: HERMES_DASHBOARD_URLS coverage unverifiable')" "1"
+}
+
+test_token_dot_exact_match() {
+  local d rc out TOKEN
+  d="$(setup_healthy)"
+  TOKEN="tok.123"
+  # Update orch.env with token containing dot
+  sed -i 's/HERMES_DASHBOARD_TOKEN=.*/HERMES_DASHBOARD_TOKEN='"$TOKEN"'/' "$d/orch.env"
+  # Update drop-in to match
+  printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=%s' "$TOKEN" > "$d/units/hermes-dashboard.service.d/session-token.conf"
+  # Should pass with exact token match
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "token with dot match exit 0" "$rc" "0"
+
+  # Now make drop-in differ by one char at dot position
+  d="$(setup_healthy)"
+  sed -i 's/HERMES_DASHBOARD_TOKEN=.*/HERMES_DASHBOARD_TOKEN='"$TOKEN"'/' "$d/orch.env"
+  printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=tokX123' > "$d/units/hermes-dashboard.service.d/session-token.conf"
+  # Should fail (old regex match would have false-passed)
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "token with dot mismatch exit 1" "$rc" "1"
+  assert_eq "token mismatch error" "$(echo "$out" | grep -c 'FAIL: session-token')" "1"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
+test_detection_failure_fails_loudly
+test_token_dot_exact_match
 finish

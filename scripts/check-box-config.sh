@@ -28,10 +28,27 @@ for k in INSTANCE_ID SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY HERMES_DASHBOARD_TOK
 done
 
 # 2. proxy maps cover every detected agent
-DETECTED="$(detect_agents 2>/dev/null || echo '[]')"
+DETECTED="$(detect_agents 2>/dev/null || true)"
+if ! DETECTED_OK="$(DETECTED="${DETECTED}" python3 - <<'PY'
+import json, os, sys
+try:
+    agents = json.loads(os.environ.get("DETECTED") or "null")
+    ok = isinstance(agents, list) and len(agents) >= 1 and all("id" in a for a in agents)
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+)"; then
+  fail "could not detect agents (hermes env/profiles unreadable) — proxy-map coverage cannot be verified"
+  DETECTED=""
+fi
+
 for k in HERMES_GATEWAY_URLS HERMES_DASHBOARD_URLS; do
-  MAP="$(orch_val "$k")"
-  if MISSING="$(DETECTED="${DETECTED}" MAP="${MAP}" python3 - <<'PY'
+  if [[ -z "${DETECTED}" ]]; then
+    fail "$k coverage unverifiable (agent detection failed)"
+  else
+    MAP="$(orch_val "$k")"
+    if MISSING="$(DETECTED="${DETECTED}" MAP="${MAP}" python3 - <<'PY'
 import json, os, sys
 try:
     ids = {a["id"] for a in json.loads(os.environ["DETECTED"])}
@@ -42,6 +59,7 @@ except Exception:
 print(",".join(missing)); sys.exit(1 if missing else 0)
 PY
 )"; then pass "$k covers all agents"; else fail "$k incomplete (missing: ${MISSING})"; fi
+  fi
 done
 
 # 3. session-token drop-in per dashboard unit, matching the orchestrator token
@@ -50,7 +68,7 @@ shopt -s nullglob
 for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   name="$(basename "${unit}")"
   conf="${UNIT_DIR}/${name}.d/session-token.conf"
-  if [[ -f "${conf}" ]] && grep -q "HERMES_DASHBOARD_SESSION_TOKEN=${TOKEN}$" "${conf}"; then
+  if [[ -f "${conf}" ]] && [[ "$(cat "${conf}")" == "$(printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=%s' "${TOKEN}")" ]]; then
     pass "session-token drop-in matches (${name})"
   else
     fail "session-token drop-in missing/mismatched (${name})"
