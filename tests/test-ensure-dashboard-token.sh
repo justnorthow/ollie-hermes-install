@@ -23,7 +23,14 @@ test_generates_and_drops_in() {
   assert_eq "drop-in profile" "$(cat "$d/units/hermes-dashboard-m.service.d/session-token.conf")" \
     "$(printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=%s' "$tok")"
   assert_eq "gateway untouched" "$([[ -d "$d/units/hermes-gateway.service.d" ]] && echo yes || echo no)" "no"
-  assert_eq "drop-in mode 600" "$(stat -c %a "$d/units/hermes-dashboard.service.d/session-token.conf")" "600"
+  # chmod is a no-op on NTFS — only assert mode where the filesystem enforces it
+  _mode_probe="$(mktemp)"; chmod 600 "$_mode_probe"
+  if [[ "$(stat -c %a "$_mode_probe")" == "600" ]]; then
+    assert_eq "drop-in mode 600" "$(stat -c %a "$d/units/hermes-dashboard.service.d/session-token.conf")" "600"
+  else
+    echo "SKIP: mode-600 assertion (filesystem does not enforce POSIX modes)"
+  fi
+  rm -f "$_mode_probe"
 }
 
 test_reuses_existing_token_and_is_idempotent() {
