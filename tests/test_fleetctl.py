@@ -794,6 +794,70 @@ class TestSetDashboardAuth(unittest.TestCase):
             stack_env = f.read()
         self.assertIn("SUPABASE_COOKIE_DOMAIN=\n", stack_env)
 
+    def test_supabase_mode_preserves_loopback_orch_url(self):
+        # Self-hosted boxes: the orchestrator talks to Kong via loopback
+        # (written by 11-install-supabase.sh --deploy). An Access-tab apply
+        # must NOT clobber it with the public sb- URL — that hairpins through
+        # cloudflared, gets bot-challenged, and 503s every /v1/auth/validate
+        # (broke the whole dashboard gate live, 2026-07-11). Only the
+        # service-role key updates; the stack .env still gets the public URL
+        # (the browser needs it).
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        orch_env = os.path.join(d, "orch", ".env")
+        self.mod.ORCH_ENV = orch_env
+        os.makedirs(os.path.dirname(orch_env))
+        with open(orch_env, "w") as f:
+            f.write("SUPABASE_URL=http://127.0.0.1:8000\nSUPABASE_SERVICE_ROLE_KEY=old\n")
+        payload = {"mode": "supabase", "enabled": True,
+                   "supabase_url": "https://sb-esource.getbilled.io",
+                   "anon_key": "anon", "service_role_key": "new_secret"}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        with open(orch_env) as f:
+            orch = f.read()
+        self.assertIn("SUPABASE_URL=http://127.0.0.1:8000", orch)
+        self.assertNotIn("SUPABASE_URL=https://sb-esource.getbilled.io", orch)
+        self.assertIn("SUPABASE_SERVICE_ROLE_KEY=new_secret", orch)
+        with open(os.path.join(d, ".env")) as f:
+            stack_env = f.read()
+        self.assertIn("SUPABASE_URL=https://sb-esource.getbilled.io", stack_env)
+
+    def test_supabase_mode_overwrites_non_loopback_orch_url(self):
+        # External-mode boxes (orchestrator pointed at a hosted project) keep
+        # the original behavior: the apply payload's URL wins.
+        calls = []
+        self.mod.run_cmd = lambda a, timeout=30, input_text=None: (calls.append(a), (0, "", ""))[1]
+        d = tempfile.mkdtemp()
+        self.mod.STACK_DIR = d
+        self.mod.COMPOSE_FILE = os.path.join(d, "docker-compose.yml")
+        orch_env = os.path.join(d, "orch", ".env")
+        self.mod.ORCH_ENV = orch_env
+        os.makedirs(os.path.dirname(orch_env))
+        with open(orch_env, "w") as f:
+            f.write("SUPABASE_URL=https://old.supabase.co\n")
+        payload = {"mode": "supabase", "enabled": True,
+                   "supabase_url": "https://new.supabase.co",
+                   "anon_key": "anon", "service_role_key": "sk"}
+        old = self.mod.sys.stdin
+        try:
+            self.mod.sys.stdin = io.StringIO(json.dumps(payload))
+            code, out = run_main(self.mod, ["set-dashboard-auth"])
+        finally:
+            self.mod.sys.stdin = old
+        self.assertEqual(code, 0)
+        with open(orch_env) as f:
+            orch = f.read()
+        self.assertIn("SUPABASE_URL=https://new.supabase.co", orch)
+
 
 class TestEnvSafety(unittest.TestCase):
     def setUp(self):

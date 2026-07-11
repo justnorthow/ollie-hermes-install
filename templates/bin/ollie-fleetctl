@@ -1155,7 +1155,22 @@ def set_dashboard_auth_supabase(payload):
     # Orchestrator .env — URL + service-role key, locked to mode 600.
     # Pass mode=0o600 so each write chmods the .tmp before os.replace publishes
     # it, closing the TOCTOU window where the secret would be world-readable.
-    write_env_key(ORCH_ENV, "SUPABASE_URL", supabase_url, mode=0o600)
+    #
+    # SELF-HOSTED GUARD: on a box with a co-located Supabase stack the
+    # orchestrator deliberately talks to Kong via loopback (11-install
+    # --deploy writes http://127.0.0.1:8000) — never the public sb- host,
+    # which hairpins through cloudflared and can get bot-challenged.
+    # Clobbering it with the payload's public URL broke the entire
+    # dashboard gate live (2026-07-11: /v1/auth/validate 503'd on every
+    # request until the loopback URL was restored). When the current
+    # orchestrator URL is loopback, preserve it and update only the
+    # service-role key.
+    orch_url = supabase_url
+    current_orch_url = read_env_file(ORCH_ENV).get("SUPABASE_URL", "")
+    if enabled and re.match(r"^https?://(127\.0\.0\.1|localhost)([:/]|$)",
+                            current_orch_url):
+        orch_url = current_orch_url
+    write_env_key(ORCH_ENV, "SUPABASE_URL", orch_url, mode=0o600)
     write_env_key(ORCH_ENV, "SUPABASE_SERVICE_ROLE_KEY", service_role_key, mode=0o600)
 
     # Recreate the dashboard WITHOUT the oauth profile, then drop the proxy.
