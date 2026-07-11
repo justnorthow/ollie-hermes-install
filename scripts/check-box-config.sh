@@ -108,11 +108,16 @@ if [[ "${SKIP_LIVE}" != "1" ]]; then
   for c in cortex ollie-dashboard; do
     if docker ps --format '{{.Names}}' | grep -qx "${c}"; then pass "container ${c} running"; else fail "container ${c} not running"; fi
   done
+  # whoami sits behind the orchestrator's bearer auth (require_bearer) — the
+  # X-Auth-User-Id header alone gets a 401 {"detail":"unauthorized"}.
+  ORCH_KEY="$(orch_val ORCHESTRATOR_KEY)"
   if [[ -z "${OPERATOR_EMAIL:-}" ]]; then
     fail "OPERATOR_EMAIL not provided — cannot run whoami probe"
+  elif [[ -z "${ORCH_KEY}" ]]; then
+    fail "ORCHESTRATOR_KEY missing/empty in orchestrator .env — cannot run whoami probe"
   else
     UID_OUT="$(python3 "${SCRIPT_DIR}/lib/seed-operator-role.py" --email "${OPERATOR_EMAIL}" --instance-id unused --print-uid 2>/dev/null || true)"
-    WHOAMI="$(curl -s -m 10 -H "X-Auth-User-Id: ${UID_OUT}" http://127.0.0.1:9123/v1/whoami || echo "")"
+    WHOAMI="$(curl -s -m 10 -H "Authorization: Bearer ${ORCH_KEY}" -H "X-Auth-User-Id: ${UID_OUT}" http://127.0.0.1:9123/v1/whoami || echo "")"
     if [[ -n "${UID_OUT}" ]] && REACH="$(WHOAMI="${WHOAMI}" python3 - <<'PY'
 import json, os, sys
 try:
