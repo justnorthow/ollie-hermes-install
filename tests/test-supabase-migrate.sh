@@ -75,7 +75,7 @@ test_fix_sequences_noop_without_serials() {
 
 # ---- bucket sync (curl shim) ----------------------------------------------
 CURL_LOG=""
-migrate_curl() { echo "$*" >> "$CURL_LOG"; if [[ "$*" == *"/object/profile-images/user-1/a.jpg"* && "$*" != *x-upsert* ]]; then printf 'JPEGDATA'; fi; return 0; }
+migrate_curl() { echo "$*" >> "$CURL_LOG"; if [[ "$*" == *"/storage/v1/bucket"* ]]; then printf '200'; elif [[ "$*" == *"/object/profile-images/user-1/a.jpg"* && "$*" != *x-upsert* ]]; then printf 'JPEGDATA'; fi; return 0; }
 
 test_sync_bucket_lists_downloads_uploads() {
   local d; d="$(mktemp -d)"; CURL_LOG="$d/curl"
@@ -85,6 +85,15 @@ test_sync_bucket_lists_downloads_uploads() {
   assert_eq "object downloaded from src" "$(grep -c 'src.supabase.co/storage/v1/object/profile-images/user-1/a.jpg' "$d/curl")" "1"
   assert_eq "object uploaded to dst with upsert" "$(grep -c 'x-upsert' "$d/curl")" "1"
   assert_eq "count reported" "$(echo "$out" | grep -c '1 object')" "1"
+}
+
+test_sync_bucket_fails_on_bucket_ensure_error() {
+  local d; d="$(mktemp -d)"; CURL_LOG="$d/curl"
+  migrate_curl() { echo "$*" >> "$CURL_LOG"; if [[ "$*" == *"/storage/v1/bucket"* ]]; then printf '500'; fi; return 0; }
+  sb_sync_bucket https://src.supabase.co SRCKEY http://127.0.0.1:8000 DSTKEY profile-images >/dev/null 2>&1
+  assert_eq "bucket ensure 500 exit 1" "$?" "1"
+  # restore the standard shim for any later tests
+  migrate_curl() { echo "$*" >> "$CURL_LOG"; if [[ "$*" == *"/storage/v1/bucket"* ]]; then printf '200'; elif [[ "$*" == *"/object/profile-images/user-1/a.jpg"* && "$*" != *x-upsert* ]]; then printf 'JPEGDATA'; fi; return 0; }
 }
 
 MIGRATE="$HERE/../scripts/12-migrate-supabase.sh"
@@ -128,6 +137,7 @@ test_copy_table_streams_and_counts
 test_copy_table_count_mismatch_fails
 test_fix_sequences_noop_without_serials
 test_sync_bucket_lists_downloads_uploads
+test_sync_bucket_fails_on_bucket_ensure_error
 test_migrate_requires_all_stdin_keys
 test_migrate_requires_deployed_stack
 test_migrate_preflight_ok_with_deployed_stack

@@ -128,7 +128,7 @@ for i in $(seq 1 10); do
 done
 set -e
 if [[ "${HEALTH:-}" != *'"status":"ok"'* ]]; then
-  echo "error: orchestrator did not come back healthy — rollback: restore ${ORCH_ENV}.bak-migrate-${TS} and restart" >&2
+  echo "error: orchestrator did not come back healthy — rollback the repoint: restore ${ORCH_ENV}.bak-migrate-${TS} and ${STACK_ENV}.bak-migrate-${TS}, then docker compose -f $(dirname "${STACK_ENV}")/docker-compose.yml up -d dashboard && systemctl --user restart ollie-orchestrator (full back-to-hosted rollback: runbook §8.6 / .bak-prehosted-*)" >&2
   exit 1
 fi
 
@@ -148,5 +148,8 @@ echo "   2. OPERATOR_EMAIL=<you> bash ~/ollie-hermes-install/scripts/check-box-c
 echo "   3. If this box is enrolled in Fleet: update the instance's Access tab to"
 echo "      ${LOCAL_PUBLIC_URL} + the local anon/service keys, then Apply."
 echo "   4. PAUSE (do not delete) the hosted project — 2-week soak per the runbook."
-echo "  Rollback: restore ${STACK_ENV}.bak-migrate-${TS} and ${ORCH_ENV}.bak-migrate-${TS},"
-echo "  then: docker compose -f $(dirname "${STACK_ENV}")/docker-compose.yml up -d dashboard && systemctl --user restart ollie-orchestrator"
+echo "  Rollback to HOSTED: use the .bak-prehosted-* files from runbook §8.2 step 0"
+echo "  (~/hermes-stack/.env.bak-prehosted-<ts> and ~/.config/ollie-orchestrator/.env.bak-prehosted-<ts>)."
+echo "  The .bak-migrate-${TS} files just written (${STACK_ENV}.bak-migrate-${TS} and"
+echo "  ${ORCH_ENV}.bak-migrate-${TS}) capture post-deploy LOCAL values, not hosted —"
+echo "  restoring them only undoes this migrate step's repoint, not the cutover."

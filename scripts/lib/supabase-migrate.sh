@@ -58,11 +58,20 @@ sb_fix_sequences() { # SCHEMA TABLE
 sb_sync_bucket() { # SRC_URL SRC_KEY DST_URL DST_KEY BUCKET
   local src="${1%/}" src_key="$2" dst="${3%/}" dst_key="$4" bucket="$5"
   local line name mime tmp n=0
-  # Ensure bucket on dst (idempotent: 409/400 "already exists" is fine).
-  migrate_curl -s -o /dev/null -X POST "${dst}/storage/v1/bucket" \
+  # Ensure bucket on dst (idempotent: 409/400 "already exists" is fine) — check
+  # the HTTP code rather than discarding it outright (an auth/network failure
+  # here would otherwise surface later as a misleading per-object upload
+  # error). Not `curl -f`: a 400/409 "already exists" on re-runs is expected
+  # and must not fail the run.
+  local ensure_code
+  ensure_code="$(migrate_curl -s -o /dev/null -w '%{http_code}' -X POST "${dst}/storage/v1/bucket" \
     -H "apikey: ${dst_key}" -H "Authorization: Bearer ${dst_key}" \
     -H "Content-Type: application/json" \
-    -d "{\"id\":\"${bucket}\",\"name\":\"${bucket}\",\"public\":true}"
+    -d "{\"id\":\"${bucket}\",\"name\":\"${bucket}\",\"public\":true}")"
+  case "${ensure_code}" in
+    200|201|400|409) ;;  # created, or already exists (storage-api returns 400/409 for dupes)
+    *) echo "error: bucket ensure failed for ${bucket} (HTTP ${ensure_code})" >&2; return 1 ;;
+  esac
   tmp="$(mktemp)"
   while IFS=$'\t' read -r name mime; do
     [[ -z "$name" ]] && continue

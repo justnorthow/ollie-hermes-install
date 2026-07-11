@@ -443,7 +443,18 @@ From the hosted dashboard (sandbox `mctnughllhcndngjqakt`, prod
 - **Settings → API** → `HOSTED_SUPABASE_URL` (`https://<ref>.supabase.co`)
   and the `service_role` key → `HOSTED_SERVICE_ROLE_KEY`.
 
-### 8.2 Prep (prod box only — sandbox already has these from Plan 1)
+### 8.2 Prep (step 0 required on BOTH boxes; the cloudflared/Google/deploy
+steps below are prod box only — sandbox already has those from Plan 1, but
+sandbox still runs its own refresh `--deploy` and MUST take the step-0 backup
+first)
+
+0. **Back up the hosted-pointing env files** (the only true back-to-hosted
+   rollback artifact — `--deploy` below rewrites both with local values,
+   and 12-migrate's own `.bak-migrate-*` files are taken AFTER that, so
+   they capture local values, not hosted):
+
+       cp ~/hermes-stack/.env ~/hermes-stack/.env.bak-prehosted-$(date +%s)
+       cp ~/.config/ollie-orchestrator/.env ~/.config/ollie-orchestrator/.env.bak-prehosted-$(date +%s)
 
 1. cloudflared public hostname `sb-ollie` → `HTTP` → `localhost:8000`
    (dash form — see §2).
@@ -472,7 +483,10 @@ From the hosted dashboard (sandbox `mctnughllhcndngjqakt`, prod
 Copies auth.users + auth.identities (UUIDs preserved; sessions dropped —
 everyone re-logs-in once) + the six ollie-core tables + the profile-images
 bucket, then repoints dashboard + orchestrator (loopback) and restarts.
-Idempotent — re-run freely; the hosted side is read-only to it.
+Idempotent during the cutover window — re-run freely UNTIL users start using
+the local stack; after acceptance a re-run reverts the box to the hosted
+snapshot, destroying any post-cutover rows (new users, sessions, uploads).
+The hosted side is read-only to it either way.
 
 ### 8.4 Acceptance (per box)
 
@@ -500,11 +514,13 @@ Idempotent — re-run freely; the hosted side is read-only to it.
 
 ### 8.6 Rollback (per box)
 
-The migrate script backs up both env files with a `.bak-migrate-<ts>` suffix
-and prints the exact restore commands. Manual form:
+Rollback to HOSTED restores from the `.bak-prehosted-*` files taken in §8.2
+step 0 — those are the only files that still hold the hosted-pointing values.
+The `.bak-migrate-*` files capture post-deploy (local-pointing) values — they
+roll back only the migrate step's repoint, not the cutover.
 
-    cp ~/hermes-stack/.env.bak-migrate-<ts> ~/hermes-stack/.env
-    cp ~/.config/ollie-orchestrator/.env.bak-migrate-<ts> ~/.config/ollie-orchestrator/.env
+    cp ~/hermes-stack/.env.bak-prehosted-<ts> ~/hermes-stack/.env
+    cp ~/.config/ollie-orchestrator/.env.bak-prehosted-<ts> ~/.config/ollie-orchestrator/.env
     docker compose -f ~/hermes-stack/docker-compose.yml up -d dashboard
     systemctl --user restart ollie-orchestrator
 
