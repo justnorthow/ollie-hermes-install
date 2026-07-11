@@ -27,7 +27,7 @@ remains the manual procedure for hosted/legacy Supabase projects.
 
 **Why it's best to do this first:** `--deploy`'s final health check (the tail's
 "verify the Supabase project is provision-ready" step) probes
-`${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` — the **public** `sb.<host>`
+`${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` — the **public** `sb-<host>`
 hostname, not `localhost:8000`. If the tunnel route isn't live yet, that
 probe comes back non-200 *after* the local stack has already come up
 successfully, migrations have applied, and the dashboard has been
@@ -40,8 +40,8 @@ end-to-end on the first `--deploy`, so it remains the recommended order.
 
 1. **Add a tunnel public hostname** (Zero Trust → Networks → Tunnels → the
    box's tunnel → Published application routes → Add):
-   - Subdomain: `sb.<instance>` (for `ollie.jnow.io`, that's subdomain `sb.ollie`,
-     domain `jnow.io` — full hostname `sb.ollie.jnow.io`)
+   - Subdomain: `sb-<instance>` (for `ollie.jnow.io`, that's subdomain `sb-ollie`,
+     domain `jnow.io` — full hostname `sb-ollie.jnow.io`)
    - Service: `HTTP` → `localhost:8000` (Kong's loopback-only port — see
      `templates/supabase/docker-compose.yml`, the `kong` service only binds
      `127.0.0.1:8000:8000`)
@@ -49,11 +49,19 @@ end-to-end on the first `--deploy`, so it remains the recommended order.
      hostname) — this is an API surface, not a login UI; Kong's `key-auth`/`acl`
      plugins plus Postgres RLS are the access control.
 
+**Single-level subdomain only — `sb-<instance>`, never `sb.<instance>`.**
+Cloudflare Universal SSL covers exactly one subdomain level (`*.jnow.io`); a
+dotted sub-subdomain like `sb.olliesandbox.jnow.io` is a *second* level
+(`*.olliesandbox.jnow.io`), which Universal SSL doesn't cover. DNS/the tunnel
+route still resolve and reach Kong, but the TLS handshake itself fails
+(`error 0A000410`) before any HTTP response comes back. Always use the dash
+form — `sb-<instance>.jnow.io` (e.g. `sb-ollie.jnow.io`, `sb-olliesandbox.jnow.io`).
+
 2. **Verify the route is live** (won't return `200` yet — the stack isn't
    deployed — but it must reach Kong, not time out or 522):
 
    ```bash
-   curl -s -o /dev/null -w '%{http_code}' https://sb.<instance-host>/auth/v1/health -H 'apikey: <anon>'
+   curl -s -o /dev/null -w '%{http_code}' https://sb-<instance-host>/auth/v1/health -H 'apikey: <anon>'
    ```
 
    Before `--deploy` this returns `000`/`502`/`522` (nothing is listening on
@@ -70,7 +78,7 @@ projects) → Credentials → the OAuth 2.0 Client ID → Authorized redirect UR
 Add:
 
 ```
-https://sb.<instance-host>/auth/v1/callback
+https://sb-<instance-host>/auth/v1/callback
 ```
 
 This matches `GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI=${SUPABASE_PUBLIC_URL}/auth/v1/callback`
@@ -79,12 +87,12 @@ in `templates/supabase/docker-compose.yml`'s `auth` service.
 ## 4. Deploy
 
 ```bash
-printf 'SUPABASE_PUBLIC_URL=https://sb.<instance-host>\nSITE_URL=https://<instance-host>\nGOOGLE_CLIENT_ID=<id>\nGOOGLE_CLIENT_SECRET=<secret>\n' \
+printf 'SUPABASE_PUBLIC_URL=https://sb-<instance-host>\nSITE_URL=https://<instance-host>\nGOOGLE_CLIENT_ID=<id>\nGOOGLE_CLIENT_SECRET=<secret>\n' \
   | bash scripts/11-install-supabase.sh --deploy
 ```
 
 - `SUPABASE_PUBLIC_URL` — the Supabase API hostname from step 2
-  (`https://sb.<instance-host>`).
+  (`https://sb-<instance-host>`).
 - `SITE_URL` — **required**, the browser-facing dashboard origin (e.g.
   `https://ollie.jnow.io`). It sets `GOTRUE_SITE_URL` and
   `GOTRUE_URI_ALLOW_LIST=${SITE_URL}/**`, i.e. it scopes which origins GoTrue
@@ -132,7 +140,7 @@ stdout at the end of step 6 above, e.g.:
 
 ```
     local stack deployed — keys for Fleet (store via provision flow):
-    SUPABASE_URL=https://sb.ollie.jnow.io
+    SUPABASE_URL=https://sb-ollie.jnow.io
     SITE_URL=https://ollie.jnow.io
     SUPABASE_ANON_KEY=eyJ...
     SERVICE_ROLE_KEY=eyJ...
@@ -151,7 +159,7 @@ saved).
 **a. JWKS endpoint serves an ES256 key**
 
 ```bash
-curl -s https://sb.<instance-host>/auth/v1/.well-known/jwks.json
+curl -s https://sb-<instance-host>/auth/v1/.well-known/jwks.json
 ```
 
 Expect a `{"keys":[...]}` body containing an entry with `"kty":"EC"`,
@@ -165,7 +173,7 @@ server-side, in `GOTRUE_JWT_KEYS`/`JWT_JWKS` in `~/supabase-stack/.env`,
 never published. Quick grep:
 
 ```bash
-curl -s https://sb.<instance-host>/auth/v1/.well-known/jwks.json | grep -o '"alg":"ES256"'
+curl -s https://sb-<instance-host>/auth/v1/.well-known/jwks.json | grep -o '"alg":"ES256"'
 ```
 
 **b. Browser Google login round-trip + whoami shows the seeded role**
@@ -225,20 +233,20 @@ Using the `SERVICE_ROLE_KEY` from step 4's output:
 
 ```bash
 # Create a bucket
-curl -s -X POST "https://sb.<instance-host>/storage/v1/bucket" \
+curl -s -X POST "https://sb-<instance-host>/storage/v1/bucket" \
   -H "apikey: <service-role-key>" -H "Authorization: Bearer <service-role-key>" \
   -H "Content-Type: application/json" \
   -d '{"name":"acceptance-test","public":false}'
 
 # Upload an object
 echo "hello from acceptance check" > /tmp/sb-test.txt
-curl -s -X POST "https://sb.<instance-host>/storage/v1/object/acceptance-test/hello.txt" \
+curl -s -X POST "https://sb-<instance-host>/storage/v1/object/acceptance-test/hello.txt" \
   -H "apikey: <service-role-key>" -H "Authorization: Bearer <service-role-key>" \
   -H "Content-Type: text/plain" \
   --data-binary @/tmp/sb-test.txt
 
 # Fetch it back
-curl -s "https://sb.<instance-host>/storage/v1/object/acceptance-test/hello.txt" \
+curl -s "https://sb-<instance-host>/storage/v1/object/acceptance-test/hello.txt" \
   -H "apikey: <service-role-key>" -H "Authorization: Bearer <service-role-key>"
 ```
 
@@ -257,7 +265,7 @@ must never see another user's session rows via PostgREST directly:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  "https://sb.<instance-host>/rest/v1/agent_sessions?select=id" \
+  "https://sb-<instance-host>/rest/v1/agent_sessions?select=id" \
   -H "apikey: <anon-key>" \
   -H "Authorization: Bearer <second-account-session-jwt>"
 ```

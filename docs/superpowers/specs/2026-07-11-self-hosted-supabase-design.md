@@ -52,8 +52,10 @@ install repo like every other stack component:
 - **Services dropped:** Realtime, Edge Functions, analytics/Logflare, vector,
   imgproxy. Studio + postgres-meta optional/off by default (enable on demand for
   admin work; migrations run via psql).
-- **Exposure:** the box's existing nginx fronts Kong at a per-instance hostname,
-  e.g. `sb.ollie.jnow.io` / `sb.olliesandbox.jnow.io` (Cloudflare DNS). This
+- **Exposure:** the box's existing nginx fronts Kong at a per-instance hostname
+  via Cloudflare DNS, e.g. `sb-ollie.jnow.io` / `sb-olliesandbox.jnow.io`
+  (single-level dash form — Cloudflare Universal SSL only covers one subdomain
+  level, so a dotted sub-subdomain like `sb.ollie.jnow.io` fails TLS). This
   becomes the instance's `SUPABASE_URL` for both browser (supabase-js) and
   orchestrator. Cookie domain `.jnow.io` unchanged. Same only-:22-open posture —
   traffic arrives via the existing tunnel/proxy path, never a raw port.

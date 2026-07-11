@@ -111,7 +111,7 @@ services:
       - rest
       - storage
     ports:
-      # Loopback only — public access is cloudflared (sb.<host> -> :8000).
+      # Loopback only — public access is cloudflared (sb-<host> -> :8000).
       - "127.0.0.1:8000:8000"
     environment:
       - KONG_DATABASE=off

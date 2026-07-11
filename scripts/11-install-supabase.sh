@@ -238,12 +238,12 @@ if [[ "${CODE}" != "200" ]]; then
   if [[ "${DEPLOY_ORIGIN}" == "1" ]]; then
     # Arrived here via --deploy fall-through, which already hard-gated on
     # the LOCAL loopback probe (deploy 4b) before repointing the dashboard.
-    # This is the PUBLIC hostname (sb.<host>) — its cloudflared route may
+    # This is the PUBLIC hostname (sb-<host>) — its cloudflared route may
     # simply not be live yet (runbook §2), which is a deployment-completeness
     # gap, not a broken stack. Warn and continue to the orchestrator env
     # write + restart instead of hard-failing; direct apply mode below is
     # unchanged (still a hard fail).
-    echo "WARNING: public probe returned HTTP ${CODE} — cloudflared hostname sb.<host> not live yet; complete the runbook cloudflared step, then re-run --deploy or verify manually"
+    echo "WARNING: public probe returned HTTP ${CODE} — cloudflared hostname sb-<host> not live yet; complete the runbook cloudflared step, then re-run --deploy or verify manually"
     PUBLIC_PROBE_WARNED=1
   else
     echo "error: schema probe returned HTTP ${CODE} — the project is not provision-ready." >&2
