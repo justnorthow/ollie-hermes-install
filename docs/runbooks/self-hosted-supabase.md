@@ -312,6 +312,8 @@ if the URLs/Google creds are already set) to pull the new images and recreate
 the containers. **Rollback:** revert the pin lines in
 `scripts/lib/supabase-stack-env.sh` and re-run `--deploy` again.
 
+**Migration ledger.** Applied `supabase/ollie-core/[0-9]*.sql` migrations are tracked by filename in `public._ollie_core_migrations` on the box and skipped on re-runs (deploy step 4), so a new migration file (higher number) is picked up automatically on the next `--deploy` without re-applying already-applied ones.
+
 **Maintainer note:** `shellcheck` wasn't available on the dev machine this
 stack was built on. Run it on the target box during Task-6 verification:
 

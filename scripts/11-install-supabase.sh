@@ -127,10 +127,21 @@ if [[ "${MODE}" == "deploy" ]]; then
   echo "    auth /health → 200 ✓"
 
   echo "==> deploy 4: apply ollie-core migrations (idempotent)"
+  SB_PSQL=(docker compose -f "${SB_DIR}/docker-compose.yml" --env-file "${SB_DIR}/.env" exec -T db psql -U postgres -d postgres)
+  # Ledger table so already-applied files are skipped (CREATE POLICY has no
+  # IF NOT EXISTS — re-piping an applied file would hard-fail under ON_ERROR_STOP).
+  # postgres-owned, no grants: not reachable through PostgREST's anon/authenticated roles.
+  "${SB_PSQL[@]}" -q -c "create table if not exists public._ollie_core_migrations (filename text primary key, applied_at timestamptz not null default now());"
   for f in "${SCRIPT_DIR}/../supabase/ollie-core/"[0-9]*.sql; do
-    echo "    psql < $(basename "$f")"
-    docker compose -f "${SB_DIR}/docker-compose.yml" --env-file "${SB_DIR}/.env" \
-      exec -T db psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$f"
+    base="$(basename "$f")"
+    applied="$("${SB_PSQL[@]}" -tAc "select 1 from public._ollie_core_migrations where filename = '${base}';")"
+    if [[ "${applied}" == "1" ]]; then
+      echo "    skip ${base} (already applied)"
+      continue
+    fi
+    echo "    psql < ${base}"
+    "${SB_PSQL[@]}" -v ON_ERROR_STOP=1 < "$f"
+    "${SB_PSQL[@]}" -q -c "insert into public._ollie_core_migrations (filename) values ('${base}');"
   done
 
   echo "==> deploy 5: point the dashboard at the local stack"
