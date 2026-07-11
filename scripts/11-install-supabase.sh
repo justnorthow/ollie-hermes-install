@@ -14,6 +14,16 @@
 # docs/runbooks/supabase-ollie-core-provisioning.md (runbook SQL + JWT hook +
 # Google provider). PostgREST cannot run DDL, so this script VERIFIES the
 # schema — it does not create it.
+#
+# verify-only semantics are intentionally non-fatal: a --verify-only invocation
+# (e.g. from the done-done gate) must never wedge an otherwise-healthy update.
+# If the schema probe comes back non-200 in verify-only mode, that means
+# Supabase is unreachable or not provision-ready — we print a WARNING and
+# exit 0 rather than failing the caller. Step 3 (orchestrator restart +
+# healthz) is skipped entirely in verify-only mode, since nothing changed and
+# there is nothing to restart for. Apply mode is unchanged: a non-200 probe
+# is a hard failure (exit 1) with the runbook pointer, and step 3 always runs
+# after a successful apply.
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -54,6 +64,10 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
   -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
   "${PROBE_URL}" || echo "000")"
 if [[ "${CODE}" != "200" ]]; then
+  if [[ "${MODE}" == "verify" ]]; then
+    echo "WARNING: schema probe returned HTTP ${CODE} — Supabase unreachable or not provision-ready; continuing (verify-only is non-fatal)"
+    exit 0
+  fi
   echo "error: schema probe returned HTTP ${CODE} — the project is not provision-ready." >&2
   echo "       Run the runbook first: docs/runbooks/supabase-ollie-core-provisioning.md" >&2
   echo "       (SQL Editor: supabase/ollie-core/0001..0006 in order, then register the" >&2
@@ -65,20 +79,23 @@ echo "    schema probe → 200 ✓"
 if [[ "${MODE}" == "apply" ]]; then
   echo "==> step 2: write SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to orchestrator .env"
   supabase_write_orch_env "${SUPABASE_URL}" "${SUPABASE_SERVICE_ROLE_KEY}"
-fi
 
-echo "==> step 3: restart orchestrator + verify"
-systemctl --user restart ollie-orchestrator
-set +e
-for i in $(seq 1 10); do
-  HEALTH=$(curl -s -m 5 http://localhost:9123/healthz || echo "")
-  [[ "${HEALTH}" == *'"status":"ok"'* ]] && break
-  sleep 2
-done
-set -e
-if [[ "${HEALTH:-}" != *'"status":"ok"'* ]]; then
-  echo "error: orchestrator did not come back healthy after restart" >&2
-  exit 1
+  echo "==> step 3: restart orchestrator + verify"
+  systemctl --user restart ollie-orchestrator
+  set +e
+  for i in $(seq 1 10); do
+    HEALTH=$(curl -s -m 5 http://localhost:9123/healthz || echo "")
+    [[ "${HEALTH}" == *'"status":"ok"'* ]] && break
+    sleep 2
+  done
+  set -e
+  if [[ "${HEALTH:-}" != *'"status":"ok"'* ]]; then
+    echo "error: orchestrator did not come back healthy after restart" >&2
+    exit 1
+  fi
+  echo
+  echo "✓ Supabase config applied + verified (orchestrator healthy)."
+else
+  echo
+  echo "✓ Supabase config verified (verify-only, no changes made — orchestrator not restarted)."
 fi
-echo
-echo "✓ Supabase config applied + verified (orchestrator healthy)."

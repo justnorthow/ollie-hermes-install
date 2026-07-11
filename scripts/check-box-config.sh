@@ -4,7 +4,10 @@
 # GAPS: <n> otherwise. Never mutates anything.
 #
 # Run as: the service user.  Env: OPERATOR_EMAIL (required unless CHECK_SKIP_LIVE=1),
-# CHECK_SKIP_LIVE=1 (config-file checks only), plus the usual overridable roots.
+# CHECK_SKIP_LIVE=1 (config-file checks only), ALLOW_PUBLIC_BIND=1 (allow stack
+# DASHBOARD_BIND=0.0.0.0 to PASS instead of FAIL — Fleet sets this for direct-mode
+# boxes, where a public :3000 bind is the chosen access mode, not an accident),
+# plus the usual overridable roots.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +87,18 @@ done
 for k in SUPABASE_URL SUPABASE_ANON_KEY; do
   if [[ -n "$(stack_val "$k")" ]]; then pass "stack ${k} set"; else fail "stack ${k} missing (login gate will render empty)"; fi
 done
+
+# 4b. stack DASHBOARD_BIND — public bind is only OK when it's a deliberate choice.
+# ALLOW_PUBLIC_BIND=1 is passed by Fleet's provisioner for direct-mode boxes,
+# where a public :3000 bind is the chosen access mode.
+DASHBOARD_BIND_VAL="$(stack_val DASHBOARD_BIND)"
+if [[ -z "${DASHBOARD_BIND_VAL}" || "${DASHBOARD_BIND_VAL}" == "127.0.0.1" ]]; then
+  pass "stack DASHBOARD_BIND loopback/unset"
+elif [[ "${DASHBOARD_BIND_VAL}" == "0.0.0.0" && "${ALLOW_PUBLIC_BIND:-0}" != "1" ]]; then
+  fail "stack DASHBOARD_BIND=0.0.0.0 (public :3000 bind)"
+else
+  pass "stack DASHBOARD_BIND=${DASHBOARD_BIND_VAL} (public bind allowed via ALLOW_PUBLIC_BIND=1)"
+fi
 
 # 5. live checks
 if [[ "${SKIP_LIVE}" != "1" ]]; then

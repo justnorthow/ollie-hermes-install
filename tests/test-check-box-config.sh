@@ -75,6 +75,34 @@ test_detection_failure_fails_loudly() {
   assert_eq "HERMES_DASHBOARD_URLS unverifiable" "$(echo "$out" | grep -c 'FAIL: HERMES_DASHBOARD_URLS coverage unverifiable')" "1"
 }
 
+test_dashboard_bind_gate() {
+  local d rc out
+
+  # 0.0.0.0 with no ALLOW_PUBLIC_BIND -> fail, named FAIL
+  d="$(setup_healthy)"; printf 'DASHBOARD_BIND=0.0.0.0\n' >> "$d/stack.env"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "DASHBOARD_BIND=0.0.0.0 exit 1" "$rc" "1"
+  assert_eq "DASHBOARD_BIND=0.0.0.0 named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: stack DASHBOARD_BIND=0.0.0.0 (public :3000 bind)')" "1"
+
+  # 0.0.0.0 with ALLOW_PUBLIC_BIND=1 -> passes
+  d="$(setup_healthy)"; printf 'DASHBOARD_BIND=0.0.0.0\n' >> "$d/stack.env"
+  out="$(ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 ALLOW_PUBLIC_BIND=1 bash "$GATE")"; rc=$?
+  assert_eq "DASHBOARD_BIND=0.0.0.0 + ALLOW_PUBLIC_BIND=1 exit 0" "$rc" "0"
+
+  # 127.0.0.1 -> passes
+  d="$(setup_healthy)"; printf 'DASHBOARD_BIND=127.0.0.1\n' >> "$d/stack.env"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "DASHBOARD_BIND=127.0.0.1 exit 0" "$rc" "0"
+
+  # absent -> passes
+  d="$(setup_healthy)"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "DASHBOARD_BIND absent exit 0" "$rc" "0"
+}
+
 test_token_dot_exact_match() {
   local d rc out TOKEN
   d="$(setup_healthy)"
@@ -100,5 +128,6 @@ test_token_dot_exact_match() {
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
+test_dashboard_bind_gate
 test_token_dot_exact_match
 finish
