@@ -87,10 +87,40 @@ test_sync_bucket_lists_downloads_uploads() {
   assert_eq "count reported" "$(echo "$out" | grep -c '1 object')" "1"
 }
 
+MIGRATE="$HERE/../scripts/12-migrate-supabase.sh"
+
+test_migrate_requires_all_stdin_keys() {
+  local d; d="$(mktemp -d)"
+  out="$(printf 'HOSTED_DB_URL=postgresql://x\n' | SB_DIR="$d" STACK_ENV="$d/stack.env" ORCH_ENV="$d/orch.env" MIGRATE_PREFLIGHT_ONLY=1 bash "$MIGRATE" 2>&1)"; rc=$?
+  assert_eq "missing keys exit 1" "$rc" "1"
+  assert_eq "names the missing key" "$(echo "$out" | grep -c 'HOSTED_SUPABASE_URL')" "1"
+}
+
+test_migrate_requires_deployed_stack() {
+  local d; d="$(mktemp -d)"   # no .env in SB_DIR -> stack not deployed
+  out="$(printf 'HOSTED_DB_URL=postgresql://x\nHOSTED_SUPABASE_URL=https://abc.supabase.co\nHOSTED_SERVICE_ROLE_KEY=k\n' \
+    | SB_DIR="$d" STACK_ENV="$d/stack.env" ORCH_ENV="$d/orch.env" MIGRATE_PREFLIGHT_ONLY=1 bash "$MIGRATE" 2>&1)"; rc=$?
+  assert_eq "undeployed stack exit 1" "$rc" "1"
+  assert_eq "points at --deploy" "$(echo "$out" | grep -c '11-install-supabase.sh --deploy')" "1"
+}
+
+test_migrate_preflight_ok_with_deployed_stack() {
+  local d; d="$(mktemp -d)"
+  printf 'SUPABASE_PUBLIC_URL=https://sb-x.jnow.io\nANON_KEY=a\nSERVICE_ROLE_KEY=s\nPOSTGRES_PASSWORD=p\n' > "$d/.env"
+  printf 'SUPABASE_URL=old\n' > "$d/stack.env"
+  out="$(printf 'HOSTED_DB_URL=postgresql://x\nHOSTED_SUPABASE_URL=https://abc.supabase.co\nHOSTED_SERVICE_ROLE_KEY=k\n' \
+    | SB_DIR="$d" STACK_ENV="$d/stack.env" ORCH_ENV="$d/orch.env" MIGRATE_PREFLIGHT_ONLY=1 bash "$MIGRATE" 2>&1)"; rc=$?
+  assert_eq "preflight-only exit 0" "$rc" "0"
+  assert_eq "announces plan" "$(echo "$out" | grep -c 'preflight OK')" "1"
+}
+
 test_common_columns_intersects_and_orders
 test_common_columns_empty_fails
 test_copy_table_streams_and_counts
 test_copy_table_count_mismatch_fails
 test_fix_sequences_noop_without_serials
 test_sync_bucket_lists_downloads_uploads
+test_migrate_requires_all_stdin_keys
+test_migrate_requires_deployed_stack
+test_migrate_preflight_ok_with_deployed_stack
 finish
