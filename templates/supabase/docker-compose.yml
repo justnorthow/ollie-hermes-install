@@ -123,6 +123,15 @@ services:
       - KONG_DECLARATIVE_CONFIG=/home/kong/kong.yml
       - KONG_DNS_ORDER=LAST,A,CNAME
       - KONG_PLUGINS=request-transformer,cors,key-auth,acl
+      # The sb-<host> hostname shares the apex cookie domain (.jnow.io /
+      # .<customer-domain>), so browsers send EVERY cookie for the zone —
+      # dashboard sessions, chunked supabase auth tokens, CF cookies — and
+      # the Cookie header routinely exceeds nginx's default 8k header
+      # buffer. Kong then 400s ({"message":"Bad request"}) on every path
+      # before any route matches (hit live on the sandbox cutover,
+      # 2026-07-11). Raise the per-header buffers well past real-world
+      # cookie jars.
+      - KONG_NGINX_HTTP_LARGE_CLIENT_HEADER_BUFFERS=8 24k
       # The template references the anon/service keys; render at container
       # start via KONG_NGINX-less env substitution is not available in kong
       # 2.8, so Task 4 renders kong.yml with the real keys before `up`.

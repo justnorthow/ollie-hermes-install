@@ -32,6 +32,11 @@ test_compose_shape() {
   # the wildcard/API-hostname combo the hosted-Supabase migration replaced.
   grep -F -q 'GOTRUE_SITE_URL=${SITE_URL}' "$COMPOSE"; assert_eq "site url env" "$?" "0"
   grep -F -q 'GOTRUE_URI_ALLOW_LIST=${SITE_URL}/**' "$COMPOSE"; assert_eq "scoped redirect allow-list" "$?" "0"
+  # sb-<host> shares the apex cookie domain, so browsers send the zone's
+  # whole cookie jar — beyond nginx's 8k default header buffer, kong 400s
+  # every request before routing (sandbox cutover, 2026-07-11).
+  grep -F -q 'KONG_NGINX_HTTP_LARGE_CLIENT_HEADER_BUFFERS=8 24k' "$COMPOSE"
+  assert_eq "kong enlarged client header buffers" "$?" "0"
 }
 
 test_jwt_secret_split_rest_vs_storage() {
