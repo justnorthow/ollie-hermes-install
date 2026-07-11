@@ -51,7 +51,7 @@ sb_fix_sequences() { # SCHEMA TABLE
   local schema="$1" table="$2" col
   while IFS= read -r col; do
     [[ -z "$col" ]] && continue
-    migrate_dst_psql -c "select setval(pg_get_serial_sequence('${schema}.${table}','${col}'), coalesce((select max(${col}) from ${schema}.${table}), 1));" || return 1
+    migrate_dst_psql -c "select setval(pg_get_serial_sequence('${schema}.${table}','${col}'), coalesce((select max(${col}) from ${schema}.${table}), 1));" </dev/null || return 1
   done < <(migrate_dst_psql -tAc "select column_name from information_schema.columns where table_schema='${schema}' and table_name='${table}' and column_default like 'nextval%'")
 }
 

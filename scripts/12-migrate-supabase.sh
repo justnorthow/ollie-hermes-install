@@ -53,6 +53,10 @@ if [[ -n "${MISSING}" ]]; then
   echo "error: missing required stdin key(s):${MISSING}" >&2; exit 1
 fi
 
+# Exported so the psql runner can receive it via docker -e (env forwarding),
+# keeping the hosted password out of docker's argv (ps-visible).
+export HOSTED_DB_URL
+
 # ---- preflight ---------------------------------------------------------------
 echo "==> migrate 1: preflight"
 if [[ ! -f "${SB_DIR}/.env" ]]; then
@@ -72,8 +76,8 @@ if [[ "${MIGRATE_PREFLIGHT_ONLY:-0}" == "1" ]]; then exit 0; fi
 # psql runners for the lib. Hosted client must be >= hosted server version —
 # use a modern client container. --network host: plain egress, no bridge DNS quirks.
 migrate_src_psql() {
-  docker run --rm -i --network host "${MIGRATE_PG_IMAGE}" \
-    psql "${HOSTED_DB_URL}" -v ON_ERROR_STOP=1 "$@"
+  docker run --rm -i --network host -e HOSTED_DB_URL "${MIGRATE_PG_IMAGE}" \
+    sh -c 'exec psql "$HOSTED_DB_URL" -v ON_ERROR_STOP=1 "$@"' -- "$@"
 }
 migrate_dst_psql() {
   docker compose -f "${SB_DIR}/docker-compose.yml" --env-file "${SB_DIR}/.env" \
