@@ -61,8 +61,9 @@ render_supabase_stack_env() { # OUT OLD
   anon="$(_sb_keep ANON_KEY "$old" anon_key "$bundle")"
   srk="$(_sb_keep SERVICE_ROLE_KEY "$old" service_role_key "$bundle")"
   # Operator-supplied: exported value wins, else carried forward.
-  local url gid gsec
+  local url site_url gid gsec
   url="${SUPABASE_PUBLIC_URL:-$(supabase_stack_env_val "$old" SUPABASE_PUBLIC_URL)}"
+  site_url="${SITE_URL:-$(supabase_stack_env_val "$old" SITE_URL)}"
   gid="${GOOGLE_CLIENT_ID:-$(supabase_stack_env_val "$old" GOOGLE_CLIENT_ID)}"
   gsec="${GOOGLE_CLIENT_SECRET:-$(supabase_stack_env_val "$old" GOOGLE_CLIENT_SECRET)}"
   local genabled="false"; [ -n "$gid" ] && genabled="true"
@@ -75,6 +76,8 @@ JWT_JWKS=${jwks}
 ANON_KEY=${anon}
 SERVICE_ROLE_KEY=${srk}
 SUPABASE_PUBLIC_URL=${url}
+# Browser-facing dashboard origin — GoTrue Site URL + redirect allow-list scope.
+SITE_URL=${site_url}
 GOOGLE_ENABLED=${genabled}
 GOOGLE_CLIENT_ID=${gid}
 GOOGLE_CLIENT_SECRET=${gsec}

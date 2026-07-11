@@ -8,6 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 test_fresh_render_generates_secrets_and_pins() {
   local d; d="$(mktemp -d)"
   export SUPABASE_PUBLIC_URL="https://sb.example.jnow.io"
+  export SITE_URL="https://example.jnow.io"
   export GOOGLE_CLIENT_ID="" GOOGLE_CLIENT_SECRET=""
   render_supabase_stack_env "$d/.env" ""
   for k in POSTGRES_PASSWORD JWT_SECRET GOTRUE_JWT_KEYS JWT_JWKS ANON_KEY \
@@ -18,9 +19,24 @@ test_fresh_render_generates_secrets_and_pins() {
   done
   assert_eq "google disabled when no client id" \
     "$(supabase_stack_env_val "$d/.env" GOOGLE_ENABLED)" "false"
+  assert_eq "fresh render sets SITE_URL" \
+    "$(supabase_stack_env_val "$d/.env" SITE_URL)" "https://example.jnow.io"
   # No image pin may ever be 'latest'.
   ! grep -E '^SB_.*_IMAGE=.*latest' "$d/.env"
   assert_eq "no latest pins" "$?" "0"
+}
+
+test_site_url_carried_forward_when_unset() {
+  local d; d="$(mktemp -d)"
+  export SUPABASE_PUBLIC_URL="https://sb.example.jnow.io"
+  export SITE_URL="https://example.jnow.io"
+  export GOOGLE_CLIENT_ID="" GOOGLE_CLIENT_SECRET=""
+  render_supabase_stack_env "$d/.env" ""
+  cp "$d/.env" "$d/.env.old"
+  unset SITE_URL
+  render_supabase_stack_env "$d/.env" "$d/.env.old"
+  assert_eq "SITE_URL carried forward from old .env" \
+    "$(supabase_stack_env_val "$d/.env" SITE_URL)" "https://example.jnow.io"
 }
 
 test_rerun_preserves_secrets_and_restamps_pins() {
@@ -75,6 +91,7 @@ EOF
 }
 
 test_fresh_render_generates_secrets_and_pins
+test_site_url_carried_forward_when_unset
 test_rerun_preserves_secrets_and_restamps_pins
 test_partial_secrets_rejected
 finish

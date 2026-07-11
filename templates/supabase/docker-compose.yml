@@ -37,8 +37,8 @@ services:
       - API_EXTERNAL_URL=${SUPABASE_PUBLIC_URL}
       - GOTRUE_DB_DRIVER=postgres
       - GOTRUE_DB_DATABASE_URL=postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
-      - GOTRUE_SITE_URL=${SUPABASE_PUBLIC_URL}
-      - GOTRUE_URI_ALLOW_LIST=*
+      - GOTRUE_SITE_URL=${SITE_URL}
+      - GOTRUE_URI_ALLOW_LIST=${SITE_URL}/**
       - GOTRUE_DISABLE_SIGNUP=false
       - GOTRUE_JWT_ADMIN_ROLES=service_role
       - GOTRUE_JWT_AUD=authenticated

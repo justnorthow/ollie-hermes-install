@@ -25,6 +25,13 @@ test_compose_shape() {
   # Hook + signing keys env present on auth.
   grep -q 'GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED' "$COMPOSE"; assert_eq "hook env" "$?" "0"
   grep -q 'GOTRUE_JWT_KEYS' "$COMPOSE"; assert_eq "signing keys env" "$?" "0"
+  grep -q 'GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI=pg-functions://postgres/public/custom_access_token_hook' "$COMPOSE"
+  assert_eq "hook uri env" "$?" "0"
+  grep -q 'PGRST_JWT_SECRET=${JWT_JWKS}' "$COMPOSE"; assert_eq "rest jwt secret env" "$?" "0"
+  # Site URL drives GoTrue's Site URL + scoped redirect allow-list — not
+  # the wildcard/API-hostname combo the hosted-Supabase migration replaced.
+  grep -F -q 'GOTRUE_SITE_URL=${SITE_URL}' "$COMPOSE"; assert_eq "site url env" "$?" "0"
+  grep -F -q 'GOTRUE_URI_ALLOW_LIST=${SITE_URL}/**' "$COMPOSE"; assert_eq "scoped redirect allow-list" "$?" "0"
 }
 
 test_kong_routes_and_consumers() {
