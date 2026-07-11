@@ -39,3 +39,18 @@ supabase_write_orch_env() {
 supabase_schema_probe_url() {
   printf '%s/rest/v1/user_roles?select=user_id&limit=1' "${1%/}"
 }
+
+# Render kong.yml from template, substituting the generated API keys.
+supabase_render_kong() { # TEMPLATE OUT ANON_KEY SERVICE_KEY
+  sed -e "s|__ANON_KEY__|$3|" -e "s|__SERVICE_ROLE_KEY__|$4|" "$1" > "$2"
+  chmod 600 "$2"
+}
+
+# Write the dashboard-facing Supabase vars into ~/hermes-stack/.env.
+# SUPABASE_COOKIE_DOMAIN is deliberately untouched (Fleet/operator-managed).
+supabase_write_stack_dashboard_env() { # STACK_ENV URL ANON_KEY
+  local f="$1"
+  [ -f "$f" ] || return 1
+  _supabase_set_env_key "$f" SUPABASE_URL "${2%/}"
+  _supabase_set_env_key "$f" SUPABASE_ANON_KEY "$3"
+}

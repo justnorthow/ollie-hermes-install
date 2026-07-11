@@ -67,8 +67,32 @@ test_metacharacter_values_survive() {
   unset ORCH_ENV
 }
 
+test_render_kong_substitutes_keys() {
+  local d; d="$(mktemp -d)"
+  printf 'key: __ANON_KEY__\nother: __SERVICE_ROLE_KEY__\n' > "$d/kong.tpl"
+  supabase_render_kong "$d/kong.tpl" "$d/kong.yml" "anon-123" "svc-456"
+  grep -q 'key: anon-123' "$d/kong.yml"; assert_eq "anon substituted" "$?" "0"
+  grep -q 'other: svc-456' "$d/kong.yml"; assert_eq "service substituted" "$?" "0"
+  ! grep -q '__' "$d/kong.yml"; assert_eq "no placeholders remain" "$?" "0"
+}
+
+test_write_stack_dashboard_env_idempotent() {
+  local d; d="$(mktemp -d)"
+  printf 'FRONTEND_IMAGE=x\nSUPABASE_URL=old\n' > "$d/stack.env"
+  supabase_write_stack_dashboard_env "$d/stack.env" "https://sb.new.jnow.io" "anon-key"
+  assert_count "one SUPABASE_URL line" "$d/stack.env" SUPABASE_URL 1
+  grep -q '^SUPABASE_URL=https://sb.new.jnow.io$' "$d/stack.env"
+  assert_eq "url updated" "$?" "0"
+  grep -q '^SUPABASE_ANON_KEY=anon-key$' "$d/stack.env"
+  assert_eq "anon key written" "$?" "0"
+  grep -q '^FRONTEND_IMAGE=x$' "$d/stack.env"
+  assert_eq "unrelated keys untouched" "$?" "0"
+}
+
 test_validate_rejects_partial_and_malformed
 test_write_orch_env_idempotent_and_600
 test_probe_url
 test_metacharacter_values_survive
+test_render_kong_substitutes_keys
+test_write_stack_dashboard_env_idempotent
 finish
