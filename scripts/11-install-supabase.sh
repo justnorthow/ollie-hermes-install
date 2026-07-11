@@ -222,6 +222,11 @@ if [[ "${MODE}" == "deploy" ]]; then
   # The orchestrator treats SUPABASE_URL as an opaque base URL (its own
   # tests use http://sb), so loopback is a safe substitution.
   SUPABASE_ORCH_URL="http://127.0.0.1:8000"
+  # GoTrue mints tokens with the PUBLIC issuer (GOTRUE_JWT_ISSUER in the
+  # compose template); the validator must expect that same issuer even
+  # though it talks to Kong via loopback — passed through to
+  # supabase_write_orch_env as SUPABASE_ISSUER in the tail below.
+  SUPABASE_ORCH_ISSUER="${SUPABASE_PUBLIC_URL%/}/auth/v1"
   MODE="apply"
   echo
   echo "    local stack deployed — keys for Fleet (store via provision flow):"
@@ -290,7 +295,7 @@ if [[ "${MODE}" == "apply" ]]; then
   # (loopback Kong URL); direct apply mode leaves it empty, so ${SUPABASE_ORCH_URL:-$SUPABASE_URL}
   # falls back to the operator-provided SUPABASE_URL — byte-identical to
   # before this change.
-  supabase_write_orch_env "${SUPABASE_ORCH_URL:-$SUPABASE_URL}" "${SUPABASE_SERVICE_ROLE_KEY}"
+  supabase_write_orch_env "${SUPABASE_ORCH_URL:-$SUPABASE_URL}" "${SUPABASE_SERVICE_ROLE_KEY}" "${SUPABASE_ORCH_ISSUER:-}"
 
   echo "==> step 3: restart orchestrator + verify"
   systemctl --user restart ollie-orchestrator

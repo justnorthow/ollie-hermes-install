@@ -46,6 +46,26 @@ test_write_orch_env_idempotent_and_600() {
   unset ORCH_ENV
 }
 
+test_write_orch_env_issuer_third_arg() {
+  local d; d="$(mktemp -d)"
+  export ORCH_ENV="$d/orch.env"
+  # With issuer: SUPABASE_ISSUER written (trailing slash trimmed).
+  supabase_write_orch_env "http://127.0.0.1:8000" "svc" "https://sb-x.jnow.io/auth/v1/"
+  assert_eq "issuer written" "$(grep '^SUPABASE_ISSUER=' "$ORCH_ENV" | cut -d= -f2-)" \
+    "https://sb-x.jnow.io/auth/v1"
+  assert_count "one issuer line" "$ORCH_ENV" SUPABASE_ISSUER 1
+  # Without issuer: existing SUPABASE_ISSUER left untouched (apply-mode must
+  # not erase the deploy-written value).
+  supabase_write_orch_env "http://127.0.0.1:8000" "svc2"
+  assert_eq "issuer preserved on issuerless write" \
+    "$(grep '^SUPABASE_ISSUER=' "$ORCH_ENV" | cut -d= -f2-)" "https://sb-x.jnow.io/auth/v1"
+  # Fresh file without issuer: no SUPABASE_ISSUER line appears.
+  export ORCH_ENV="$d/orch2.env"
+  supabase_write_orch_env "https://abc.supabase.co" "svc"
+  assert_count "no issuer line when omitted" "$ORCH_ENV" SUPABASE_ISSUER 0
+  unset ORCH_ENV
+}
+
 test_probe_url() {
   assert_eq "probe url" "$(supabase_schema_probe_url "https://abc.supabase.co")" \
     "https://abc.supabase.co/rest/v1/user_roles?select=user_id&limit=1"
@@ -101,6 +121,7 @@ test_write_stack_dashboard_env_idempotent() {
 
 test_validate_rejects_partial_and_malformed
 test_write_orch_env_idempotent_and_600
+test_write_orch_env_issuer_third_arg
 test_probe_url
 test_metacharacter_values_survive
 test_render_kong_substitutes_keys

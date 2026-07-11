@@ -118,7 +118,7 @@ if supabase_write_stack_dashboard_env "${STACK_ENV}" "${LOCAL_PUBLIC_URL}" "${LO
 else
   echo "error: ${STACK_ENV} missing — is the hermes stack installed?" >&2; exit 1
 fi
-supabase_write_orch_env "http://127.0.0.1:8000" "${LOCAL_SERVICE_KEY}"
+supabase_write_orch_env "http://127.0.0.1:8000" "${LOCAL_SERVICE_KEY}" "${LOCAL_PUBLIC_URL%/}/auth/v1"
 systemctl --user restart ollie-orchestrator
 set +e
 for i in $(seq 1 10); do

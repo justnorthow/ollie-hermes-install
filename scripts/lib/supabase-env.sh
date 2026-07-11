@@ -26,14 +26,23 @@ _supabase_set_env_key() {
   fi
 }
 
-supabase_write_orch_env() {
-  local url="${1%/}" key="$2"
+supabase_write_orch_env() { # URL KEY [ISSUER]
+  local url="${1%/}" key="$2" issuer="${3:-}"
   local env_file="${ORCH_ENV:-$HOME/.config/ollie-orchestrator/.env}"
   mkdir -p "$(dirname "${env_file}")"
   touch "${env_file}"
   chmod 600 "${env_file}"
   _supabase_set_env_key "${env_file}" SUPABASE_URL "${url}"
   _supabase_set_env_key "${env_file}" SUPABASE_SERVICE_ROLE_KEY "${key}"
+  # Self-hosted split: SUPABASE_URL is the loopback Kong URL while GoTrue
+  # mints tokens with the PUBLIC issuer (GOTRUE_JWT_ISSUER) — the validator
+  # needs the expected issuer separately or it rejects every token. Only
+  # written when provided (deploy/migrate paths); apply-mode on hosted
+  # projects omits it so the validator derives iss from SUPABASE_URL, and an
+  # existing value is left untouched.
+  if [[ -n "${issuer}" ]]; then
+    _supabase_set_env_key "${env_file}" SUPABASE_ISSUER "${issuer%/}"
+  fi
 }
 
 supabase_schema_probe_url() {

@@ -37,6 +37,10 @@ test_compose_shape() {
   # every request before routing (sandbox cutover, 2026-07-11).
   grep -F -q 'KONG_NGINX_HTTP_LARGE_CLIENT_HEADER_BUFFERS=8 24k' "$COMPOSE"
   assert_eq "kong enlarged client header buffers" "$?" "0"
+  # Without GOTRUE_JWT_ISSUER the self-hosted GoTrue mints iss-less tokens,
+  # which issuer-enforcing validators reject (GetBilled, 2026-07-11).
+  grep -F -q 'GOTRUE_JWT_ISSUER=${SUPABASE_PUBLIC_URL}/auth/v1' "$COMPOSE"
+  assert_eq "gotrue jwt issuer env" "$?" "0"
 }
 
 test_jwt_secret_split_rest_vs_storage() {

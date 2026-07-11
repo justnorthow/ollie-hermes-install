@@ -35,6 +35,12 @@ services:
       - GOTRUE_API_HOST=0.0.0.0
       - GOTRUE_API_PORT=9999
       - API_EXTERNAL_URL=${SUPABASE_PUBLIC_URL}
+      # Hosted Supabase always stamps iss=<url>/auth/v1; without this env the
+      # self-hosted GoTrue mints tokens with NO iss claim, and the
+      # orchestrator's issuer-enforcing /v1/auth/validate rejects every one
+      # (hit live on the GetBilled box, 2026-07-11). Must match the
+      # SUPABASE_ISSUER the deploy writes to the orchestrator env.
+      - GOTRUE_JWT_ISSUER=${SUPABASE_PUBLIC_URL}/auth/v1
       - GOTRUE_DB_DRIVER=postgres
       - GOTRUE_DB_DATABASE_URL=postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
       - GOTRUE_SITE_URL=${SITE_URL}
