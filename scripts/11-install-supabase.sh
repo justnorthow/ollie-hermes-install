@@ -84,6 +84,7 @@ if [[ "${MODE}" == "deploy" ]]; then
 
   echo "==> deploy 1: stage ${SB_DIR} (compose + env + kong)"
   mkdir -p "${SB_DIR}"
+  chmod 700 "${SB_DIR}"
   cp "${TEMPLATES}/docker-compose.yml" "${SB_DIR}/docker-compose.yml"
   ENV_OLD=""
   if [[ -f "${SB_DIR}/.env" ]]; then ENV_OLD="$(mktemp)"; cp "${SB_DIR}/.env" "${ENV_OLD}"; fi
@@ -98,6 +99,17 @@ if [[ "${MODE}" == "deploy" ]]; then
   echo "==> deploy 2: docker compose up -d"
   docker compose -f "${SB_DIR}/docker-compose.yml" --env-file "${SB_DIR}/.env" pull --quiet
   docker compose -f "${SB_DIR}/docker-compose.yml" --env-file "${SB_DIR}/.env" up -d
+
+  echo "==> deploy 2b: sync internal role passwords"
+  SB_PGPASS="$(supabase_stack_env_val "${SB_DIR}/.env" POSTGRES_PASSWORD)"
+  # supabase_admin is the image's superuser (postgres is NOT); TCP + PGPASSWORD
+  # because the image enforces password auth for supabase_admin even locally.
+  # POSTGRES_PASSWORD is hex (token_hex) so single-quoting inside SQL is safe.
+  docker compose -f "${SB_DIR}/docker-compose.yml" --env-file "${SB_DIR}/.env" \
+    exec -T -e PGPASSWORD="${SB_PGPASS}" db psql -h 127.0.0.1 -U supabase_admin -d postgres \
+    -c "ALTER USER supabase_auth_admin WITH PASSWORD '${SB_PGPASS}';" \
+    -c "ALTER USER authenticator WITH PASSWORD '${SB_PGPASS}';" \
+    -c "ALTER USER supabase_storage_admin WITH PASSWORD '${SB_PGPASS}';"
 
   echo "==> deploy 3: wait for auth healthy via kong"
   set +e

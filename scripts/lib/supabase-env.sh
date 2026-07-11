@@ -43,7 +43,12 @@ supabase_schema_probe_url() {
 # Render kong.yml from template, substituting the generated API keys.
 supabase_render_kong() { # TEMPLATE OUT ANON_KEY SERVICE_KEY
   sed -e "s|__ANON_KEY__|$3|" -e "s|__SERVICE_ROLE_KEY__|$4|" "$1" > "$2"
-  chmod 600 "$2"
+  # kong.yml contains the anon/service keys, but the container's non-root
+  # kong user reads this file via the "other" bit on the bind mount — 600
+  # (owner-only) makes kong fail with "Permission denied" at startup. 644
+  # is safe here because host-side protection comes from the stack dir
+  # itself being 0700 (set by the deploy script), not this file's mode.
+  chmod 644 "$2"
 }
 
 # Write the dashboard-facing Supabase vars into ~/hermes-stack/.env.

@@ -319,6 +319,37 @@ stack was built on. Run it on the target box during Task-6 verification:
 shellcheck scripts/11-install-supabase.sh scripts/lib/supabase-env.sh scripts/lib/supabase-stack-env.sh
 ```
 
+### Verification results (sandbox, 2026-07-11)
+
+Live end-to-end deploy against a 4GB CX22-class sandbox box. Three fixes
+found live and folded back into this repo (see the fix commit for detail —
+`scripts/11-install-supabase.sh` deploy 2b, `supabase_render_kong`'s file
+mode, and the `storage` service's `PGRST_JWT_SECRET`):
+
+- **Idle RAM ≈ 340MiB total** for the stack (`kong` 165MiB, `storage` 70MiB,
+  `db` 83MiB, `rest` 16MiB, `auth` 8MiB) — no box resize needed on a 4GB
+  CX22-class box.
+- **`supabase_admin` is the image's superuser, not `postgres`.** The
+  `supabase/postgres` image does not set `supabase_auth_admin`/
+  `authenticator`/`supabase_storage_admin`'s passwords from
+  `POSTGRES_PASSWORD` the way upstream `supabase/docker`'s init script does
+  (which this repo doesn't ship) — a fresh `--deploy` left auth/rest/storage
+  crash-looping with `password authentication failed`. The fix (deploy 2b)
+  syncs those three roles' passwords via `ALTER USER ... WITH PASSWORD`,
+  connecting as `supabase_admin` over TCP with `PGPASSWORD` — password auth
+  is enforced for `supabase_admin` even from inside the `db` container, so a
+  plain `psql -U postgres` or socket connection doesn't work here.
+- **Storage verifies HS256 keys only.** `storage-api` v1.25.7 (verified
+  live) treats `PGRST_JWT_SECRET` as a raw HS256 secret and 403s
+  (`signature verification failed`) if handed the JWKS — unlike PostgREST's
+  `rest` service, which accepts the JWKS fine. The anon/service keys are
+  HS256 so the raw-secret fix verifies those; **ES256 user-token storage
+  access is a known follow-up**, not yet covered.
+- **`shellcheck` still pending** — not installed on the sandbox box or the
+  dev machine this stack was built on. Run
+  `apt-get install -y shellcheck` on the box (or wire it into CI) and then
+  the command above.
+
 ## 7. Backups
 
 Enable Hetzner's automated server backups on the box (Cloud console → the

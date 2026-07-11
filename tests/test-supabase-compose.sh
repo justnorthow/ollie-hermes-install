@@ -34,6 +34,22 @@ test_compose_shape() {
   grep -F -q 'GOTRUE_URI_ALLOW_LIST=${SITE_URL}/**' "$COMPOSE"; assert_eq "scoped redirect allow-list" "$?" "0"
 }
 
+test_jwt_secret_split_rest_vs_storage() {
+  # PostgREST accepts a JWKS; storage-api (v1.25.7, verified) treats
+  # PGRST_JWT_SECRET as a raw HS256 secret and 403s on a JWKS. Scope each
+  # grep to its own service block (rest: up to storage:, storage: up to kong:)
+  # so a regression in either direction is caught.
+  local rest_block storage_block
+  rest_block="$(sed -n '/^  rest:/,/^  storage:/p' "$COMPOSE")"
+  storage_block="$(sed -n '/^  storage:/,/^  kong:/p' "$COMPOSE")"
+  echo "$rest_block" | grep -F -q 'PGRST_JWT_SECRET=${JWT_JWKS}'
+  assert_eq "rest service uses JWT_JWKS" "$?" "0"
+  echo "$storage_block" | grep -F -q 'PGRST_JWT_SECRET=${JWT_SECRET}'
+  assert_eq "storage service uses JWT_SECRET (raw HS256)" "$?" "0"
+  echo "$storage_block" | grep -F -q 'PGRST_JWT_SECRET=${JWT_JWKS}'
+  assert_eq "storage service does NOT use JWT_JWKS" "$?" "1"
+}
+
 test_kong_routes_and_consumers() {
   assert_file_exists "kong.yml exists" "$KONG"
   for path in "/auth/v1" "/rest/v1" "/storage/v1"; do
@@ -46,4 +62,5 @@ test_kong_routes_and_consumers() {
 
 test_compose_shape
 test_kong_routes_and_consumers
+test_jwt_secret_split_rest_vs_storage
 finish

@@ -84,7 +84,13 @@ services:
       - ANON_KEY=${ANON_KEY}
       - SERVICE_KEY=${SERVICE_ROLE_KEY}
       - POSTGREST_URL=http://rest:3000
-      - PGRST_JWT_SECRET=${JWT_JWKS}
+      # storage-api (v1.25.7, verified) treats this as a raw HS256 secret,
+      # not a JWKS — unlike PostgREST's `rest` service below, which accepts
+      # the JWKS fine. Using JWT_JWKS here 403s with "signature verification
+      # failed" for the service key. JWT_SECRET verifies the anon/service
+      # keys (both HS256) correctly; ES256 user-token storage access is a
+      # known follow-up.
+      - PGRST_JWT_SECRET=${JWT_SECRET}
       - DATABASE_URL=postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@db:5432/postgres
       - FILE_SIZE_LIMIT=52428800
       - STORAGE_BACKEND=file

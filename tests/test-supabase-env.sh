@@ -74,6 +74,16 @@ test_render_kong_substitutes_keys() {
   grep -q 'key: anon-123' "$d/kong.yml"; assert_eq "anon substituted" "$?" "0"
   grep -q 'other: svc-456' "$d/kong.yml"; assert_eq "service substituted" "$?" "0"
   ! grep -q '__' "$d/kong.yml"; assert_eq "no placeholders remain" "$?" "0"
+  # 644, not 600: the container's non-root kong user must read this bind
+  # mount via the "other" bit. chmod is a no-op on NTFS — only assert mode
+  # where the filesystem enforces it (mirrors the ORCH_ENV 600 probe above).
+  _mode_probe="$(mktemp)"; chmod 600 "$_mode_probe"
+  if [[ "$(stat -c %a "$_mode_probe")" == "600" ]]; then
+    assert_eq "kong.yml mode 644" "$(stat -c %a "$d/kong.yml")" "644"
+  else
+    echo "SKIP: kong.yml mode-644 assertion (filesystem does not enforce POSIX modes)"
+  fi
+  rm -f "$_mode_probe"
 }
 
 test_write_stack_dashboard_env_idempotent() {
