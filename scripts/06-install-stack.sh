@@ -110,6 +110,24 @@ docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T -u 0 cortex \
   || echo "    (cortex volume chown skipped — container not running)"
 
 echo
+echo "==> step 5b: hermes dashboard bridge (docker bridge IP -> loopback :9119)"
+# The native Hermes dashboard binds 127.0.0.1:9119 (DNS-rebinding guard), but
+# the dashboard container reaches it via host.docker.internal = 172.17.0.1 —
+# unreachable for a loopback-only bind. A socat unit bridges the docker bridge
+# IP to loopback (bound to 172.17.0.1 only; the host firewall covers external
+# exposure). Without it, /hermes-proxy (transcripts) and the gated
+# <instance>-hermes hostname 502 (hit live on the GetBilled box, 2026-07-11 —
+# the unit existed only hand-built on older boxes).
+if ! command -v socat >/dev/null; then
+  sudo apt-get install -y -q socat >/dev/null
+fi
+sudo install -m 0644 "${SCRIPT_DIR}/../templates/systemd/hermes-dashboard-bridge.service" \
+  /etc/systemd/system/hermes-dashboard-bridge.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now hermes-dashboard-bridge.service
+echo "    bridge: $(systemctl is-active hermes-dashboard-bridge.service)"
+
+echo
 echo "==> verification (give nginx 5s to finish its agents.conf regen)"
 sleep 5
 set +e

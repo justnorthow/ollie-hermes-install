@@ -1,0 +1,15 @@
+[Unit]
+Description=Bridge docker0 172.17.0.1:9119 -> loopback Hermes dashboard 127.0.0.1:9119
+Documentation=Lets the dashboard container (and gated hostname) reach the loopback-bound native Hermes dashboard. Bound to the private docker bridge IP only; host firewall blocks :9119 externally.
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP4-LISTEN:9119,bind=172.17.0.1,fork,reuseaddr TCP4:127.0.0.1:9119
+Restart=always
+RestartSec=2
+DynamicUser=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
