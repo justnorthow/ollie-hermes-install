@@ -114,6 +114,14 @@ test_migrate_preflight_ok_with_deployed_stack() {
   assert_eq "announces plan" "$(echo "$out" | grep -c 'preflight OK')" "1"
 }
 
+test_storage_gets_jwt_jwks() {
+  local compose="$HERE/../templates/supabase/docker-compose.yml"
+  # The JWT_JWKS line must appear inside the storage service block (between
+  # 'storage:' and the next top-level service key).
+  block="$(awk '/^  storage:/{f=1} f&&/^  [a-z]/&&!/^  storage:/{f=0} f' "$compose")"
+  assert_eq "storage has JWT_JWKS" "$(echo "$block" | grep -c 'JWT_JWKS=\${JWT_JWKS}')" "1"
+}
+
 test_common_columns_intersects_and_orders
 test_common_columns_empty_fails
 test_copy_table_streams_and_counts
@@ -123,4 +131,5 @@ test_sync_bucket_lists_downloads_uploads
 test_migrate_requires_all_stdin_keys
 test_migrate_requires_deployed_stack
 test_migrate_preflight_ok_with_deployed_stack
+test_storage_gets_jwt_jwks
 finish

@@ -91,6 +91,11 @@ services:
       # keys (both HS256) correctly; ES256 user-token storage access is a
       # known follow-up.
       - PGRST_JWT_SECRET=${JWT_SECRET}
+      # JWKS (EC public + legacy symmetric) so storage verifies browser ES256
+      # user tokens — PGRST_JWT_SECRET alone only verifies HS256 (anon/service),
+      # which 403'd user-token uploads (profile-images). Supabase self-hosted
+      # signing-keys doc: storage consumes JWT_JWKS.
+      - JWT_JWKS=${JWT_JWKS}
       - DATABASE_URL=postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@db:5432/postgres
       - FILE_SIZE_LIMIT=52428800
       - STORAGE_BACKEND=file
