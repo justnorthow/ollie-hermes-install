@@ -16,7 +16,14 @@ Per box (example values for `ollie.jnow.io` → hostname `ollie-hermes.jnow.io`)
 2. **Add a tunnel public hostname** (Zero Trust → Networks → Tunnels → the box's
    tunnel → Published application routes → Add):
    - Subdomain `ollie-hermes`, domain `jnow.io`
-   - Service: `HTTP` → `localhost:9119`
+   - Service: `HTTP` → `localhost:3000` — **not** `:9119`. The dashboard's
+     nginx container (port 3000) owns this hostname via `server_name`: it
+     applies the auth gate and rewrites Host/Origin to `127.0.0.1:9119`
+     (the loopback dashboard rejects any other Host — "Invalid Host
+     header", a DNS-rebinding guard; see
+     ollie-hermes-frontend scripts/generate-hermes-host.sh). Pointing the
+     route straight at `:9119` bypasses both the auth gate and the
+     rewrites and gets that error.
 
 3. **Add a Cloudflare Access application** (Zero Trust → Access → Applications →
    Add → Self-hosted):
