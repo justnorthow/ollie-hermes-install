@@ -110,6 +110,16 @@ if [[ "${MODE}" == "deploy" ]]; then
   export SUPABASE_PUBLIC_URL SITE_URL GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
   render_supabase_stack_env "${SB_DIR}/.env" "${ENV_OLD}"
   [[ -n "${ENV_OLD}" ]] && rm -f "${ENV_OLD}"
+  # Re-read the Google creds from the rendered .env and re-export: on a
+  # carry-forward re-run (empty stdin) the exports above are EMPTY strings,
+  # and docker compose gives the process environment precedence over
+  # --env-file — so the empty exports would recreate auth with a blank
+  # Google client and every login 400s at /authorize (hit live on the
+  # sandbox cutover, 2026-07-11). The rendered .env always holds the
+  # preserved values, so it is the source of truth for interpolation.
+  GOOGLE_CLIENT_ID="$(supabase_stack_env_val "${SB_DIR}/.env" GOOGLE_CLIENT_ID)"
+  GOOGLE_CLIENT_SECRET="$(supabase_stack_env_val "${SB_DIR}/.env" GOOGLE_CLIENT_SECRET)"
+  export GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
   ANON_KEY="$(supabase_stack_env_val "${SB_DIR}/.env" ANON_KEY)"
   SERVICE_ROLE_KEY="$(supabase_stack_env_val "${SB_DIR}/.env" SERVICE_ROLE_KEY)"
   supabase_render_kong "${TEMPLATES}/kong.yml" "${SB_DIR}/kong.yml" \
