@@ -35,10 +35,19 @@
 # Supabase is unreachable or not provision-ready — we print a WARNING and
 # exit 0 rather than failing the caller. Step 3 (orchestrator restart +
 # healthz) is skipped entirely in verify-only mode, since nothing changed and
-# there is nothing to restart for. Apply mode is unchanged: a non-200 probe
-# is a hard failure (exit 1) with the runbook pointer, and step 3 always runs
-# after a successful apply. Deploy mode reuses apply's tail once the local
-# stack is up and migrated.
+# there is nothing to restart for. Direct apply mode (no --deploy) is
+# unchanged: a non-200 probe is a hard failure (exit 1) with the runbook
+# pointer, and step 3 always runs after a successful apply.
+#
+# Deploy mode reuses apply's tail once the local stack is up and migrated,
+# but the tail's probe target (SUPABASE_URL) is the PUBLIC hostname, which
+# depends on a cloudflared route that may not be live yet (see
+# docs/runbooks/self-hosted-supabase.md §2/§4) — deploy step 4b already
+# hard-gated on a LOCAL (loopback) schema probe before repointing the
+# dashboard, so a non-200 on the PUBLIC probe here is downgraded to a
+# WARNING and the tail continues to write the orchestrator env + restart,
+# rather than exiting after the dashboard has already been repointed
+# (DEPLOY_ORIGIN=1 marks this fall-through case).
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -58,6 +67,10 @@ case "${1:-}" in
 esac
 
 SUPABASE_URL="" ; SUPABASE_SERVICE_ROLE_KEY=""
+# Set to 1 by the deploy block once it has passed its own local (loopback)
+# schema gate — relaxes the shared tail's public-hostname probe below from
+# fatal to a warning, since deploy already verified the schema locally.
+DEPLOY_ORIGIN=0
 
 if [[ "${MODE}" == "deploy" ]]; then
   . "${SCRIPT_DIR}/lib/supabase-stack-env.sh"
@@ -140,9 +153,32 @@ if [[ "${MODE}" == "deploy" ]]; then
       continue
     fi
     echo "    psql < ${base}"
-    "${SB_PSQL[@]}" -v ON_ERROR_STOP=1 < "$f"
+    # --single-transaction: a mid-file failure rolls back atomically instead
+    # of leaving a partially-applied file with no ledger row (CREATE POLICY
+    # has no IF NOT EXISTS, so a half-applied file can't simply be re-piped —
+    # the ledger row is only written below, after the whole file succeeds,
+    # so a rolled-back file re-applies cleanly from scratch on the next run).
+    "${SB_PSQL[@]}" --single-transaction -v ON_ERROR_STOP=1 < "$f"
     "${SB_PSQL[@]}" -q -c "insert into public._ollie_core_migrations (filename) values ('${base}');"
   done
+
+  echo "==> deploy 4b: local schema probe (hard gate before repointing the dashboard)"
+  # Probe loopback, not the public hostname — the cloudflared route for
+  # SUPABASE_PUBLIC_URL may not be live yet (see docs/runbooks/self-hosted-supabase.md
+  # §2), and that's a separate, non-fatal concern handled by the shared tail
+  # below. This gate only asks "did the local stack come up and serve the
+  # ollie-core schema" — if not, nothing downstream (dashboard repoint,
+  # orchestrator env) should happen.
+  LOCAL_PROBE_URL="$(supabase_schema_probe_url "http://127.0.0.1:8000")"
+  LOCAL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+    -H "apikey: ${SERVICE_ROLE_KEY}" \
+    -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
+    "${LOCAL_PROBE_URL}" || echo "000")"
+  if [[ "${LOCAL_CODE}" != "200" ]]; then
+    echo "error: local schema probe returned HTTP ${LOCAL_CODE} — the local stack is not serving the ollie-core schema; check: docker compose -f ${SB_DIR}/docker-compose.yml logs db rest kong" >&2
+    exit 1
+  fi
+  echo "    local schema probe → 200 ✓"
 
   echo "==> deploy 5: point the dashboard at the local stack"
   STACK_ENV="${STACK_ENV:-$HOME/hermes-stack/.env}"
@@ -152,7 +188,13 @@ if [[ "${MODE}" == "deploy" ]]; then
     echo "    note: ${STACK_ENV} missing — run 06-install-stack.sh, then re-run --deploy"
   fi
 
-  # Fall through to the shared verify/apply tail with the local creds.
+  # Fall through to the shared verify/apply tail with the local creds. The
+  # tail's public-hostname probe (step 1) becomes non-fatal in this case —
+  # DEPLOY_ORIGIN marks that we arrived here via --deploy, having already
+  # hard-gated on the LOCAL probe above, so a not-yet-live cloudflared
+  # hostname must not undo the dashboard repoint / skip the orchestrator
+  # env write that already happened or is about to happen.
+  DEPLOY_ORIGIN=1
   SUPABASE_URL="${SUPABASE_PUBLIC_URL}"
   SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}"
   MODE="apply"
@@ -187,18 +229,32 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
   -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
   -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
   "${PROBE_URL}" || echo "000")"
+PUBLIC_PROBE_WARNED=0
 if [[ "${CODE}" != "200" ]]; then
   if [[ "${MODE}" == "verify" ]]; then
     echo "WARNING: schema probe returned HTTP ${CODE} — Supabase unreachable or not provision-ready; continuing (verify-only is non-fatal)"
     exit 0
   fi
-  echo "error: schema probe returned HTTP ${CODE} — the project is not provision-ready." >&2
-  echo "       Run the runbook first: docs/runbooks/supabase-ollie-core-provisioning.md" >&2
-  echo "       (SQL Editor: supabase/ollie-core/0001..0006 in order, then register the" >&2
-  echo "        custom_access_token_hook and enable the Google provider.)" >&2
-  exit 1
+  if [[ "${DEPLOY_ORIGIN}" == "1" ]]; then
+    # Arrived here via --deploy fall-through, which already hard-gated on
+    # the LOCAL loopback probe (deploy 4b) before repointing the dashboard.
+    # This is the PUBLIC hostname (sb.<host>) — its cloudflared route may
+    # simply not be live yet (runbook §2), which is a deployment-completeness
+    # gap, not a broken stack. Warn and continue to the orchestrator env
+    # write + restart instead of hard-failing; direct apply mode below is
+    # unchanged (still a hard fail).
+    echo "WARNING: public probe returned HTTP ${CODE} — cloudflared hostname sb.<host> not live yet; complete the runbook cloudflared step, then re-run --deploy or verify manually"
+    PUBLIC_PROBE_WARNED=1
+  else
+    echo "error: schema probe returned HTTP ${CODE} — the project is not provision-ready." >&2
+    echo "       Run the runbook first: docs/runbooks/supabase-ollie-core-provisioning.md" >&2
+    echo "       (SQL Editor: supabase/ollie-core/0001..0006 in order, then register the" >&2
+    echo "        custom_access_token_hook and enable the Google provider.)" >&2
+    exit 1
+  fi
+else
+  echo "    schema probe → 200 ✓"
 fi
-echo "    schema probe → 200 ✓"
 
 if [[ "${MODE}" == "apply" ]]; then
   echo "==> step 2: write SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to orchestrator .env"
@@ -218,7 +274,13 @@ if [[ "${MODE}" == "apply" ]]; then
     exit 1
   fi
   echo
-  echo "✓ Supabase config applied + verified (orchestrator healthy)."
+  if [[ "${DEPLOY_ORIGIN}" == "1" && "${PUBLIC_PROBE_WARNED}" == "1" ]]; then
+    echo "✓ Supabase deployed locally + orchestrator configured and healthy."
+    echo "  Public hostname (${SUPABASE_URL}) is not live yet — complete the runbook"
+    echo "  cloudflared step, then re-run --deploy or verify manually."
+  else
+    echo "✓ Supabase config applied + verified (orchestrator healthy)."
+  fi
 else
   echo
   echo "✓ Supabase config verified (verify-only, no changes made — orchestrator not restarted)."

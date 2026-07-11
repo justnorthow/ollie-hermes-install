@@ -25,14 +25,18 @@ remains the manual procedure for hosted/legacy Supabase projects.
 
 ## 2. Cloudflared ingress — do this FIRST, before `--deploy`
 
-**Why this has to come before the deploy step:** `--deploy`'s final health
-check (step 3 of the tail, "verify the Supabase project is provision-ready")
-probes `${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` — the **public** `sb.<host>`
-hostname, not `localhost:8000`. If the tunnel route isn't live yet, that probe
-fails with a connection error *after* the local stack has already come up
-successfully and the migrations have already applied — a confusing partial
-failure. Wire the hostname first so the probe (and Google OAuth) succeed
-end-to-end on the first `--deploy`.
+**Why it's best to do this first:** `--deploy`'s final health check (the tail's
+"verify the Supabase project is provision-ready" step) probes
+`${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` — the **public** `sb.<host>`
+hostname, not `localhost:8000`. If the tunnel route isn't live yet, that
+probe comes back non-200 *after* the local stack has already come up
+successfully, migrations have applied, and the dashboard has been
+repointed — but this is no longer a partial-failure state: the deploy
+step that repoints the dashboard is itself gated on a separate, local
+(loopback) schema probe that already succeeded, so a not-yet-live public
+hostname only prints a WARNING (see §4) rather than failing the run. Wiring
+the hostname first still avoids that warning and gets Google OAuth working
+end-to-end on the first `--deploy`, so it remains the recommended order.
 
 1. **Add a tunnel public hostname** (Zero Trust → Networks → Tunnels → the
    box's tunnel → Published application routes → Add):
@@ -101,14 +105,26 @@ What this does (in order, per `scripts/11-install-supabase.sh`):
 3. Polls `http://127.0.0.1:8000/auth/v1/health` (up to 60s) — hard-fails with a
    `docker compose logs auth kong` pointer if auth never comes up.
 4. Applies every `supabase/ollie-core/000*.sql` file via `psql` inside the `db`
-   container (idempotent).
+   container (idempotent), then hard-gates on a **local** (loopback,
+   `http://127.0.0.1:8000`) schema probe — nothing in step 5 below runs
+   unless the local stack is actually serving the ollie-core schema.
 5. Writes `SUPABASE_URL`/`SUPABASE_ANON_KEY` into `~/hermes-stack/.env` and
    recreates the `dashboard` container so the frontend's login gate points at
    the new stack.
 6. Falls through to the same verify/apply tail as the hosted path: probes
-   `${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` (this is the step that needs the
-   tunnel from §2 already live), writes `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
-   to the orchestrator env, and restarts `ollie-orchestrator`.
+   `${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` — the **public** hostname,
+   which needs the tunnel from §2 already live — then writes
+   `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` to the orchestrator env and
+   restarts `ollie-orchestrator`. Unlike the local probe in step 4, a
+   non-200 here is **not fatal**: since step 4 already proved the schema is
+   live locally, a not-yet-live public hostname just prints a WARNING and
+   the tail continues — see below.
+
+**If the public-probe WARNING fires,** the deploy is complete locally
+(orchestrator + dashboard are both pointed at the new stack and healthy) —
+finish the cloudflared step from §2 and the login flow will come alive on
+its own; no re-run of `--deploy` is required unless you specifically want
+the probe to print `200` in the output.
 
 **Secrets in stdout — do not paste this into tickets/chat.** The deploy summary
 prints `ANON_KEY` and `SERVICE_ROLE_KEY` (and `SUPABASE_URL`/`SITE_URL`) to
@@ -140,8 +156,13 @@ curl -s https://sb.<instance-host>/auth/v1/.well-known/jwks.json
 
 Expect a `{"keys":[...]}` body containing an entry with `"kty":"EC"`,
 `"alg":"ES256"` (the asymmetric signing key GoTrue generated at deploy time —
-see `scripts/lib/gen-supabase-keys.py`'s `ec_pem_to_jwk`) alongside a legacy
-`"kty":"oct"` HS256 verify-only key. Quick grep:
+see `scripts/lib/gen-supabase-keys.py`'s `ec_pem_to_jwk`). This endpoint
+serves the ES256 public key only — GoTrue never publishes a symmetric
+(`"kty":"oct"`) key here (live verification confirmed this), since that
+would leak `JWT_SECRET` to anyone who can reach
+`/auth/v1/.well-known/jwks.json`. The legacy HS256 key exists only
+server-side, in `GOTRUE_JWT_KEYS`/`JWT_JWKS` in `~/supabase-stack/.env`,
+never published. Quick grep:
 
 ```bash
 curl -s https://sb.<instance-host>/auth/v1/.well-known/jwks.json | grep -o '"alg":"ES256"'
