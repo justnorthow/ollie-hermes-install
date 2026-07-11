@@ -117,6 +117,13 @@ on a stale `--host 0.0.0.0` (`scripts/lib/heal-dashboard-units.sh`), rewriting i
 via `scripts/11-install-supabase.sh --verify-only` — a no-op SKIP on boxes that
 don't use Supabase, so it can't break a plain oauth2-proxy install.
 
+`11-install-supabase.sh` itself has three modes: `--deploy` (self-hosted, the
+default for new boxes — stands up the local Supabase stack, applies
+`supabase/ollie-core/`, points the dashboard + orchestrator at it; see
+`docs/runbooks/self-hosted-supabase.md`), stdin `SUPABASE_URL=`/`SUPABASE_SERVICE_ROLE_KEY=`
+apply mode (hosted/manual projects, see `docs/runbooks/supabase-ollie-core-provisioning.md`),
+and `--verify-only` (the non-fatal gate used above and by the done-done check).
+
 **By hand (no fleetctl):** run the same set, in order:
 
 ```bash

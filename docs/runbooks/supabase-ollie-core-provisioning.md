@@ -1,5 +1,10 @@
 # Runbook: provision a dedicated Supabase project for an Ollie instance
 
+> **Default path changed (2026-07-11):** new boxes self-host Supabase —
+> see `self-hosted-supabase.md` (`11-install-supabase.sh --deploy`), which
+> applies `supabase/ollie-core/` automatically. This runbook remains the
+> manual procedure for hosted Supabase projects (legacy/grandfathered boxes).
+
 Gives one Ollie instance (box) its own Supabase project — auth user pool +
 Ollie-core tables — instead of riding on a shared project. First executed for
 `sandbox` (2026-07-07) after cross-instance session bleed was found between
