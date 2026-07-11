@@ -8,6 +8,11 @@ the `supabase/ollie-core/` migrations, and points the dashboard + orchestrator a
 it. This is now the default path for new boxes. `docs/runbooks/supabase-ollie-core-provisioning.md`
 remains the manual procedure for hosted/legacy Supabase projects.
 
+**Fleet-provisioned boxes:** Fleet's provision form defaults to self-hosted mode
+and runs `11-install-supabase.sh --deploy` (§4 below) for you as part of the
+provision flow. Only §2 (cloudflared ingress) and §3 (Google OAuth redirect
+URI) remain manual — the provision output lists both as next steps.
+
 ## 1. Prereqs
 
 - The box is provisioned through `06-install-stack.sh` (`~/hermes-stack` is up —

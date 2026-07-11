@@ -4,6 +4,8 @@
 > see `self-hosted-supabase.md` (`11-install-supabase.sh --deploy`), which
 > applies `supabase/ollie-core/` automatically. This runbook remains the
 > manual procedure for hosted Supabase projects (legacy/grandfathered boxes).
+> Fleet's provision form defaults to self-hosted — this runbook now applies
+> only to external-mode provisions and grandfathered boxes.
 
 Gives one Ollie instance (box) its own Supabase project — auth user pool +
 Ollie-core tables — instead of riding on a shared project. First executed for
