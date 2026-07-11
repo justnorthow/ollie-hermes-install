@@ -19,6 +19,9 @@ remains the manual procedure for hosted/legacy Supabase projects.
   public hostname for Supabase in the next step.
 - You're logged in as the service user (`sudo -iu ollie`, or `ssh ollie@<host>`),
   **not root** — `11-install-supabase.sh` hard-errors if run as root.
+- **All commands in this runbook run from `~/ollie-hermes-install`** (the
+  cloned install repo, per the README quick start) as the service user:
+  `cd ~/ollie-hermes-install` first.
 
 ## 2. Cloudflared ingress — do this FIRST, before `--deploy`
 
@@ -73,7 +76,7 @@ in `templates/supabase/docker-compose.yml`'s `auth` service.
 
 ```bash
 printf 'SUPABASE_PUBLIC_URL=https://sb.<instance-host>\nSITE_URL=https://<instance-host>\nGOOGLE_CLIENT_ID=<id>\nGOOGLE_CLIENT_SECRET=<secret>\n' \
-  | bash ollie-hermes-install/scripts/11-install-supabase.sh --deploy
+  | bash scripts/11-install-supabase.sh --deploy
 ```
 
 - `SUPABASE_PUBLIC_URL` — the Supabase API hostname from step 2
@@ -239,7 +242,11 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 ```
 
 Expect `200` with a body of `[]` (or only rows that second account itself
-owns) — RLS filters the table, it never leaks another user's row. This is
+owns) — RLS filters the table, it never leaks another user's row. Note: the
+acceptance spec's "foreign-user 403" shorthand manifests at the PostgREST
+layer as exactly this — HTTP `200` with an RLS-filtered empty body, not a
+literal `403` status — so an empty `[]` here means the check is *passing*,
+not broken. This is
 defense-in-depth: the primary enforcement is the orchestrator's run-proxy,
 which the `0001` migration's own comment describes as enforcing ownership
 "fail-closed" — verify that layer too, in the dashboard: log in as a second
