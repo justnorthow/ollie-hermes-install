@@ -27,6 +27,7 @@ URI) remain manual — the provision output lists both as next steps.
 - **All commands in this runbook run from `~/ollie-hermes-install`** (the
   cloned install repo, per the README quick start) as the service user:
   `cd ~/ollie-hermes-install` first.
+- Migrating an existing hosted project onto this box? See §8.
 
 ## 2. Cloudflared ingress — do this FIRST, before `--deploy`
 
@@ -426,3 +427,85 @@ finer-grained restore: **restore = restore the whole-server snapshot**, which
 rolls back every service on the box to that point in time, not just Supabase.
 (No PITR / offsite `pg_dump` pipeline in scope — see the design doc's Out of
 scope section.)
+
+## 8. Migrating a hosted project onto the box (cutover)
+
+Order matters: sandbox first (proving ground), prod only after sandbox
+acceptance. The hosted project is never written to — pause it (don't delete)
+after cutover for the 2-week soak.
+
+### 8.1 Gather hosted credentials (operator, per project)
+
+From the hosted dashboard (sandbox `mctnughllhcndngjqakt`, prod
+`kpdqhntsvjzhqjeupzsj`):
+- **Connect → Session pooler** connection string → `HOSTED_DB_URL`
+  (IPv4-safe; the direct `db.<ref>.supabase.co` host is IPv6-only).
+- **Settings → API** → `HOSTED_SUPABASE_URL` (`https://<ref>.supabase.co`)
+  and the `service_role` key → `HOSTED_SERVICE_ROLE_KEY`.
+
+### 8.2 Prep (prod box only — sandbox already has these from Plan 1)
+
+1. cloudflared public hostname `sb-ollie` → `HTTP` → `localhost:8000`
+   (dash form — see §2).
+2. Google console: add redirect URI
+   `https://sb-ollie.jnow.io/auth/v1/callback` to the instance's OAuth client.
+3. Deploy the local stack (as the service user, repo at the current pin):
+
+       cd ~/ollie-hermes-install && git fetch origin && git checkout --detach origin/master
+       printf 'SUPABASE_PUBLIC_URL=https://sb-ollie.jnow.io\nSITE_URL=https://ollie.jnow.io\nGOOGLE_CLIENT_ID=<id>\nGOOGLE_CLIENT_SECRET=<secret>\n' \
+         | bash scripts/11-install-supabase.sh --deploy
+
+   NOTE: --deploy repoints the dashboard at the (empty) local stack. Run 8.3
+   immediately after — until then, logins would mint new UUIDs (they get
+   truncated by the migrate anyway, but treat deploy→migrate as one
+   maintenance window).
+
+   On a box whose stack pre-dates the storage JWT_JWKS fix (sandbox), re-run
+   --deploy with empty stdin to refresh the compose file (env carries
+   forward): `printf '' | bash scripts/11-install-supabase.sh --deploy`
+
+### 8.3 Migrate
+
+    printf 'HOSTED_DB_URL=<pooler-conn-string>\nHOSTED_SUPABASE_URL=https://<ref>.supabase.co\nHOSTED_SERVICE_ROLE_KEY=<key>\n' \
+      | bash ~/ollie-hermes-install/scripts/12-migrate-supabase.sh
+
+Copies auth.users + auth.identities (UUIDs preserved; sessions dropped —
+everyone re-logs-in once) + the six ollie-core tables + the profile-images
+bucket, then repoints dashboard + orchestrator (loopback) and restarts.
+Idempotent — re-run freely; the hosted side is read-only to it.
+
+### 8.4 Acceptance (per box)
+
+1. Browser Google login at the dashboard (John; on sandbox also Mike) —
+   whoami tier correct, agents visible, session list/transcripts load.
+2. Profile page: upload a profile image, confirm it renders (this exercises
+   the ES256 storage path — the JWT_JWKS fix).
+3. `OPERATOR_EMAIL=<you> bash ~/ollie-hermes-install/scripts/check-box-config.sh`
+   → `OK: box config is done-done`.
+4. Fleet (enrolled boxes): instance → Access tab → set the sb- URL + local
+   anon/service keys (printed by --deploy; also in ~/supabase-stack/.env) →
+   Save → Apply. This prevents a later Fleet apply from repointing the box
+   back at the paused hosted project.
+5. Exposure: `nmap`-style check unchanged — only :22 open; sb- host serves
+   only via cloudflared.
+
+### 8.5 Soak + decommission
+
+1. Hosted dashboard → pause the project (sandbox first, prod after its own
+   acceptance). Do NOT delete yet.
+2. Soak 2 weeks. Anything breaks → unpause + rollback (8.6) and investigate.
+3. After both projects have soaked clean: delete both projects, then cancel
+   the Pro org. (jnow-site/airesume/GetBilled-app move in the apps-VPS plan —
+   don't cancel the org until THEY are off hosted too.)
+
+### 8.6 Rollback (per box)
+
+The migrate script backs up both env files with a `.bak-migrate-<ts>` suffix
+and prints the exact restore commands. Manual form:
+
+    cp ~/hermes-stack/.env.bak-migrate-<ts> ~/hermes-stack/.env
+    cp ~/.config/ollie-orchestrator/.env.bak-migrate-<ts> ~/.config/ollie-orchestrator/.env
+    docker compose -f ~/hermes-stack/docker-compose.yml up -d dashboard
+    systemctl --user restart ollie-orchestrator
+
+(If the hosted project was already paused, unpause it first.)
