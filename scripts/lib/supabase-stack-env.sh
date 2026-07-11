@@ -30,13 +30,28 @@ _sb_keep() { # KEY OLDENV BUNDLE_JSON_KEY BUNDLE
 render_supabase_stack_env() { # OUT OLD
   local out="$1" old="${2:-}"
   local bundle=""
-  # Generate a bundle only if any secret is missing from the old env.
-  local need=0 k
+  # The 6 secrets are cryptographically interdependent (ANON_KEY/
+  # SERVICE_ROLE_KEY are JWTs signed with JWT_SECRET; JWT_JWKS embeds it).
+  # They must be preserved or regenerated as a single all-or-nothing set —
+  # never mixed old/new — or JWT verification breaks silently.
+  local present=0 missing_keys="" k
   for k in POSTGRES_PASSWORD JWT_SECRET GOTRUE_JWT_KEYS JWT_JWKS ANON_KEY SERVICE_ROLE_KEY; do
-    [ -z "$(supabase_stack_env_val "$old" "$k")" ] && need=1
+    if [ -n "$(supabase_stack_env_val "$old" "$k")" ]; then
+      present=$((present + 1))
+    else
+      missing_keys="${missing_keys}${missing_keys:+ }$k"
+    fi
   done
-  if [ "$need" -eq 1 ]; then
+  if [ "$present" -eq 0 ]; then
     bundle="$(python3 "$(dirname "${BASH_SOURCE[0]}")/gen-supabase-keys.py")"
+  elif [ "$present" -lt 6 ]; then
+    echo "ERROR: $old has some but not all of the 6 interdependent Supabase" \
+      "secrets (missing: $missing_keys). These keys are cryptographically" \
+      "linked (JWTs are signed with JWT_SECRET; JWT_JWKS embeds it) and" \
+      "cannot be partially regenerated without breaking JWT verification." \
+      "Restore the missing keys from backup, or delete $old (or the target" \
+      ".env) entirely to regenerate a full new set." >&2
+    return 1
   fi
   local pg jwt gkeys jwks anon srk
   pg="$(_sb_keep POSTGRES_PASSWORD "$old" postgres_password "$bundle")"

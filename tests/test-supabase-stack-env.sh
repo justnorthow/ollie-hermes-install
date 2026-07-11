@@ -47,6 +47,34 @@ test_rerun_preserves_secrets_and_restamps_pins() {
   assert_eq "pin restamped from renderer" "$?" "0"
 }
 
+test_partial_secrets_rejected() {
+  local d; d="$(mktemp -d)"
+  # Old env has only 2 of the 6 secret keys (simulates manual edit / interrupted write).
+  cat > "$d/.env.old" <<EOF
+JWT_SECRET=old-jwt-secret
+ANON_KEY=old-anon-key
+SB_KONG_IMAGE=kong:0.0-old
+EOF
+  local out="$d/.env"
+  # Sentinel content: proves the renderer does not create/overwrite the output file.
+  printf 'SENTINEL=untouched\n' > "$out"
+  local before; before="$(cat "$out")"
+  local err rc
+  err="$(render_supabase_stack_env "$out" "$d/.env.old" 2>&1 1>/dev/null)"
+  rc=$?
+  assert_eq "partial secrets: non-zero return" "$rc" "1"
+  echo "$err" | grep -qE 'POSTGRES_PASSWORD|GOTRUE_JWT_KEYS|JWT_JWKS|SERVICE_ROLE_KEY'
+  assert_eq "stderr mentions a missing key name" "$?" "0"
+  assert_eq "output file not overwritten" "$(cat "$out")" "$before"
+
+  # Also prove it doesn't *create* the file when none exists yet.
+  local out2="$d/.env2"
+  render_supabase_stack_env "$out2" "$d/.env.old" 2>/dev/null
+  [ ! -f "$out2" ]
+  assert_eq "output file not created" "$?" "0"
+}
+
 test_fresh_render_generates_secrets_and_pins
 test_rerun_preserves_secrets_and_restamps_pins
+test_partial_secrets_rejected
 finish
