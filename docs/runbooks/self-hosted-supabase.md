@@ -70,6 +70,17 @@ form — `sb-<instance>.jnow.io` (e.g. `sb-ollie.jnow.io`, `sb-olliesandbox.jnow
    confirm it then returns `200` — that's the real acceptance check; right now
    you're only confirming the tunnel hostname resolves and reaches the box.
 
+**Only browsers traverse the public `sb-<host>` hostname.** The orchestrator
+and every other on-box, server-side consumer talk to Kong over loopback
+(`http://127.0.0.1:8000`) instead — this was changed after live testing
+showed Cloudflare's zone bot protection (`cf-mitigated: challenge`) 403-challenges
+non-browser clients hitting the public hostname, including the box's own
+orchestrator hairpinning back through the tunnel to reach itself. Real
+browsers pass the challenge cleanly. Because of this split, server-side
+operation (orchestrator restarts, `check-box-config.sh`, `seed-operator-role.py`,
+etc.) has **no dependency on cloudflared or Cloudflare bot protection** — only
+the browser-facing login/dashboard flow does.
+
 ## 3. Google OAuth redirect URI
 
 In the Google Cloud console, open the **existing per-instance OAuth client**
@@ -123,16 +134,26 @@ What this does (in order, per `scripts/11-install-supabase.sh`):
    `${SUPABASE_PUBLIC_URL}/rest/v1/user_roles` — the **public** hostname,
    which needs the tunnel from §2 already live — then writes
    `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` to the orchestrator env and
-   restarts `ollie-orchestrator`. Unlike the local probe in step 4, a
-   non-200 here is **not fatal**: since step 4 already proved the schema is
-   live locally, a not-yet-live public hostname just prints a WARNING and
-   the tail continues — see below.
+   restarts `ollie-orchestrator`. The orchestrator's `SUPABASE_URL` is written
+   as the **loopback** `http://127.0.0.1:8000`, not the public hostname (see
+   §2) — the tail's probe above still checks the public hostname (that's
+   what proves the browser-facing path works end-to-end), but what gets
+   written to the orchestrator env is the loopback URL, so a not-yet-live or
+   bot-challenged public hostname can never affect the orchestrator's own
+   connectivity to Supabase. Unlike the local probe in step 4, a non-200 on
+   the public probe here is **not fatal**: since step 4 already proved the
+   schema is live locally, a not-yet-live (or Cloudflare-bot-challenged)
+   public hostname just prints a WARNING and the tail continues — see below.
 
 **If the public-probe WARNING fires,** the deploy is complete locally
 (orchestrator + dashboard are both pointed at the new stack and healthy) —
-finish the cloudflared step from §2 and the login flow will come alive on
-its own; no re-run of `--deploy` is required unless you specifically want
-the probe to print `200` in the output.
+either the cloudflared route isn't live yet (finish the cloudflared step from
+§2) or Cloudflare's bot protection is challenging `curl`'s non-browser
+request (open `https://sb-<instance-host>/auth/v1/health` in an actual
+browser — a real browser passes the challenge cleanly, per live verification).
+The login flow will come alive on its own either way; no re-run of `--deploy`
+is required unless you specifically want the probe to print `200` in the
+output.
 
 **Secrets in stdout — do not paste this into tickets/chat.** The deploy summary
 prints `ANON_KEY` and `SERVICE_ROLE_KEY` (and `SUPABASE_URL`/`SITE_URL`) to
@@ -155,6 +176,15 @@ the session.
 
 Run these after step 4 succeeds (and after the redirect URI from step 3 is
 saved).
+
+**Orchestrator env uses loopback, not the public hostname.** After a
+successful `--deploy`, `~/.config/ollie-orchestrator/.env` must show
+`SUPABASE_URL=http://127.0.0.1:8000` — never the public `sb-<instance-host>`
+URL (see §2). Confirm with:
+
+```bash
+grep '^SUPABASE_URL=' ~/.config/ollie-orchestrator/.env
+```
 
 **a. JWKS endpoint serves an ES256 key**
 

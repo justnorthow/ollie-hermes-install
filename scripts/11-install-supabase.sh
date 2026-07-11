@@ -71,6 +71,12 @@ SUPABASE_URL="" ; SUPABASE_SERVICE_ROLE_KEY=""
 # schema gate — relaxes the shared tail's public-hostname probe below from
 # fatal to a warning, since deploy already verified the schema locally.
 DEPLOY_ORIGIN=0
+# Set by the deploy block only — the orchestrator's own SUPABASE_URL, kept
+# separate from the browser-facing SUPABASE_PUBLIC_URL/SUPABASE_URL used for
+# the tail's probe + dashboard summary. Left empty in direct apply mode so
+# the tail's write falls back to the operator-provided SUPABASE_URL below,
+# leaving that mode byte-identical.
+SUPABASE_ORCH_URL=""
 
 if [[ "${MODE}" == "deploy" ]]; then
   . "${SCRIPT_DIR}/lib/supabase-stack-env.sh"
@@ -197,6 +203,15 @@ if [[ "${MODE}" == "deploy" ]]; then
   DEPLOY_ORIGIN=1
   SUPABASE_URL="${SUPABASE_PUBLIC_URL}"
   SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}"
+  # The orchestrator runs on this box, so point it at Kong via loopback
+  # instead of the public hostname — this avoids hairpinning back out
+  # through cloudflared, avoids Cloudflare's zone bot protection
+  # challenging the orchestrator's non-browser requests (cf-mitigated:
+  # challenge — verified live; real browsers pass clean), and removes any
+  # dependency on the tunnel being up for on-box server-side operation.
+  # The orchestrator treats SUPABASE_URL as an opaque base URL (its own
+  # tests use http://sb), so loopback is a safe substitution.
+  SUPABASE_ORCH_URL="http://127.0.0.1:8000"
   MODE="apply"
   echo
   echo "    local stack deployed — keys for Fleet (store via provision flow):"
@@ -204,6 +219,9 @@ if [[ "${MODE}" == "deploy" ]]; then
   echo "    SITE_URL=${SITE_URL}"
   echo "    SUPABASE_ANON_KEY=${ANON_KEY}"
   echo "    SERVICE_ROLE_KEY=${SERVICE_ROLE_KEY}"
+  echo
+  echo "    orchestrator -> http://127.0.0.1:8000 (loopback)"
+  echo "    browser/dashboard -> ${SUPABASE_PUBLIC_URL}"
 fi
 
 if [[ "${MODE}" == "apply" && -z "${SUPABASE_URL}" ]]; then
@@ -243,7 +261,7 @@ if [[ "${CODE}" != "200" ]]; then
     # gap, not a broken stack. Warn and continue to the orchestrator env
     # write + restart instead of hard-failing; direct apply mode below is
     # unchanged (still a hard fail).
-    echo "WARNING: public probe returned HTTP ${CODE} — cloudflared hostname sb-<host> not live yet; complete the runbook cloudflared step, then re-run --deploy or verify manually"
+    echo "WARNING: public probe returned HTTP ${CODE} — cloudflared hostname sb-<host> not live yet, OR Cloudflare bot protection challenging non-browser clients (browsers may pass — verify https://<public-url>/auth/v1/health in a browser); complete the runbook cloudflared step, then re-run --deploy or verify manually"
     PUBLIC_PROBE_WARNED=1
   else
     echo "error: schema probe returned HTTP ${CODE} — the project is not provision-ready." >&2
@@ -258,7 +276,11 @@ fi
 
 if [[ "${MODE}" == "apply" ]]; then
   echo "==> step 2: write SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to orchestrator .env"
-  supabase_write_orch_env "${SUPABASE_URL}" "${SUPABASE_SERVICE_ROLE_KEY}"
+  # SUPABASE_ORCH_URL is only ever set by the --deploy fall-through above
+  # (loopback Kong URL); direct apply mode leaves it empty, so ${SUPABASE_ORCH_URL:-$SUPABASE_URL}
+  # falls back to the operator-provided SUPABASE_URL — byte-identical to
+  # before this change.
+  supabase_write_orch_env "${SUPABASE_ORCH_URL:-$SUPABASE_URL}" "${SUPABASE_SERVICE_ROLE_KEY}"
 
   echo "==> step 3: restart orchestrator + verify"
   systemctl --user restart ollie-orchestrator
