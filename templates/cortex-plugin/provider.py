@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 from .http_client import CortexHttpClient
 
@@ -18,6 +19,7 @@ class CortexProvider(MemoryProvider):
     def __init__(self):
         self._client = None
         self._api_url = self._DEFAULT_API_URL
+        self._api_key = ""
         self._session_id = ""
 
     @property
@@ -28,25 +30,32 @@ class CortexProvider(MemoryProvider):
         if self._client is not None:
             return self._client.is_reachable()
         api_url = self._api_url
+        api_key = self._api_key or os.environ.get("CORTEX_API_KEY", "")
         try:
             from hermes_cli.config import load_config
             cfg = load_config()
-            api_url = cfg.get("memory", {}).get("cortex", {}).get("api_url", api_url)
+            cortex_cfg = cfg.get("memory", {}).get("cortex", {})
+            api_url = cortex_cfg.get("api_url", api_url)
+            api_key = cortex_cfg.get("api_key", api_key)
         except Exception:
             pass
-        return CortexHttpClient(api_url).is_reachable()
+        return CortexHttpClient(api_url, api_key=api_key).is_reachable()
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
-        api_url = self._api_url
+        api_url = kwargs.get("api_url") or self._api_url
+        api_key = kwargs.get("api_key") or os.environ.get("CORTEX_API_KEY", "")
         try:
             from hermes_cli.config import load_config
             cfg = load_config()
-            api_url = cfg.get("memory", {}).get("cortex", {}).get("api_url", api_url)
+            cortex_cfg = cfg.get("memory", {}).get("cortex", {})
+            api_url = kwargs.get("api_url") or cortex_cfg.get("api_url", api_url)
+            api_key = kwargs.get("api_key") or cortex_cfg.get("api_key", api_key)
         except Exception:
             pass
         self._api_url = api_url
-        self._client = CortexHttpClient(self._api_url)
+        self._api_key = api_key
+        self._client = CortexHttpClient(self._api_url, api_key=self._api_key)
 
     def system_prompt_block(self) -> str:
         return (
@@ -76,10 +85,18 @@ class CortexProvider(MemoryProvider):
                 "label": "Cortex API URL",
                 "type": "string",
                 "default": "http://localhost:9120",
-            }
+            },
+            {
+                "key": "api_key",
+                "label": "Cortex API key",
+                "type": "string",
+                "default": "",
+                "secret": True,
+                "env_var": "CORTEX_API_KEY",
+            },
         ]
 
-    def save_config(self, config: dict) -> None:
+    def save_config(self, config: dict, hermes_home: str = "") -> None:
         pass
 
     def get_tool_schemas(self) -> list[dict]:
@@ -167,10 +184,13 @@ class CortexProvider(MemoryProvider):
         # Cortex routes /brain/files/{section}/{file}; a bare single-segment key
         # 404s. Require the two-segment form and surface an actionable error.
         k = key.strip().strip("/")
-        if "/" not in k:
+        parts = k.split("/")
+        if len(parts) != 2:
             raise ValueError(
                 f"brain key must be 'section/file' (e.g. foundation/company), got {key!r}"
             )
+        if "\\" in k or any(part in ("", ".", "..") for part in parts):
+            raise ValueError(f"invalid brain key: {key!r}")
         return f"/brain/files/{k}"
 
     def handle_tool_call(self, name: str, args: dict) -> str:
