@@ -81,10 +81,12 @@ Containers (single compose project `fieldkit`):
 - **Fieldkit Next.js app** — standalone Docker image, built on John's PC and
   pushed to Docker Hub (`justnorthow/fieldkit-app@sha256:…`, digest-pinned like
   the Ollie frontend). Not built on-box (4 GB).
-- **cloudflared** (or caddy + Let's Encrypt if Fieldkit's domain is not on
-  Cloudflare — resolve at plan time) serving the app's existing production
-  domain. The domain does not change → Twilio webhooks, Stripe webhooks, and PWA
-  push subscriptions keep working without re-registration.
+- **caddy + Let's Encrypt** serving the app's existing production domain
+  (Fieldkit's domain is NOT on Cloudflare — confirmed by John 2026-07-13; DNS A
+  record repoints from Vercel to the box IP; :80/:443 open on the IONOS
+  firewall, caddy handles cert issuance/renewal). The domain does not change →
+  Twilio webhooks, Stripe webhooks, and PWA push subscriptions keep working
+  without re-registration.
 - **cron container / systemd timers** replacing the 3 Vercel cron jobs (enumerate
   from `D:\workspaces\metro\Fieldkit-App\vercel.json` at plan time; each becomes
   a `curl` against the app's route on schedule).
@@ -231,8 +233,9 @@ disk has room).
 
 ## Open items to resolve at plan time (not blockers)
 
-1. Fieldkit's production domain + whether its zone is on Cloudflare (picks
-   cloudflared vs caddy on the Fieldkit box).
+1. Fieldkit's production domain name (zone confirmed NOT on Cloudflare → caddy
+   + Let's Encrypt on the box; get the domain + registrar/DNS host for the A
+   record cutover).
 2. Enumerate the 3 Vercel crons + full Vercel env var list (needs Vercel
    dashboard access or `vercel env pull`).
 3. IONOS datacenter choice (nearest to Texas) + backup add-on price.
