@@ -1,0 +1,177 @@
+# Trimmed self-hosted Supabase for app stacks: multiple isolated instances, each with
+# db + auth + rest + storage behind Kong. Optional Realtime per-stack. No Edge Functions
+# / analytics / Studio (run Studio ad-hoc if ever needed; migrations go through psql).
+# Spec: docs/superpowers/specs/2026-07-11-self-hosted-supabase-design.md
+# Derived from github.com/supabase/supabase/tree/master/docker — when bumping
+# image pins (scripts/lib/supabase-app-env.sh), re-diff env vars against it.
+services:
+  db:
+    image: ${SB_DB_IMAGE:?pinned in .env by supabase-app-env.sh}
+    container_name: ${STACK_NAME}-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=/var/run/postgresql
+      - PGPORT=5432
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXP=3600
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  auth:
+    image: ${SB_AUTH_IMAGE:?pinned in .env by supabase-app-env.sh}
+    container_name: ${STACK_NAME}-auth
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - GOTRUE_API_HOST=0.0.0.0
+      - GOTRUE_API_PORT=9999
+      - API_EXTERNAL_URL=${SUPABASE_PUBLIC_URL}
+      # Hosted Supabase always stamps iss=<url>/auth/v1; without this env the
+      # self-hosted GoTrue mints tokens with NO iss claim, and the
+      # orchestrator's issuer-enforcing /v1/auth/validate rejects every one
+      # (hit live on the GetBilled box, 2026-07-11). Must match the
+      # SUPABASE_ISSUER the deploy writes to the orchestrator env.
+      - GOTRUE_JWT_ISSUER=${SUPABASE_PUBLIC_URL}/auth/v1
+      - GOTRUE_DB_DRIVER=postgres
+      - GOTRUE_DB_DATABASE_URL=postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      - GOTRUE_SITE_URL=${SITE_URL}
+      - GOTRUE_URI_ALLOW_LIST=${SITE_URL}/**
+      - GOTRUE_DISABLE_SIGNUP=false
+      - GOTRUE_JWT_ADMIN_ROLES=service_role
+      - GOTRUE_JWT_AUD=authenticated
+      - GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated
+      - GOTRUE_JWT_EXP=3600
+      - GOTRUE_JWT_SECRET=${JWT_SECRET}
+      # Asymmetric user-token signing (ES256) + legacy HS256 verification.
+      - GOTRUE_JWT_KEYS=${GOTRUE_JWT_KEYS}
+      - GOTRUE_MAILER_AUTOCONFIRM=true
+
+  rest:
+    image: ${SB_REST_IMAGE:?pinned in .env by supabase-app-env.sh}
+    container_name: ${STACK_NAME}-rest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PGRST_DB_URI=postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      - PGRST_DB_SCHEMAS=public
+      - PGRST_DB_ANON_ROLE=anon
+      - PGRST_JWT_SECRET=${JWT_JWKS}
+      - PGRST_DB_USE_LEGACY_GUCS=false
+
+  storage:
+    image: ${SB_STORAGE_IMAGE:?pinned in .env by supabase-app-env.sh}
+    container_name: ${STACK_NAME}-storage
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+    environment:
+      - ANON_KEY=${ANON_KEY}
+      - SERVICE_KEY=${SERVICE_ROLE_KEY}
+      - POSTGREST_URL=http://rest:3000
+      # storage-api (v1.25.7, verified) treats this as a raw HS256 secret,
+      # not a JWKS — unlike PostgREST's `rest` service below, which accepts
+      # the JWKS fine. Using JWT_JWKS here 403s with "signature verification
+      # failed" for the service key. JWT_SECRET verifies the anon/service
+      # keys (both HS256) correctly; ES256 user-token storage access is a
+      # known follow-up.
+      - PGRST_JWT_SECRET=${JWT_SECRET}
+      # JWKS (EC public + legacy symmetric) so storage verifies browser ES256
+      # user tokens — PGRST_JWT_SECRET alone only verifies HS256 (anon/service),
+      # which 403'd user-token uploads (profile-images). Supabase self-hosted
+      # signing-keys doc: storage consumes JWT_JWKS.
+      - JWT_JWKS=${JWT_JWKS}
+      - DATABASE_URL=postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      - FILE_SIZE_LIMIT=52428800
+      - STORAGE_BACKEND=file
+      - FILE_STORAGE_BACKEND_PATH=/var/lib/storage
+      - TENANT_ID=stub
+      - REGION=stub
+      - GLOBAL_S3_BUCKET=stub
+      - ENABLE_IMAGE_TRANSFORMATION=false
+    volumes:
+      - storage-data:/var/lib/storage
+
+  realtime:
+    # Optional — enabled per-stack with `--profile realtime` (fieldkit needs
+    # postgres_changes for its SMS inbox; HIA/NS stay trimmed). The network
+    # alias matters: realtime is multi-tenant and resolves the tenant from the
+    # Host header's first label; SEED_SELF_HOST seeds tenant "realtime-dev",
+    # and kong's service URL targets http://realtime-dev.supabase-realtime:4000
+    # (upstream supabase/docker convention). Each stack has its own compose
+    # network, so the alias cannot collide across stacks on one host.
+    image: ${SB_REALTIME_IMAGE:?pinned in .env by supabase-app-env.sh}
+    container_name: ${STACK_NAME}-realtime
+    profiles: ["realtime"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - realtime-dev.supabase-realtime
+    environment:
+      - PORT=4000
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=supabase_admin
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=postgres
+      - DB_AFTER_CONNECT_QUERY=SET search_path TO _realtime
+      - DB_ENC_KEY=${REALTIME_ENC_KEY}
+      - API_JWT_SECRET=${JWT_SECRET}
+      - SECRET_KEY_BASE=${REALTIME_SECRET_KEY_BASE}
+      - ERL_AFLAGS=-proto_dist inet_tcp
+      - DNS_NODES=''
+      - RLIMIT_NOFILE=10000
+      - APP_NAME=realtime
+      - SEED_SELF_HOST=true
+      - RUN_JANITOR=true
+
+  kong:
+    image: ${SB_KONG_IMAGE:?pinned in .env by supabase-app-env.sh}
+    container_name: ${STACK_NAME}-kong
+    restart: unless-stopped
+    depends_on:
+      - auth
+      - rest
+      - storage
+    ports:
+      # Loopback only — public access is caddy -> this port.
+      - "127.0.0.1:${KONG_PORT}:8000"
+    environment:
+      - KONG_DATABASE=off
+      - KONG_DECLARATIVE_CONFIG=/home/kong/kong.yml
+      - KONG_DNS_ORDER=LAST,A,CNAME
+      - KONG_PLUGINS=request-transformer,cors,key-auth,acl
+      # The sb-<host> hostname shares the apex cookie domain (.jnow.io /
+      # .<customer-domain>), so browsers send EVERY cookie for the zone —
+      # dashboard sessions, chunked supabase auth tokens, CF cookies — and
+      # the Cookie header routinely exceeds nginx's default 8k header
+      # buffer. Kong then 400s ({"message":"Bad request"}) on every path
+      # before any route matches (hit live on the sandbox cutover,
+      # 2026-07-11). Raise the per-header buffers well past real-world
+      # cookie jars.
+      - KONG_NGINX_HTTP_LARGE_CLIENT_HEADER_BUFFERS=8 24k
+      # The template references the anon/service keys; render at container
+      # start via KONG_NGINX-less env substitution is not available in kong
+      # 2.8, so Task 4 renders kong.yml with the real keys before `up`.
+    volumes:
+      - ./kong.yml:/home/kong/kong.yml:ro
+
+volumes:
+  db-data:
+  storage-data:
