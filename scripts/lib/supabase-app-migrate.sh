@@ -16,7 +16,21 @@ set -uo pipefail
 # recreate public schema objects (first-run DROPs are no-ops under
 # --if-exists); safe because data is truncate-first re-copied afterward.
 sb_app_dump_schema() {
+  # Filter version-skew lines out of the dump before they hit psql 15.8:
+  #  - `\restrict`/`\unrestrict` are psql meta-commands modern pg_dump (18+
+  #    line, and some 17.x builds) emits around the dump body per
+  #    CVE-2025-8714's mitigation; psql 15.8 doesn't understand them and
+  #    aborts under ON_ERROR_STOP.
+  #  - `SET transaction_timeout = 0;` is a GUC pg_dump 17 emits that doesn't
+  #    exist on PG15 — unknown-GUC is an ERROR, not a warning, under
+  #    ON_ERROR_STOP.
+  # Source stays postgres:17-alpine (MIGRATE_PG_IMAGE) because the hosted
+  # side may be PG17; only the psql 15.8 destination needs the filter.
+  # (bracket-expression `[\]` rather than an escaped `\\` — this sed's ERE
+  # backslash-escaping is unreliable across platforms/builds; `[\]` is an
+  # unambiguous one-char class matching a literal backslash everywhere.)
   migrate_src_pgdump --clean --if-exists --schema-only --schema=public --no-owner \
+    | sed -E '/^[\](un)?restrict/d; /^SET transaction_timeout/d' \
     | migrate_dst_psql -v ON_ERROR_STOP=1 || return 1
   echo "    public schema restored"
 }
@@ -48,21 +62,51 @@ sb_app_copy_data() { # "table1 table2 ..."
   done
 }
 
-# Buckets (with their public flag) + objects + storage.objects RLS policies.
+# Drop all existing storage.objects policies on the DESTINATION before the
+# schema restore. Re-runs previously ported policies referencing public
+# tables (fieldkit's do) create a dependency that makes the schema dump's
+# unqualified `DROP TABLE IF EXISTS public.<t>` (no CASCADE) fail under
+# ON_ERROR_STOP. Policies are recreated later by sb_app_port_storage, so
+# dropping them first is safe and idempotent (no-op on first run).
+sb_app_drop_dst_storage_policies() {
+  local ddl
+  ddl="$(migrate_dst_psql -tAc "select 'drop policy if exists ' || quote_ident(policyname) || ' on storage.objects;' from pg_policies where schemaname='storage' and tablename='objects'" </dev/null)" || return 1
+  if [[ -n "${ddl//[[:space:]]/}" ]]; then
+    printf '%s\n' "$ddl" | migrate_dst_psql -v ON_ERROR_STOP=1 || return 1
+  fi
+}
+
+# Buckets (with their public flag + size/mime constraints) + objects +
+# storage.objects RLS policies.
 sb_app_port_storage() { # SRC_URL SRC_KEY DST_URL DST_KEY
-  local src="$1" src_key="$2" dst="$3" dst_key="$4" line bucket is_public code ddl
-  while IFS=$'\t' read -r bucket is_public; do
+  local src="$1" src_key="$2" dst="$3" dst_key="$4"
+  local bucket is_public size mimes code ddl payload size_sql mime_sql
+  while IFS=$'\t' read -r bucket is_public size mimes; do
     [[ -z "$bucket" ]] && continue
+    # Build the create payload with size/mime constraints only when the
+    # source has them set (file_size_limit may be null; allowed_mime_types
+    # arrives pre-JSON-encoded via array_to_json so it's already a bare
+    # JSON array literal, or empty when null).
+    payload="{\"id\":\"${bucket}\",\"name\":\"${bucket}\",\"public\":${is_public}"
+    [[ -n "${size}" ]] && payload="${payload},\"file_size_limit\":${size}"
+    [[ -n "${mimes}" ]] && payload="${payload},\"allowed_mime_types\":${mimes}"
+    payload="${payload}}"
     code="$(migrate_curl -s -o /dev/null -w '%{http_code}' -X POST "${dst%/}/storage/v1/bucket" \
       -H "apikey: ${dst_key}" -H "Authorization: Bearer ${dst_key}" \
       -H "Content-Type: application/json" \
-      -d "{\"id\":\"${bucket}\",\"name\":\"${bucket}\",\"public\":${is_public}}")"
+      -d "${payload}")"
     case "${code}" in
       200|201|400|409) ;;
       *) echo "error: bucket ensure failed for ${bucket} (HTTP ${code})" >&2; return 1 ;;
     esac
+    # Converge metadata via SQL regardless of which REST path the ensure call
+    # took (created vs already-exists 400/409 never applies size/mime), so
+    # re-runs pick up constraint changes on the source too.
+    size_sql="null"; [[ -n "${size}" ]] && size_sql="${size}"
+    mime_sql="null"; [[ -n "${mimes}" ]] && mime_sql="(select array_agg(x) from jsonb_array_elements_text('${mimes}'::jsonb) x)"
+    migrate_dst_psql -c "update storage.buckets set public=${is_public}, file_size_limit=${size_sql}, allowed_mime_types=${mime_sql} where id='${bucket}';" </dev/null || return 1
     sb_sync_bucket "$src" "$src_key" "$dst" "$dst_key" "$bucket" || return 1
-  done < <(migrate_src_psql -tAc "select id || E'\t' || public::text from storage.buckets order by id")
+  done < <(migrate_src_psql -tAc "select id || E'\t' || public::text || E'\t' || coalesce(file_size_limit::text,'') || E'\t' || coalesce(array_to_json(allowed_mime_types)::text,'') from storage.buckets order by id")
   # Port storage.objects policies: generate CREATE POLICY DDL from the source's
   # pg_policies (qual is null for INSERT-only policies; with_check null for
   # SELECT/DELETE; permissive is the text PERMISSIVE/RESTRICTIVE — the AS

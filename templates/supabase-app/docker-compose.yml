@@ -133,6 +133,13 @@ services:
       - DB_AFTER_CONNECT_QUERY=SET search_path TO _realtime
       - DB_ENC_KEY=${REALTIME_ENC_KEY}
       - API_JWT_SECRET=${JWT_SECRET}
+      # realtime v2.102.3 hard-requires this (System.fetch_env! crashes at
+      # boot without it) — upstream supabase/docker sets it the same way.
+      - METRICS_JWT_SECRET=${JWT_SECRET}
+      # JWKS (EC public + legacy symmetric) so realtime verifies browser
+      # ES256 user tokens — same failure class as the storage service's
+      # JWT_JWKS below; API_JWT_SECRET alone only verifies HS256 (anon/service).
+      - API_JWT_JWKS=${JWT_JWKS}
       - SECRET_KEY_BASE=${REALTIME_SECRET_KEY_BASE}
       - ERL_AFLAGS=-proto_dist inet_tcp
       - DNS_NODES=''

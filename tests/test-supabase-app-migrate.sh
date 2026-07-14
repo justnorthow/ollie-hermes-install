@@ -16,12 +16,20 @@ OUT="$(sb_app_list_tables)"
 [ "$OUT" = "businesses
 sms_logs" ] && ok "list_tables returns source tables" || bad "list_tables returns source tables"
 
-# ---- sb_app_dump_schema: pipes pg_dump into dst ----
-migrate_src_pgdump() { echo "pgdump $*" >> "$LOG"; echo "CREATE TABLE public.x();"; }
-migrate_dst_psql() { echo "dst_psql $*" >> "$LOG"; cat > /dev/null; }
+# ---- sb_app_dump_schema: pipes pg_dump into dst, filtered for PG15/17 skew ----
+migrate_src_pgdump() {
+  echo "pgdump $*" >> "$LOG"
+  printf '%s\n' '\restrict abc123' 'SET transaction_timeout = 0;' 'CREATE TABLE public.x();'
+}
+DUMP_OUT="$(mktemp)"
+migrate_dst_psql() { echo "dst_psql $*" >> "$LOG"; cat > "$DUMP_OUT"; }
 sb_app_dump_schema && ok "dump_schema exits 0" || bad "dump_schema exits 0"
 grep -q 'pgdump --clean --if-exists --schema-only --schema=public --no-owner' "$LOG" \
   && ok "pg_dump flags" || bad "pg_dump flags"
+grep -qF '\restrict' "$DUMP_OUT" && bad "restrict token stripped before dst psql" || ok "restrict token stripped before dst psql"
+grep -q '^SET transaction_timeout' "$DUMP_OUT" && bad "transaction_timeout GUC stripped before dst psql" || ok "transaction_timeout GUC stripped before dst psql"
+grep -qF 'CREATE TABLE public.x();' "$DUMP_OUT" && ok "CREATE TABLE survives filter" || bad "CREATE TABLE survives filter"
+rm -f "$DUMP_OUT"
 
 # ---- sb_app_copy_data: truncate-all + replica-mode copy + count verify ----
 : > "$LOG"
@@ -50,12 +58,29 @@ grep -q "session_replication_role" "$LOG" && ok "replica mode set" || bad "repli
 migrate_dst_psql() { echo "dst_psql $*" >> "$LOG"; case "$*" in *count*) cat >/dev/null 2>&1||true; echo "0";; *) cat >/dev/null 2>&1||true;; esac; }
 sb_app_copy_data "businesses" 2>/dev/null && bad "count mismatch fails" || ok "count mismatch fails"
 
-# ---- sb_app_port_storage: buckets discovered with public flag; policies ported ----
+# ---- sb_app_drop_dst_storage_policies: drop existing dst policies before re-run schema restore ----
+: > "$LOG"
+migrate_dst_psql() {
+  echo "dst_psql $*" >> "$LOG"
+  case "$*" in
+    *pg_policies*) printf '%s\n' \
+      'drop policy if exists p1 on storage.objects;' \
+      'drop policy if exists "select own files" on storage.objects;' ;;
+    *) cat >> "$LOG" 2>/dev/null || true ;;
+  esac
+}
+sb_app_drop_dst_storage_policies && ok "drop_dst_storage_policies exits 0" || bad "drop_dst_storage_policies exits 0"
+grep -q 'drop policy if exists p1 on storage.objects;' "$LOG" \
+  && ok "drop statement for unquoted policy delivered" || bad "drop statement for unquoted policy delivered"
+grep -qF 'drop policy if exists "select own files" on storage.objects;' "$LOG" \
+  && ok "drop statement for quoted policy delivered" || bad "drop statement for quoted policy delivered"
+
+# ---- sb_app_port_storage: buckets (+size/mime) discovered; policies ported ----
 : > "$LOG"
 migrate_src_psql() {
   echo "src_psql $*" >> "$LOG"
   case "$*" in
-    *from\ storage.buckets*) printf 'inspection_pdfs\tfalse\nreport_pdfs\ttrue\n' ;;
+    *from\ storage.buckets*) printf 'inspection_pdfs\tfalse\t\t\nreport_pdfs\ttrue\t5242880\t["application/pdf","image/png"]\n' ;;
     *pg_policies*) printf '%s\n' \
       "create policy \"p1\" on storage.objects as permissive for select to authenticated using (true);" \
       "create policy \"p2\" on storage.objects as restrictive for select to authenticated using (true);" ;;
@@ -69,6 +94,15 @@ migrate_curl() { echo "curl $*" >> "$LOG"; echo -n "200"; }
 sb_app_port_storage "https://src.example" "srckey" "http://127.0.0.1:8010" "dstkey" \
   && ok "port_storage exits 0" || bad "port_storage exits 0"
 grep -q '"public":false' "$LOG" && ok "bucket public flag honored" || bad "bucket public flag honored"
+grep -q '"file_size_limit":5242880' "$LOG" && ok "bucket file_size_limit in create payload" || bad "bucket file_size_limit in create payload"
+grep -qF '"allowed_mime_types":["application/pdf","image/png"]' "$LOG" \
+  && ok "bucket allowed_mime_types in create payload" || bad "bucket allowed_mime_types in create payload"
+grep -q 'update storage.buckets set public=true, file_size_limit=5242880' "$LOG" \
+  && ok "bucket size/public UPDATE reaches dst" || bad "bucket size/public UPDATE reaches dst"
+grep -qF "allowed_mime_types=(select array_agg(x) from jsonb_array_elements_text('[\"application/pdf\",\"image/png\"]'::jsonb) x) where id='report_pdfs'" "$LOG" \
+  && ok "bucket allowed_mime_types UPDATE reaches dst" || bad "bucket allowed_mime_types UPDATE reaches dst"
+grep -q "update storage.buckets set public=false, file_size_limit=null, allowed_mime_types=null where id='inspection_pdfs'" "$LOG" \
+  && ok "bucket with no size/mime converges to NULL" || bad "bucket with no size/mime converges to NULL"
 grep -q 'create policy' "$LOG" && ok "policies ported" || bad "policies ported"
 grep -q 'lower(permissive)' "$LOG" && ok "generator emits AS clause" || bad "generator emits AS clause"
 grep -q 'as restrictive' "$LOG" && ok "restrictive policy preserved" || bad "restrictive policy preserved"

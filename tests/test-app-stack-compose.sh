@@ -20,6 +20,8 @@ grep -q 'GOTRUE_MAILER_AUTOCONFIRM=true' "$TPL" && ok "autoconfirm on" || bad "a
 grep -q 'KONG_NGINX_HTTP_LARGE_CLIENT_HEADER_BUFFERS=8 24k' "$TPL" && ok "24k header buffers kept" || bad "24k header buffers kept"
 grep -Eq 'profiles:.*realtime|profiles: \["realtime"\]' "$TPL" && ok "realtime behind profile" || bad "realtime behind profile"
 grep -q 'realtime-dev.supabase-realtime' "$TPL" && ok "realtime tenant network alias" || bad "realtime tenant network alias"
+grep -q 'METRICS_JWT_SECRET=\${JWT_SECRET}' "$TPL" && ok "realtime METRICS_JWT_SECRET set" || bad "realtime METRICS_JWT_SECRET set"
+grep -q 'API_JWT_JWKS=\${JWT_JWKS}' "$TPL" && ok "realtime API_JWT_JWKS set" || bad "realtime API_JWT_JWKS set"
 grep -q '/realtime/v1/' "$KONG" && ok "kong realtime route" || bad "kong realtime route"
 grep -q '__ANON_KEY__' "$KONG" && ok "kong key placeholders" || bad "kong key placeholders"
 

@@ -81,25 +81,28 @@ echo "    hosted postgres ${SRC_VER} ✓"
 migrate_dst_psql -tAc 'select 1' </dev/null >/dev/null \
   || { echo "error: local ${STACK_NAME} db not reachable" >&2; exit 1; }
 
-echo "==> app-migrate 3: restore public schema (pg_dump --schema-only)"
+echo "==> app-migrate 3: drop destination storage.objects policies (re-run safety)"
+sb_app_drop_dst_storage_policies
+
+echo "==> app-migrate 4: restore public schema (pg_dump --schema-only)"
 sb_app_dump_schema
 
-echo "==> app-migrate 4: copy auth (UUID-preserving)"
+echo "==> app-migrate 5: copy auth (UUID-preserving)"
 for t in "${AUTH_TABLES[@]}"; do sb_copy_table auth "$t"; sb_fix_sequences auth "$t"; done
 
-echo "==> app-migrate 5: copy public data (FK-order-free, count-verified)"
+echo "==> app-migrate 6: copy public data (FK-order-free, count-verified)"
 TABLES="$(sb_app_list_tables | tr '\n' ' ')"
 echo "    tables: ${TABLES}"
 sb_app_copy_data "${TABLES}"
 
-echo "==> app-migrate 6: storage (buckets + objects + RLS policies)"
+echo "==> app-migrate 7: storage (buckets + objects + RLS policies)"
 sb_app_port_storage "${HOSTED_SUPABASE_URL}" "${HOSTED_SERVICE_ROLE_KEY}" \
   "http://127.0.0.1:${KONG_PORT}" "${LOCAL_SERVICE_KEY}"
 
-echo "==> app-migrate 7: realtime publication + replica identity"
+echo "==> app-migrate 8: realtime publication + replica identity"
 sb_app_port_realtime_publication
 
-echo "==> app-migrate 8: verify"
+echo "==> app-migrate 9: verify"
 CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
   -H "apikey: ${LOCAL_SERVICE_KEY}" -H "Authorization: Bearer ${LOCAL_SERVICE_KEY}" \
   "http://127.0.0.1:${KONG_PORT}/rest/v1/?limit=1" || echo 000)"
