@@ -151,6 +151,10 @@ services:
       # into config.js; the frontend shows vertical-specific UI (Profile RE
       # fields) only when set. Managed by Fleet (provision / set-vertical).
       - VERTICAL=${VERTICAL:-}
+      # Instance display title (e.g. "JNOW Prod") — generate-config.sh writes it
+      # into config.js; shows in the tab title, sidebar, and sign-in card.
+      # Admin-editable in the Ollie UI via the orchestrator; empty = generic.
+      - INSTANCE_TITLE=${INSTANCE_TITLE:-}
       # When set, generate-hermes-host.sh publishes the native Hermes dashboard
       # (loopback :9119) at the ROOT of this hostname, reusing the dashboard's
       # auth gate. cloudflared routes this hostname to :3000; HERMES_UI_URL above

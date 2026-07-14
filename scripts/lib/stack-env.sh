@@ -39,6 +39,7 @@ render_stack_env() {
   firecrawl="$(_forward FIRECRAWL_API_KEY "$old")"
   hermes_ui_url="$(_forward HERMES_UI_URL "$old")"
   vertical="$(_forward VERTICAL "$old")"
+  local instance_title; instance_title="$(_forward INSTANCE_TITLE "$old")"
   local cortex_api_key; cortex_api_key="$(_forward CORTEX_API_KEY "$old")"
   local hermes_ui_hostname dashboard_bind hia_base_url
   hermes_ui_hostname="$(_forward HERMES_UI_HOSTNAME "$old")"
@@ -57,6 +58,9 @@ FIRECRAWL_API_KEY=${firecrawl}
 HERMES_UI_URL=${hermes_ui_url}
 # Customer vertical slug (e.g. real-estate) — Fleet-managed; empty = generic.
 VERTICAL=${vertical}
+# Instance display title (tab/sidebar/login) — set from the Ollie UI (admin);
+# the orchestrator writes it here. Empty = generic "Ollie" branding.
+INSTANCE_TITLE=${instance_title}
 # Cortex API key. UNSET by default (open on the private Docker network). When set,
 # cortex enforces it and the dashboard nginx injects it on /cortex-proxy.
 CORTEX_API_KEY=${cortex_api_key}
