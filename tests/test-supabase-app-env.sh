@@ -19,8 +19,11 @@ for k in POSTGRES_PASSWORD JWT_SECRET GOTRUE_JWT_KEYS JWT_JWKS ANON_KEY SERVICE_
 done
 [ "$(grep -c '^REALTIME_ENC_KEY=.\{16\}$' "${TMP}/a.env")" = "1" ] \
   && ok "enc key is 16 chars" || bad "enc key is 16 chars"
-[ "$(stat -c %a "${TMP}/a.env" 2>/dev/null || stat -f %Lp "${TMP}/a.env")" = "600" ] \
-  && ok "env is 0600" || bad "env is 0600"
+case "$(uname -s)" in
+  MINGW*|MSYS*) echo "SKIP: env is 0600 (NTFS cannot enforce unix mode bits)" ;;
+  *) [ "$(stat -c %a "${TMP}/a.env" 2>/dev/null || stat -f %Lp "${TMP}/a.env")" = "600" ] \
+       && ok "env is 0600" || bad "env is 0600" ;;
+esac
 
 # re-render preserves all secrets, restamps pins
 sed -i.bak 's|^SB_DB_IMAGE=.*|SB_DB_IMAGE=stale:0|' "${TMP}/a.env"
@@ -34,5 +37,25 @@ grep -q '^SB_DB_IMAGE=stale:0' "${TMP}/b.env" && bad "pin restamped" || ok "pin 
 # partial JWT bundle refuses (all-or-nothing rule)
 grep -v '^ANON_KEY=' "${TMP}/b.env" > "${TMP}/c.env"
 render_supabase_app_env "${TMP}/d.env" "${TMP}/c.env" 2>/dev/null && bad "partial bundle refused" || ok "partial bundle refused"
+
+# required params carried forward from OLD when unset (mirrors
+# test_site_url_carried_forward_when_unset in test-supabase-stack-env.sh)
+unset STACK_NAME KONG_PORT SUPABASE_PUBLIC_URL SITE_URL
+render_supabase_app_env "${TMP}/e.env" "${TMP}/b.env" && ok "params carried forward exits 0" || bad "params carried forward exits 0"
+[ "$(supabase_app_env_val "${TMP}/e.env" STACK_NAME)" = "hia" ] \
+  && ok "STACK_NAME carried forward" || bad "STACK_NAME carried forward"
+[ "$(supabase_app_env_val "${TMP}/e.env" KONG_PORT)" = "8010" ] \
+  && ok "KONG_PORT carried forward" || bad "KONG_PORT carried forward"
+[ "$(supabase_app_env_val "${TMP}/e.env" SUPABASE_PUBLIC_URL)" = "https://sb-hia.jnow.io" ] \
+  && ok "SUPABASE_PUBLIC_URL carried forward" || bad "SUPABASE_PUBLIC_URL carried forward"
+[ "$(supabase_app_env_val "${TMP}/e.env" SITE_URL)" = "https://hia.example.com" ] \
+  && ok "SITE_URL carried forward" || bad "SITE_URL carried forward"
+
+# required params missing everywhere (unset + stripped from OLD) hard-errors
+grep -vE '^(STACK_NAME|KONG_PORT|SUPABASE_PUBLIC_URL|SITE_URL)=' "${TMP}/b.env" > "${TMP}/f.env"
+ERR="$(render_supabase_app_env "${TMP}/g.env" "${TMP}/f.env" 2>&1)" \
+  && bad "missing params refused" || ok "missing params refused"
+printf '%s' "$ERR" | grep -q 'ERROR:.*STACK_NAME' \
+  && ok "missing-param error names the param" || bad "missing-param error names the param"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
