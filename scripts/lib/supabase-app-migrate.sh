@@ -12,9 +12,11 @@ set -uo pipefail
 # supabase_admin and hosted role owners (postgres, supabase_admin variants)
 # don't map 1:1. ACLs are KEPT (no --no-privileges) — anon/authenticated/
 # service_role grants and RLS enable flags must survive; those roles exist in
-# both hosted and self-hosted images.
+# both hosted and self-hosted images. --clean --if-exists: re-runs drop and
+# recreate public schema objects (first-run DROPs are no-ops under
+# --if-exists); safe because data is truncate-first re-copied afterward.
 sb_app_dump_schema() {
-  migrate_src_pgdump --schema-only --schema=public --no-owner \
+  migrate_src_pgdump --clean --if-exists --schema-only --schema=public --no-owner \
     | migrate_dst_psql -v ON_ERROR_STOP=1 || return 1
   echo "    public schema restored"
 }
@@ -63,10 +65,13 @@ sb_app_port_storage() { # SRC_URL SRC_KEY DST_URL DST_KEY
   done < <(migrate_src_psql -tAc "select id || E'\t' || public::text from storage.buckets order by id")
   # Port storage.objects policies: generate CREATE POLICY DDL from the source's
   # pg_policies (qual is null for INSERT-only policies; with_check null for
-  # SELECT/DELETE). Drop-first for idempotent re-runs.
+  # SELECT/DELETE; permissive is the text PERMISSIVE/RESTRICTIVE — the AS
+  # clause must be emitted or RESTRICTIVE policies silently downgrade to the
+  # PERMISSIVE default). Drop-first for idempotent re-runs.
   ddl="$(migrate_src_psql -tAc "
     select 'drop policy if exists ' || quote_ident(policyname) || ' on storage.objects; '
         || 'create policy ' || quote_ident(policyname) || ' on storage.objects'
+        || ' as ' || lower(permissive)
         || ' for ' || lower(cmd)
         || ' to ' || array_to_string(roles, ', ')
         || coalesce(' using (' || qual || ')', '')

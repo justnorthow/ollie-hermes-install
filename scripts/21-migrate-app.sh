@@ -2,8 +2,9 @@
 # 21-migrate-app.sh — migrate ONE hosted Supabase project (whole public
 # schema + data + auth users + storage + realtime publication) into ONE local
 # app stack deployed by 20-install-app-stack.sh. The HOSTED side is only ever
-# read. Idempotent: schema restore is additive-or-noop on re-runs (objects
-# exist), data copy is truncate-first, storage sync is upsert.
+# read. Idempotent: schema restore drops and recreates public schema objects
+# on re-runs (pg_dump --clean --if-exists; first-run DROPs are no-ops) before
+# data is re-copied, data copy is truncate-first, storage sync is upsert.
 #
 # Input (stdin, KEY=VALUE lines — secrets never in argv):
 #   STACK_NAME=<stack deployed under ~/stacks/<name>>

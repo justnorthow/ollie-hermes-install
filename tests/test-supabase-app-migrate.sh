@@ -20,7 +20,7 @@ sms_logs" ] && ok "list_tables returns source tables" || bad "list_tables return
 migrate_src_pgdump() { echo "pgdump $*" >> "$LOG"; echo "CREATE TABLE public.x();"; }
 migrate_dst_psql() { echo "dst_psql $*" >> "$LOG"; cat > /dev/null; }
 sb_app_dump_schema && ok "dump_schema exits 0" || bad "dump_schema exits 0"
-grep -q 'pgdump --schema-only --schema=public --no-owner' "$LOG" \
+grep -q 'pgdump --clean --if-exists --schema-only --schema=public --no-owner' "$LOG" \
   && ok "pg_dump flags" || bad "pg_dump flags"
 
 # ---- sb_app_copy_data: truncate-all + replica-mode copy + count verify ----
@@ -56,17 +56,22 @@ migrate_src_psql() {
   echo "src_psql $*" >> "$LOG"
   case "$*" in
     *from\ storage.buckets*) printf 'inspection_pdfs\tfalse\nreport_pdfs\ttrue\n' ;;
-    *pg_policies*) echo "create policy \"p1\" on storage.objects for select to authenticated using (true);" ;;
+    *pg_policies*) printf '%s\n' \
+      "create policy \"p1\" on storage.objects as permissive for select to authenticated using (true);" \
+      "create policy \"p2\" on storage.objects as restrictive for select to authenticated using (true);" ;;
     *storage.objects*) printf '' ;;   # no objects to sync in this test
     *) echo "" ;;
   esac
 }
-migrate_dst_psql() { echo "dst_psql $*" >> "$LOG"; cat >/dev/null 2>&1 || true; }
+# dst shim logs its stdin too, so DDL piped into it is assertable
+migrate_dst_psql() { echo "dst_psql $*" >> "$LOG"; cat >> "$LOG" 2>/dev/null || true; }
 migrate_curl() { echo "curl $*" >> "$LOG"; echo -n "200"; }
 sb_app_port_storage "https://src.example" "srckey" "http://127.0.0.1:8010" "dstkey" \
   && ok "port_storage exits 0" || bad "port_storage exits 0"
 grep -q '"public":false' "$LOG" && ok "bucket public flag honored" || bad "bucket public flag honored"
 grep -q 'create policy' "$LOG" && ok "policies ported" || bad "policies ported"
+grep -q 'lower(permissive)' "$LOG" && ok "generator emits AS clause" || bad "generator emits AS clause"
+grep -q 'as restrictive' "$LOG" && ok "restrictive policy preserved" || bad "restrictive policy preserved"
 
 # ---- sb_app_port_realtime_publication ----
 : > "$LOG"
