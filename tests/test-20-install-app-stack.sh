@@ -65,4 +65,9 @@ grep -q -- '--profile realtime' "$DOCKER_LOG" && ok "realtime profile passed" ||
 run "STACK_NAME=hia" >/dev/null 2>&1 && ok "carry-forward re-run exits 0" || bad "carry-forward re-run exits 0"
 [ "$(grep '^JWT_SECRET=' "$HOME/stacks/hia/.env")" = "$K1" ] && ok "secrets preserved" || bad "secrets preserved"
 
+# 6. .realtime marker persists the profile across re-runs (REALTIME omitted)
+: > "$DOCKER_LOG"
+run "STACK_NAME=fieldkit" >/dev/null 2>&1 && ok "realtime carry-forward re-run exits 0" || bad "realtime carry-forward re-run exits 0"
+grep -q -- '--profile realtime' "$DOCKER_LOG" && ok "realtime profile persists via marker" || bad "realtime profile persists via marker"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
