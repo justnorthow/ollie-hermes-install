@@ -52,12 +52,20 @@ frontend                                                        auth-gate allowl
   Reject control characters/newlines.
 - **Effect:** atomically rewrite the `INSTANCE_TITLE` line in
   `hermes_stack_dir/.env` (same tempfile + `os.replace` pattern as
-  `agents_json.py`; new small helper — do NOT widen `write_agent`), then call
-  the existing `docker_ops.bounce_dashboard` so the entrypoint re-emits
-  `config.js`. Write an audit-log entry (`op="set_instance_title"`).
-- **Response:** `{"ok": true}` (or `{"ok": false, "error": ...}`), mirroring
-  update_agent. A bounce failure does not undo the .env write — report it,
-  operator can re-bounce.
+  `agents_json.py`; new small helper — do NOT widen `write_agent`), holding
+  the same `.agents.lock` the agent flows use (shared-file race). The
+  dashboard bounce is **deferred until after the response is sent**
+  (BackgroundTasks): the PUT transits the dashboard's own nginx, so a
+  synchronous bounce would sever the in-flight response and the UI would
+  see every real title change as a failure (same trap lifecycle.py documents
+  for agent create). Write an audit-log entry (`op="set_instance_title"`,
+  `bounce="deferred"`).
+- **Response:** `{"ok": true}` after a successful write (validation errors →
+  400 `{"ok": false, "error": ...}`). A deferred-bounce failure cannot be
+  reported in the response by construction — it is swallowed, logged, and
+  audited (`result="error"`); the title persists and applies on the next
+  dashboard recreate. *(Amended 2026-07-13 during final review — the original
+  "bounce failure → ok:false response" contract was unsatisfiable.)*
 - No GET endpoint: the read path is `config.js`.
 
 ## Frontend
