@@ -31,6 +31,10 @@ for d in json.loads(os.environ["DETECTED"]):
         entry["scope"] = p["scope"]
     if p.get("manager_visible"):
         entry["manager_visible"] = p["manager_visible"]
+    # Display-only agent subtitle (set via orchestrator/UI) — preserve so a
+    # re-run of 06 never wipes it (same class as the scope-drop bug).
+    if p.get("subtitle"):
+        entry["subtitle"] = p["subtitle"]
     out.append(entry)
 
 print(json.dumps(out, separators=(",", ":")))

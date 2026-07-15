@@ -25,7 +25,14 @@ test_urls_refreshed_from_detected() {
   local out; out="$(EXISTING_AGENTS="$existing" DETECTED="$DETECTED" "$PY" "$MERGE")"
   assert_eq "gatewayUrl refreshed" "$(printf '%s' "$out" | field default gatewayUrl)" "http://host.docker.internal:8642"
 }
+test_preserves_subtitle() {
+  local existing='[{"id":"default","name":"Ollie","subtitle":"Chief of Staff"},{"id":"marketing-agent","name":"Olivia","subtitle":"Lead Gen"}]'
+  local out; out="$(EXISTING_AGENTS="$existing" DETECTED="$DETECTED" "$PY" "$MERGE")"
+  assert_eq "default keeps subtitle"        "$(printf '%s' "$out" | field default subtitle)" "Chief of Staff"
+  assert_eq "marketing keeps subtitle"      "$(printf '%s' "$out" | field marketing-agent subtitle)" "Lead Gen"
+}
 test_preserves_scope_and_manager_visible
 test_absent_scope_stays_absent
 test_urls_refreshed_from_detected
+test_preserves_subtitle
 finish
