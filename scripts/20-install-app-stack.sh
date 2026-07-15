@@ -81,6 +81,18 @@ SB_PGPASS="$(supabase_app_env_val "${SB_DIR}/.env" POSTGRES_PASSWORD)"
   -c "ALTER USER authenticator WITH PASSWORD '${SB_PGPASS}';" \
   -c "ALTER USER supabase_storage_admin WITH PASSWORD '${SB_PGPASS}';"
 
+# Realtime's Ecto migrations run in the _realtime schema, whose search_path is
+# preset by DB_AFTER_CONNECT_QUERY. On a fresh db that schema does not exist
+# yet, so the very first migration fails with 3F000 (no schema selected) and
+# the container crash-loops. Pre-create it, then restart realtime so it picks
+# up a clean slate. Idempotent (IF NOT EXISTS); no-op when realtime is off.
+if [[ "${PROFILE_ARGS[*]}" == *"realtime"* ]]; then
+  echo "==> app-stack 3b: ensure _realtime schema + restart realtime"
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD="${SB_PGPASS}" db psql -h 127.0.0.1 -U supabase_admin -d postgres \
+    -c "CREATE SCHEMA IF NOT EXISTS _realtime AUTHORIZATION supabase_admin;"
+  "${COMPOSE[@]}" restart realtime
+fi
+
 echo "==> app-stack 4: wait for auth healthy via kong :${KONG_PORT}"
 set +e
 CODE=""

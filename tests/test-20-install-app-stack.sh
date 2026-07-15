@@ -60,6 +60,8 @@ K1="$(grep '^JWT_SECRET=' "$HOME/stacks/hia/.env")"
 run "STACK_NAME=fieldkit" "KONG_PORT=8000" "SUPABASE_PUBLIC_URL=https://sb.fk.example" "SITE_URL=https://fk.example" "REALTIME=1" \
   >/dev/null 2>&1 && ok "realtime deploy exits 0" || bad "realtime deploy exits 0"
 grep -q -- '--profile realtime' "$DOCKER_LOG" && ok "realtime profile passed" || bad "realtime profile passed"
+grep -q 'CREATE SCHEMA IF NOT EXISTS _realtime' "$DOCKER_LOG" && ok "realtime schema pre-created" || bad "realtime schema pre-created"
+grep -q 'restart realtime' "$DOCKER_LOG" && ok "realtime restarted after schema" || bad "realtime restarted after schema"
 
 # 5. idempotent re-run (carry-forward, secrets preserved)
 run "STACK_NAME=hia" >/dev/null 2>&1 && ok "carry-forward re-run exits 0" || bad "carry-forward re-run exits 0"
