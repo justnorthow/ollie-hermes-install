@@ -81,7 +81,12 @@ sb_app_drop_dst_storage_policies() {
 sb_app_port_storage() { # SRC_URL SRC_KEY DST_URL DST_KEY
   local src="$1" src_key="$2" dst="$3" dst_key="$4"
   local bucket is_public size mimes code ddl payload size_sql mime_sql
-  while IFS=$'\t' read -r bucket is_public size mimes; do
+  # Read the bucket list on fd 3, not stdin: sb_sync_bucket (below) runs a
+  # `docker run -i` for its object list which inherits fd 0 inside this loop,
+  # and would otherwise drain the remaining bucket list — leaving every bucket
+  # after the first unsynced (surfaced live on the fieldkit migrate, 10 buckets
+  # → only the first synced). fd 3 is untouched by nested stdin reads.
+  while IFS=$'\t' read -r bucket is_public size mimes <&3; do
     [[ -z "$bucket" ]] && continue
     # Build the create payload with size/mime constraints only when the
     # source has them set (file_size_limit may be null; allowed_mime_types
@@ -106,7 +111,7 @@ sb_app_port_storage() { # SRC_URL SRC_KEY DST_URL DST_KEY
     mime_sql="null"; [[ -n "${mimes}" ]] && mime_sql="(select array_agg(x) from jsonb_array_elements_text('${mimes}'::jsonb) x)"
     migrate_dst_psql -c "update storage.buckets set public=${is_public}, file_size_limit=${size_sql}, allowed_mime_types=${mime_sql} where id='${bucket}';" </dev/null || return 1
     sb_sync_bucket "$src" "$src_key" "$dst" "$dst_key" "$bucket" || return 1
-  done < <(migrate_src_psql -tAc "select id || E'\t' || public::text || E'\t' || coalesce(file_size_limit::text,'') || E'\t' || coalesce(array_to_json(allowed_mime_types)::text,'') from storage.buckets order by id")
+  done 3< <(migrate_src_psql -tAc "select id || E'\t' || public::text || E'\t' || coalesce(file_size_limit::text,'') || E'\t' || coalesce(array_to_json(allowed_mime_types)::text,'') from storage.buckets order by id")
   # Port storage.objects policies: generate CREATE POLICY DDL from the source's
   # pg_policies (qual is null for INSERT-only policies; with_check null for
   # SELECT/DELETE; permissive is the text PERMISSIVE/RESTRICTIVE — the AS
