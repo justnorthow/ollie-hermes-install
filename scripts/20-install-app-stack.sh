@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES="${SCRIPT_DIR}/../templates/supabase-app"
 
 STACK_NAME="" ; KONG_PORT="" ; SUPABASE_PUBLIC_URL="" ; SITE_URL="" ; REALTIME=""
+GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET=""
 while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
   case "${k}" in
     STACK_NAME) STACK_NAME="${v}" ;;
@@ -33,6 +34,8 @@ while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
     SUPABASE_PUBLIC_URL) SUPABASE_PUBLIC_URL="${v}" ;;
     SITE_URL) SITE_URL="${v}" ;;
     REALTIME) REALTIME="${v}" ;;
+    GOOGLE_CLIENT_ID) GOOGLE_CLIENT_ID="${v}" ;;
+    GOOGLE_CLIENT_SECRET) GOOGLE_CLIENT_SECRET="${v}" ;;
   esac
 done
 if [[ ! "${STACK_NAME}" =~ ^[a-z][a-z0-9-]*$ ]]; then
@@ -60,10 +63,20 @@ chmod 700 "${SB_DIR}"
 cp "${TEMPLATES}/docker-compose.yml" "${SB_DIR}/docker-compose.yml"
 ENV_OLD=""
 if [[ -f "${SB_DIR}/.env" ]]; then ENV_OLD="$(mktemp)"; cp "${SB_DIR}/.env" "${ENV_OLD}"; fi
-export STACK_NAME KONG_PORT SUPABASE_PUBLIC_URL SITE_URL
+export STACK_NAME KONG_PORT SUPABASE_PUBLIC_URL SITE_URL GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
 render_supabase_app_env "${SB_DIR}/.env" "${ENV_OLD}"
 [[ -n "${ENV_OLD}" ]] && rm -f "${ENV_OLD}"
 [[ "${REALTIME}" == "1" ]] && touch "${SB_DIR}/.realtime"
+# Re-read the Google creds from the rendered .env and re-export. On a
+# carry-forward re-run (creds omitted from stdin) the exports above are EMPTY
+# strings, and docker compose gives the process environment PRECEDENCE over
+# --env-file — so the empty exports would recreate auth with a blank Google
+# client and every login 400s at /authorize (hit live on the Ollie sandbox
+# cutover, 2026-07-11). The rendered .env always holds the preserved values.
+GOOGLE_CLIENT_ID="$(supabase_app_env_val "${SB_DIR}/.env" GOOGLE_CLIENT_ID)"
+GOOGLE_CLIENT_SECRET="$(supabase_app_env_val "${SB_DIR}/.env" GOOGLE_CLIENT_SECRET)"
+GOOGLE_ENABLED="$(supabase_app_env_val "${SB_DIR}/.env" GOOGLE_ENABLED)"
+export GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_ENABLED
 ANON_KEY="$(supabase_app_env_val "${SB_DIR}/.env" ANON_KEY)"
 SERVICE_ROLE_KEY="$(supabase_app_env_val "${SB_DIR}/.env" SERVICE_ROLE_KEY)"
 supabase_render_kong "${TEMPLATES}/kong.yml" "${SB_DIR}/kong.yml" "${ANON_KEY}" "${SERVICE_ROLE_KEY}"

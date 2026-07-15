@@ -53,6 +53,15 @@ services:
       # Asymmetric user-token signing (ES256) + legacy HS256 verification.
       - GOTRUE_JWT_KEYS=${GOTRUE_JWT_KEYS}
       - GOTRUE_MAILER_AUTOCONFIRM=true
+      # Optional per-app Google OAuth. GOOGLE_ENABLED is derived by
+      # supabase-app-env.sh (true iff a client id is set), so stacks that don't
+      # use Google (HIA/NS) render these empty + disabled. Apps whose users sign
+      # in with Google (fieldkit) MUST also have this stack's callback URL
+      # registered in the Google Cloud OAuth client's authorized redirect URIs.
+      - GOTRUE_EXTERNAL_GOOGLE_ENABLED=${GOOGLE_ENABLED}
+      - GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOTRUE_EXTERNAL_GOOGLE_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI=${SUPABASE_PUBLIC_URL}/auth/v1/callback
 
   rest:
     image: ${SB_REST_IMAGE:?pinned in .env by supabase-app-env.sh}

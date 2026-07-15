@@ -55,6 +55,12 @@ render_supabase_app_env() { # OUT OLD  (exports: STACK_NAME KONG_PORT SUPABASE_P
   srk="$(_sba_keep SERVICE_ROLE_KEY "$old" service_role_key "$bundle")"
   renc="$(_sba_keep_or_gen REALTIME_ENC_KEY "$old" 8)"        # 16 hex chars (AES key len realtime expects)
   rskb="$(_sba_keep_or_gen REALTIME_SECRET_KEY_BASE "$old" 32)"
+  # Optional Google OAuth (per-app): exported value wins, else carried forward.
+  # Enabled iff a client id is present, so non-Google stacks render disabled.
+  local gid gsec genabled
+  gid="${GOOGLE_CLIENT_ID:-$(supabase_app_env_val "$old" GOOGLE_CLIENT_ID)}"
+  gsec="${GOOGLE_CLIENT_SECRET:-$(supabase_app_env_val "$old" GOOGLE_CLIENT_SECRET)}"
+  genabled="false"; [ -n "$gid" ] && genabled="true"
   local name port url site_url
   name="${STACK_NAME:-$(supabase_app_env_val "$old" STACK_NAME)}"
   port="${KONG_PORT:-$(supabase_app_env_val "$old" KONG_PORT)}"
@@ -77,6 +83,9 @@ REALTIME_ENC_KEY=${renc}
 REALTIME_SECRET_KEY_BASE=${rskb}
 SUPABASE_PUBLIC_URL=${url}
 SITE_URL=${site_url}
+GOOGLE_ENABLED=${genabled}
+GOOGLE_CLIENT_ID=${gid}
+GOOGLE_CLIENT_SECRET=${gsec}
 SB_DB_IMAGE=${SB_DB_IMAGE_PIN}
 SB_AUTH_IMAGE=${SB_AUTH_IMAGE_PIN}
 SB_REST_IMAGE=${SB_REST_IMAGE_PIN}

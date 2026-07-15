@@ -15,7 +15,12 @@ grep -q '^name:' "$TPL" && bad "no top-level name: (project set via -p)" || ok "
 grep -q 'container_name: \${STACK_NAME}-db' "$TPL" && ok "db container parameterized" || bad "db container parameterized"
 grep -q '127.0.0.1:\${KONG_PORT}:8000' "$TPL" && ok "kong port parameterized" || bad "kong port parameterized"
 grep -q 'GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN' "$TPL" && bad "no ollie-core token hook" || ok "no ollie-core token hook"
-grep -q 'GOTRUE_EXTERNAL_GOOGLE' "$TPL" && bad "no google oauth envs" || ok "no google oauth envs"
+# Google OAuth is OPTIONAL per-app (fieldkit's users sign in with Google; HIA/NS
+# don't). The envs must be present but driven by GOOGLE_ENABLED, which
+# supabase-app-env.sh derives (true iff a client id is set) — so non-Google
+# stacks render them empty + disabled rather than omitting them.
+grep -q 'GOTRUE_EXTERNAL_GOOGLE_ENABLED=\${GOOGLE_ENABLED}' "$TPL" && ok "google oauth env is optional/parameterized" || bad "google oauth env is optional/parameterized"
+grep -q 'GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI=\${SUPABASE_PUBLIC_URL}/auth/v1/callback' "$TPL" && ok "google redirect uri derives from stack public url" || bad "google redirect uri derives from stack public url"
 grep -q 'GOTRUE_MAILER_AUTOCONFIRM=true' "$TPL" && ok "autoconfirm on" || bad "autoconfirm on"
 grep -q 'KONG_NGINX_HTTP_LARGE_CLIENT_HEADER_BUFFERS=8 24k' "$TPL" && ok "24k header buffers kept" || bad "24k header buffers kept"
 grep -Eq 'profiles:.*realtime|profiles: \["realtime"\]' "$TPL" && ok "realtime behind profile" || bad "realtime behind profile"
