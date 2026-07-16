@@ -1239,18 +1239,29 @@ def cmd_set_dashboard_auth(args):
 
 
 def set_hermes_ui_url(url):
-    """Set HERMES_UI_URL in the dashboard stack .env and recreate the dashboard
-    so generate-config.sh re-emits hermesUiUrl into the served config.js. An
-    empty string clears it (the frontend link falls back to its in-app default)."""
+    """Set HERMES_UI_URL *and* HERMES_UI_HOSTNAME in the dashboard stack .env
+    and recreate the dashboard. The URL is only the "Backend Settings" link the
+    frontend renders; the HOSTNAME (derived from it) is what makes nginx
+    actually SERVE the native Hermes dashboard at that host —
+    generate-hermes-host.sh emits the server block only when it is set.
+    Writing the URL without the hostname left the host falling through to the
+    Ollie SPA ("link set but hostname serves the Ollie hub"; hit live on
+    GetBilled 2026-07-11 and sandbox 2026-07-16). An empty string clears BOTH
+    (the frontend link falls back to its in-app default; nginx drops the
+    dedicated server block)."""
     url = (url or "").strip()
     if "\n" in url or "\r" in url:
         fail("hermes ui url must be a single-line http(s) URL", 2)
     if url and not re.match(r"^https?://", url):
         fail("hermes ui url must be an http(s) URL")
+    hostname = (urllib.parse.urlparse(url).hostname or "") if url else ""
+    if url and not hostname:
+        fail("hermes ui url has no hostname")
     write_stack_env_key("HERMES_UI_URL", url)
+    write_stack_env_key("HERMES_UI_HOSTNAME", hostname)
     run_cmd(["docker", "compose", "-f", COMPOSE_FILE, "up", "-d",
              "--force-recreate", "dashboard"], timeout=300)
-    emit({"applied": True, "recreated": ["dashboard"]})
+    emit({"applied": True, "recreated": ["dashboard"], "hostname": hostname})
 
 
 def cmd_set_hermes_ui_url(args):

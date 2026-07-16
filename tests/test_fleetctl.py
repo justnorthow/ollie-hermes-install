@@ -1053,6 +1053,28 @@ class TestSetHermesUiUrl(unittest.TestCase):
         code, out = self._run(["set-hermes-ui-url"], '{"url": "javascript:alert(1)"}')
         self.assertNotEqual(code, 0)
 
+    def test_writes_hostname_derived_from_url(self):
+        # The URL is only the frontend link; HERMES_UI_HOSTNAME is what makes
+        # nginx serve the Hermes dashboard at that host. Writing one without
+        # the other = "link set but hostname serves the Ollie hub" (GetBilled
+        # 2026-07-11, sandbox 2026-07-16).
+        code, out = self._run(["set-hermes-ui-url"],
+                              '{"url": "https://ollie-hermes.jnow.io"}')
+        self.assertEqual(code, 0)
+        self.assertEqual(self._env().get("HERMES_UI_HOSTNAME"), "ollie-hermes.jnow.io")
+        self.assertEqual(out[0].get("hostname"), "ollie-hermes.jnow.io")
+
+    def test_hostname_strips_port_and_path(self):
+        self._run(["set-hermes-ui-url"],
+                  '{"url": "https://x-hermes.jnow.io:8443/some/path"}')
+        self.assertEqual(self._env().get("HERMES_UI_HOSTNAME"), "x-hermes.jnow.io")
+
+    def test_empty_url_clears_hostname_too(self):
+        self._run(["set-hermes-ui-url"], '{"url": "https://x-hermes.jnow.io"}')
+        self._run(["set-hermes-ui-url"], '{"url": ""}')
+        self.assertEqual(self._env().get("HERMES_UI_URL"), "")
+        self.assertEqual(self._env().get("HERMES_UI_HOSTNAME"), "")
+
 
 class TestSetVertical(unittest.TestCase):
     def _run(self, mod, payload):
