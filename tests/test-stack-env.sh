@@ -20,7 +20,7 @@ SUPABASE_URL=https://x.supabase.co
 DASHBOARD_USER=admin
 OLD
   ( unset FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE \
-          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new" "$old" )
   assert_eq  "HERMES_GATEWAY_KEY derived" "$(grep -E '^HERMES_GATEWAY_KEY=' "$new" | cut -d= -f2-)" "gwkey123"
   assert_eq  "ORCHESTRATOR_KEY derived"   "$(grep -E '^ORCHESTRATOR_KEY=' "$new" | cut -d= -f2-)" "orchkey123"
@@ -41,7 +41,7 @@ FRONTEND_IMAGE=justnorthow/frontend@sha256:OLD
 OAUTH2_PROXY_CLIENT_ID=keepme
 OLD
   ( unset FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE \
-          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new" "$old" )
   assert_count "exactly one CORTEX_IMAGE line"   "$new" "CORTEX_IMAGE" 1
   assert_count "exactly one FRONTEND_IMAGE line" "$new" "FRONTEND_IMAGE" 1
@@ -60,14 +60,14 @@ test_cortex_api_key_forwarded() {
   local old new; old="$(mktemp)"; new="$(mktemp)"
   printf 'CORTEX_API_KEY=secret-token\n' > "$old"
   ( unset CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE \
-          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new" "$old" )
   assert_eq "CORTEX_API_KEY preserved" "$(grep -E '^CORTEX_API_KEY=' "$new" | cut -d= -f2-)" "secret-token"
 
   local old2 new2; old2="$(mktemp)"; new2="$(mktemp)"
   : > "$old2"
   ( unset CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE \
-          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new2" "$old2" )
   assert_count "CORTEX_API_KEY line present (empty ok)" "$new2" "CORTEX_API_KEY" 1
   assert_eq "CORTEX_API_KEY empty by default" "$(grep -E '^CORTEX_API_KEY=' "$new2" | cut -d= -f2-)" ""
@@ -84,13 +84,15 @@ test_operator_tunables_preserved() {
 HERMES_UI_HOSTNAME=hermes.jnow.io
 DASHBOARD_BIND=0.0.0.0
 HIA_BASE_URL=https://hia.example.com
+NEWSLETTER_BASE_URL=https://ns.example.com
 OLD
-  ( unset HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL \
+  ( unset HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL \
           CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE
     render_stack_env "$new" "$old" )
   assert_eq "HERMES_UI_HOSTNAME preserved" "$(grep -E '^HERMES_UI_HOSTNAME=' "$new" | cut -d= -f2-)" "hermes.jnow.io"
   assert_eq "DASHBOARD_BIND preserved"     "$(grep -E '^DASHBOARD_BIND=' "$new" | cut -d= -f2-)" "0.0.0.0"
   assert_eq "HIA_BASE_URL preserved"       "$(grep -E '^HIA_BASE_URL=' "$new" | cut -d= -f2-)" "https://hia.example.com"
+  assert_eq "NEWSLETTER_BASE_URL preserved" "$(grep -E '^NEWSLETTER_BASE_URL=' "$new" | cut -d= -f2-)" "https://ns.example.com"
   rm -f "$old" "$new"
 }
 
@@ -102,14 +104,14 @@ test_instance_title_forwarded() {
   local old new; old="$(mktemp)"; new="$(mktemp)"
   printf 'INSTANCE_TITLE=JNOW Prod\n' > "$old"
   ( unset INSTANCE_TITLE FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL \
-          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new" "$old" )
   assert_eq "INSTANCE_TITLE preserved" "$(grep -E '^INSTANCE_TITLE=' "$new" | cut -d= -f2-)" "JNOW Prod"
 
   local old2 new2; old2="$(mktemp)"; new2="$(mktemp)"
   : > "$old2"
   ( unset INSTANCE_TITLE FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL \
-          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          CORTEX_API_KEY HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new2" "$old2" )
   assert_count "INSTANCE_TITLE line present (empty ok)" "$new2" "INSTANCE_TITLE" 1
   rm -f "$old" "$new" "$old2" "$new2"
@@ -145,9 +147,10 @@ CORTEX_API_KEY=cortex-secret
 HERMES_UI_HOSTNAME=hermes.jnow.io
 DASHBOARD_BIND=0.0.0.0
 HIA_BASE_URL=https://hia
+NEWSLETTER_BASE_URL=https://ns
 OLD
   ( unset FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE CORTEX_API_KEY \
-          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
     render_stack_env "$new" "$old" )
   local k
   for k in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET \
@@ -155,7 +158,7 @@ OLD
            OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS DASHBOARD_USER \
            DASHBOARD_PASS SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN \
            FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE CORTEX_API_KEY HERMES_UI_HOSTNAME \
-           DASHBOARD_BIND HIA_BASE_URL CORTEX_IMAGE FRONTEND_IMAGE; do
+           DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL CORTEX_IMAGE FRONTEND_IMAGE; do
     assert_count "exactly one ${k}" "$new" "$k" 1
   done
   assert_eq "pin bumped to new" "$(grep -E '^CORTEX_IMAGE=' "$new" | cut -d= -f2-)" "justnorthow/cortex@sha256:NEW"
