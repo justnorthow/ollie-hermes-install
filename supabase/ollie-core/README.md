@@ -17,6 +17,7 @@ Run in the project's SQL Editor (or via psql) in numeric order:
 | `0005_governance_events.sql` | `governance_events` | Gate-1 audit trail; Compliance/TRAIGA pages (instance-scoped RLS) |
 | `0006_access_token_hook.sql` | `custom_access_token_hook()` | stamps `tags` + default `user_role` into JWTs |
 | `0008_user_prefs.sql` | `user_prefs` | per-user dashboard preferences (Settings page; owner-only RLS) |
+| `0009_agent_avatars.sql` | `agent_avatar_overrides`, `agent-avatars` bucket | per-user avatar overrides + avatar bytes storage (self-row RLS; `shared/` write gated to admins) |
 
 0005 depends on 0003 (its RLS policy subqueries `user_roles`); 0006 depends on
 0004 (reads `user_tags`, relies on its `supabase_auth_admin` grant).
