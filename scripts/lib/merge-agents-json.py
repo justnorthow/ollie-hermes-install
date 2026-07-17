@@ -35,6 +35,10 @@ for d in json.loads(os.environ["DETECTED"]):
     # re-run of 06 never wipes it (same class as the scope-drop bug).
     if p.get("subtitle"):
         entry["subtitle"] = p["subtitle"]
+    # Display-only agent avatar URL (shared layer, set via admin UI) — preserve so
+    # a re-run of 06 never wipes it (same class as the scope-drop bug).
+    if p.get("avatar_url"):
+        entry["avatar_url"] = p["avatar_url"]
     out.append(entry)
 
 print(json.dumps(out, separators=(",", ":")))

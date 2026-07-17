@@ -31,8 +31,14 @@ test_preserves_subtitle() {
   assert_eq "default keeps subtitle"        "$(printf '%s' "$out" | field default subtitle)" "Chief of Staff"
   assert_eq "marketing keeps subtitle"      "$(printf '%s' "$out" | field marketing-agent subtitle)" "Lead Gen"
 }
+test_preserves_avatar_url() {
+  local existing='[{"id":"default","name":"Ollie","avatar_url":"https://x/shared/default.jpg?t=1"}]'
+  local out; out="$(EXISTING_AGENTS="$existing" DETECTED="$DETECTED" "$PY" "$MERGE")"
+  assert_eq "default keeps avatar_url" "$(printf '%s' "$out" | field default avatar_url)" "https://x/shared/default.jpg?t=1"
+}
 test_preserves_scope_and_manager_visible
 test_absent_scope_stays_absent
 test_urls_refreshed_from_detected
 test_preserves_subtitle
+test_preserves_avatar_url
 finish
