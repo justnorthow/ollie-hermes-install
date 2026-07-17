@@ -412,7 +412,9 @@ def build_update_steps(component):
     steps = []
     if component in ("hermes", "all"):
         steps += [
-            ("git-pull-install-repo", ["git", "-C", INSTALL_DIR, "pull", "--ff-only"], 120),
+            # Explicit "origin main" (not a bare pull): survives the master->main
+            # rename and fast-forwards boxes still on a stale master upstream.
+            ("git-pull-install-repo", ["git", "-C", INSTALL_DIR, "pull", "--ff-only", "origin", "main"], 120),
             # Reinstall fleetctl from the freshly-pulled repo so the running binary
             # stays in sync with the template on every hermes update.
             ("reinstall-fleetctl", ["bash", os.path.join(INSTALL_DIR, "scripts", "10-install-fleetctl.sh")], 60),

@@ -462,7 +462,7 @@ first)
    `https://sb-ollie.jnow.io/auth/v1/callback` to the instance's OAuth client.
 3. Deploy the local stack (as the service user, repo at the current pin):
 
-       cd ~/ollie-hermes-install && git fetch origin && git checkout --detach origin/master
+       cd ~/ollie-hermes-install && git fetch origin && git checkout --detach origin/main
        printf 'SUPABASE_PUBLIC_URL=https://sb-ollie.jnow.io\nSITE_URL=https://ollie.jnow.io\nGOOGLE_CLIENT_ID=<id>\nGOOGLE_CLIENT_SECRET=<secret>\n' \
          | bash scripts/11-install-supabase.sh --deploy
 
