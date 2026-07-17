@@ -3,6 +3,14 @@
 -- 2026-07-17-agent-avatars-design.md): the SHARED avatar lives on the AGENTS_JSON
 -- entry (orchestrator), set by admins. This table holds the PER-USER override a
 -- member sets on their own scope:user Ollie — cosmetic, self-row RLS like profiles.
+--
+-- MULTI-TENANCY NOTE: all JNOW/Fleet boxes share ONE Supabase project, isolated
+-- logically by instance_id (which is NOT a JWT claim and NOT known to the browser).
+-- So the SHARED layer's bytes are written ONLY by the orchestrator via the service
+-- role (which bypasses RLS) at shared/{instance_id}/{agent_id}.jpg — there is
+-- deliberately NO client-facing shared/ write policy here (an RLS policy can't scope
+-- to the caller's box). The PER-USER layer below is safe client-side: it is keyed by
+-- the globally-unique user_id under self-row RLS, mirroring profiles.
 
 create table if not exists public.agent_avatar_overrides (
   user_id     uuid not null references auth.users(id) on delete cascade,
@@ -34,8 +42,11 @@ create policy agent_avatar_overrides_self_delete on public.agent_avatar_override
 grant select, insert, update, delete on public.agent_avatar_overrides
   to authenticated, service_role;
 
--- Storage bucket for avatar bytes (shared/{agent_id}.jpg + {user_id}/{agent_id}.jpg).
--- Public read is fine for cosmetic avatars; writes are gated by the policies below.
+-- Storage bucket for avatar bytes:
+--   per-user override → {user_id}/{agent_id}.jpg   (written by the browser, self-RLS)
+--   shared/company    → shared/{instance_id}/{agent_id}.jpg
+--                       (written ONLY by the orchestrator service role, no RLS below)
+-- Public read is fine for cosmetic avatars.
 insert into storage.buckets (id, name, public)
   values ('agent-avatars', 'agent-avatars', true)
   on conflict (id) do nothing;
@@ -45,7 +56,7 @@ drop policy if exists agent_avatars_read on storage.objects;
 create policy agent_avatars_read on storage.objects
   for select to authenticated using (bucket_id = 'agent-avatars');
 
--- A user may write only under their own {uid}/ prefix.
+-- A user may write only under their own {uid}/ prefix (the per-user override layer).
 drop policy if exists agent_avatars_self_write on storage.objects;
 create policy agent_avatars_self_write on storage.objects
   for all to authenticated
@@ -58,26 +69,8 @@ create policy agent_avatars_self_write on storage.objects
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
--- Only account_admin / platform_operator may write the shared/ prefix.
--- The user_roles self-select policy lets the subquery read the caller's own row.
+-- NO client-facing shared/ write policy: an RLS policy cannot scope a write to the
+-- caller's instance (instance_id is not a JWT claim), so shared/ bytes are written
+-- exclusively by the orchestrator's service role, which bypasses RLS. Drop any prior
+-- shared-write policy so a re-apply of this migration removes it cleanly.
 drop policy if exists agent_avatars_shared_admin_write on storage.objects;
-create policy agent_avatars_shared_admin_write on storage.objects
-  for all to authenticated
-  using (
-    bucket_id = 'agent-avatars'
-    and (storage.foldername(name))[1] = 'shared'
-    and exists (
-      select 1 from public.user_roles ur
-      where ur.user_id = auth.uid()
-        and ur.tier in ('account_admin', 'platform_operator')
-    )
-  )
-  with check (
-    bucket_id = 'agent-avatars'
-    and (storage.foldername(name))[1] = 'shared'
-    and exists (
-      select 1 from public.user_roles ur
-      where ur.user_id = auth.uid()
-        and ur.tier in ('account_admin', 'platform_operator')
-    )
-  );
