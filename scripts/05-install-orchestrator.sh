@@ -34,8 +34,8 @@ HERMES_ENV="${HOME}/.hermes/.env"
 
 echo "==> step 1: clone or refresh orchestrator repo at ${ORCH_DIR}"
 if [[ -d "${ORCH_DIR}/.git" ]]; then
-  git -C "${ORCH_DIR}" fetch -q --depth 1 origin master
-  git -C "${ORCH_DIR}" reset -q --hard origin/master
+  git -C "${ORCH_DIR}" fetch -q --depth 1 origin main
+  git -C "${ORCH_DIR}" reset -q --hard origin/main
 else
   git clone -q --depth 1 "${ORCH_REPO}" "${ORCH_DIR}"
 fi
