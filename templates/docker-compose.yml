@@ -165,6 +165,12 @@ services:
       # auth gate. cloudflared routes this hostname to :3000; HERMES_UI_URL above
       # points here. See docs/runbooks/hermes-dashboard-cloudflare.md.
       - HERMES_UI_HOSTNAME=${HERMES_UI_HOSTNAME:-}
+      # On-disk audit reports for the ReportsViewer app. Set REPORTS_DIR=/reports
+      # on a box to enable: the container's generate-reports.sh then serves that
+      # directory at /reports-files/ with JSON autoindex, and the dashboard's
+      # per-app `reportsPath` config selects a subdirectory of it. Unset = the
+      # /reports-files/ location does not exist (feature off).
+      - REPORTS_DIR=${REPORTS_DIR:-}
     volumes:
       # Persist user uploads (e.g. the agent avatar saved to /uploads/avatar.jpg
       # by /save-avatar) across container recreation. Without this, /uploads
@@ -172,6 +178,11 @@ services:
       # `docker compose up -d`, leaving the dashboard pointing at a now-404
       # avatar URL stored in the browser's localStorage.
       - uploads-data:/uploads
+      # Host directory holding generated reports, mounted read-only for the
+      # /reports-files/ autoindex above. REPORTS_HOST_DIR points at wherever the
+      # agent writes reports on the host; the default resolves to an (auto-created)
+      # empty ./reports so the mount never fails on boxes with the feature off.
+      - ${REPORTS_HOST_DIR:-./reports}:/reports:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
