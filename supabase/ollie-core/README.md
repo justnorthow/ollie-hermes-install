@@ -18,6 +18,7 @@ Run in the project's SQL Editor (or via psql) in numeric order:
 | `0006_access_token_hook.sql` | `custom_access_token_hook()` | stamps `tags` + default `user_role` into JWTs |
 | `0008_user_prefs.sql` | `user_prefs` | per-user dashboard preferences (Settings page; owner-only RLS) |
 | `0009_agent_avatars.sql` | `agent_avatar_overrides`, `agent-avatars` bucket | per-user avatar overrides + avatar bytes storage (self-row RLS; `shared/` write gated to admins) |
+| `0010_compliance.sql` | `compliance_rules`, `compliance_config` + `review_rules`/`set_auto_approve`/`traiga_readiness_*` RPCs | ported compliance KB + review RPCs + TRAIGA-readiness aggregations (service-role only; orchestrator enforces authz) |
 
 0005 depends on 0003 (its RLS policy subqueries `user_roles`); 0006 depends on
 0004 (reads `user_tags`, relies on its `supabase_auth_admin` grant).
