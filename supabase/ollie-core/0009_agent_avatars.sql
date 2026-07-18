@@ -42,10 +42,13 @@ insert into storage.buckets (id, name, public)
   values ('agent-avatars', 'agent-avatars', true)
   on conflict (id) do nothing;
 
--- Any authenticated user may read (bucket is public anyway; explicit for clarity).
+-- No authenticated read/LIST policy: the bucket is public, so avatar bytes are
+-- served via the /object/public/ path (no RLS) — the frontend only ever renders
+-- known public URLs, and the orchestrator (service role) does all reads/writes.
+-- Granting authenticated SELECT would let ANY signed-in user LIST/enumerate every
+-- object in the bucket (and thus other users' {user_id}/ paths); omit it. Drop any
+-- prior authenticated-read policy so a re-apply removes it.
 drop policy if exists agent_avatars_read on storage.objects;
-create policy agent_avatars_read on storage.objects
-  for select to authenticated using (bucket_id = 'agent-avatars');
 
 -- NO client-facing write policies: the browser's ES256 token isn't accepted by the
 -- self-hosted storage-api, and all writes go through the orchestrator service role
