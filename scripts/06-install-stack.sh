@@ -34,7 +34,7 @@ STACK_ENV="${STACK_DIR}/.env"
 HERMES_ENV="${HOME}/.hermes/.env"
 ORCH_ENV="${HOME}/.config/ollie-orchestrator/.env"
 CORTEX_IMAGE="${CORTEX_IMAGE:-justnorthow/ollie-hermes-cortex@sha256:927f2edc93929fb10598b12c45ccc16a9fe9a4a8120a1c5eaf5c6fab391e753c}"
-FRONTEND_IMAGE="${FRONTEND_IMAGE:-justnorthow/ollie-hermes-frontend@sha256:2a180c5b5f1752684357f9ac74a1dbcc140084439c9595a72dea334adbb73844}"
+FRONTEND_IMAGE="${FRONTEND_IMAGE:-justnorthow/ollie-hermes-frontend@sha256:a9e235ae5a45e549bb9352ec038d39e51674e4fccc710ccfa296bb44a276b730}"
 
 echo "==> step 1: stage ${STACK_DIR}/docker-compose.yml"
 mkdir -p "${STACK_DIR}"
