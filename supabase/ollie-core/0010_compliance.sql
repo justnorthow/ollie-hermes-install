@@ -73,7 +73,7 @@ begin
   get diagnostics n = row_count;
   return n;
 end; $$;
-revoke execute on function public.review_rules(text[],text,text,text) from anon, authenticated;
+revoke execute on function public.review_rules(text[],text,text,text) from public, anon, authenticated;
 grant execute on function public.review_rules(text[],text,text,text) to service_role;
 
 -- Atomic per-tier auto-approve toggle. HARD FLOOR: 'low' (and any non high/medium)
@@ -100,7 +100,7 @@ begin
   end if;
   return n;
 end; $$;
-revoke execute on function public.set_auto_approve(text,boolean,text) from anon, authenticated;
+revoke execute on function public.set_auto_approve(text,boolean,text) from public, anon, authenticated;
 grant execute on function public.set_auto_approve(text,boolean,text) to service_role;
 
 -- Read-only aggregation over governance_events for the TRAIGA-readiness report.
@@ -123,7 +123,7 @@ language sql stable security definer set search_path = public as $$
   where created_at >= p_from and created_at < p_to
 $$;
 
-revoke execute on function public.traiga_readiness_counts(timestamptz,timestamptz) from anon, authenticated;
-revoke execute on function public.traiga_readiness_window(timestamptz,timestamptz) from anon, authenticated;
+revoke execute on function public.traiga_readiness_counts(timestamptz,timestamptz) from public, anon, authenticated;
+revoke execute on function public.traiga_readiness_window(timestamptz,timestamptz) from public, anon, authenticated;
 grant execute on function public.traiga_readiness_counts(timestamptz,timestamptz) to service_role;
 grant execute on function public.traiga_readiness_window(timestamptz,timestamptz) to service_role;
