@@ -36,9 +36,15 @@ test_preserves_avatar_url() {
   local out; out="$(EXISTING_AGENTS="$existing" DETECTED="$DETECTED" "$PY" "$MERGE")"
   assert_eq "default keeps avatar_url" "$(printf '%s' "$out" | field default avatar_url)" "https://x/shared/default.jpg?t=1"
 }
+test_preserves_voice() {
+  local existing='[{"id":"default","name":"Ollie","voice":"en-GB-RyanNeural"}]'
+  local out; out="$(EXISTING_AGENTS="$existing" DETECTED="$DETECTED" "$PY" "$MERGE")"
+  assert_eq "default keeps voice" "$(printf '%s' "$out" | field default voice)" "en-GB-RyanNeural"
+}
 test_preserves_scope_and_manager_visible
 test_absent_scope_stays_absent
 test_urls_refreshed_from_detected
 test_preserves_subtitle
 test_preserves_avatar_url
+test_preserves_voice
 finish

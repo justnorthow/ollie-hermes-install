@@ -94,6 +94,13 @@ bash scripts/10-install-fleetctl.sh
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
 
+## Voice (STT/TTS)
+
+The orchestrator supports speech-to-text and text-to-speech for agent interactions:
+
+- `WHISPER_MODEL` — faster-whisper model for `/v1/audio/transcribe` (default `base`; downloaded to the service user's cache on first use).
+- `TTS_DEFAULT_VOICE` — Edge TTS voice used when an agent has no `voice` set (default `en-US-AndrewMultilingualNeural`).
+
 ## After a `hermes update`
 
 A `hermes update` (run from the CLI or the dashboard's "update gateway") **resets host state to stock** — it re-patches `hermes-agent` internals and reverts the agents' `SOUL.md` persona files to the default Hermes persona. Your customized personas, brain-tool cron patch, etc. are **not** preserved.

@@ -39,6 +39,10 @@ for d in json.loads(os.environ["DETECTED"]):
     # a re-run of 06 never wipes it (same class as the scope-drop bug).
     if p.get("avatar_url"):
         entry["avatar_url"] = p["avatar_url"]
+    # Per-agent TTS voice (set via orchestrator/UI) — preserve so a re-run of
+    # 06 never wipes it (same class as the scope-drop bug).
+    if p.get("voice"):
+        entry["voice"] = p["voice"]
     out.append(entry)
 
 print(json.dumps(out, separators=(",", ":")))
