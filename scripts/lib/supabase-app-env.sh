@@ -61,6 +61,17 @@ render_supabase_app_env() { # OUT OLD  (exports: STACK_NAME KONG_PORT SUPABASE_P
   gid="${GOOGLE_CLIENT_ID:-$(supabase_app_env_val "$old" GOOGLE_CLIENT_ID)}"
   gsec="${GOOGLE_CLIENT_SECRET:-$(supabase_app_env_val "$old" GOOGLE_CLIENT_SECRET)}"
   genabled="false"; [ -n "$gid" ] && genabled="true"
+  # Optional email-provider toggle (per-app): exported value wins, else carried
+  # forward; default true. Set EMAIL_ENABLED=false for Google-only stacks — the
+  # template has no SMTP, so GoTrue autoconfirms email signups; disabling the
+  # email provider closes unverified-signup paths (e.g. invite claiming).
+  local eenabled
+  eenabled="${EMAIL_ENABLED:-$(supabase_app_env_val "$old" EMAIL_ENABLED)}"
+  [ -z "$eenabled" ] && eenabled="true"
+  case "$eenabled" in
+    true|false) ;;
+    *) echo "ERROR: EMAIL_ENABLED must be true or false (got '$eenabled')" >&2; return 1 ;;
+  esac
   local name port url site_url
   name="${STACK_NAME:-$(supabase_app_env_val "$old" STACK_NAME)}"
   port="${KONG_PORT:-$(supabase_app_env_val "$old" KONG_PORT)}"
@@ -86,6 +97,7 @@ SITE_URL=${site_url}
 GOOGLE_ENABLED=${genabled}
 GOOGLE_CLIENT_ID=${gid}
 GOOGLE_CLIENT_SECRET=${gsec}
+EMAIL_ENABLED=${eenabled}
 SB_DB_IMAGE=${SB_DB_IMAGE_PIN}
 SB_AUTH_IMAGE=${SB_AUTH_IMAGE_PIN}
 SB_REST_IMAGE=${SB_REST_IMAGE_PIN}

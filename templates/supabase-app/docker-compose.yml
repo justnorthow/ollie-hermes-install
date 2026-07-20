@@ -53,6 +53,11 @@ services:
       # Asymmetric user-token signing (ES256) + legacy HS256 verification.
       - GOTRUE_JWT_KEYS=${GOTRUE_JWT_KEYS}
       - GOTRUE_MAILER_AUTOCONFIRM=true
+      # Optional per-app email-provider toggle (default true = unchanged
+      # behavior). false disables password/magic-link auth entirely — use for
+      # Google-only stacks, since with no SMTP + autoconfirm above, an email
+      # signup is "verified" without ever proving inbox ownership.
+      - GOTRUE_EXTERNAL_EMAIL_ENABLED=${EMAIL_ENABLED:-true}
       # Optional per-app Google OAuth. GOOGLE_ENABLED is derived by
       # supabase-app-env.sh (true iff a client id is set), so stacks that don't
       # use Google (HIA/NS) render these empty + disabled. Apps whose users sign

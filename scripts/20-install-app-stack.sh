@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES="${SCRIPT_DIR}/../templates/supabase-app"
 
 STACK_NAME="" ; KONG_PORT="" ; SUPABASE_PUBLIC_URL="" ; SITE_URL="" ; REALTIME=""
-GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET=""
+GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET="" ; EMAIL_ENABLED=""
 while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
   case "${k}" in
     STACK_NAME) STACK_NAME="${v}" ;;
@@ -36,6 +36,7 @@ while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
     REALTIME) REALTIME="${v}" ;;
     GOOGLE_CLIENT_ID) GOOGLE_CLIENT_ID="${v}" ;;
     GOOGLE_CLIENT_SECRET) GOOGLE_CLIENT_SECRET="${v}" ;;
+    EMAIL_ENABLED) EMAIL_ENABLED="${v}" ;;
   esac
 done
 if [[ ! "${STACK_NAME}" =~ ^[a-z][a-z0-9-]*$ ]]; then
@@ -63,7 +64,7 @@ chmod 700 "${SB_DIR}"
 cp "${TEMPLATES}/docker-compose.yml" "${SB_DIR}/docker-compose.yml"
 ENV_OLD=""
 if [[ -f "${SB_DIR}/.env" ]]; then ENV_OLD="$(mktemp)"; cp "${SB_DIR}/.env" "${ENV_OLD}"; fi
-export STACK_NAME KONG_PORT SUPABASE_PUBLIC_URL SITE_URL GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+export STACK_NAME KONG_PORT SUPABASE_PUBLIC_URL SITE_URL GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET EMAIL_ENABLED
 render_supabase_app_env "${SB_DIR}/.env" "${ENV_OLD}"
 [[ -n "${ENV_OLD}" ]] && rm -f "${ENV_OLD}"
 [[ "${REALTIME}" == "1" ]] && touch "${SB_DIR}/.realtime"
@@ -76,7 +77,8 @@ render_supabase_app_env "${SB_DIR}/.env" "${ENV_OLD}"
 GOOGLE_CLIENT_ID="$(supabase_app_env_val "${SB_DIR}/.env" GOOGLE_CLIENT_ID)"
 GOOGLE_CLIENT_SECRET="$(supabase_app_env_val "${SB_DIR}/.env" GOOGLE_CLIENT_SECRET)"
 GOOGLE_ENABLED="$(supabase_app_env_val "${SB_DIR}/.env" GOOGLE_ENABLED)"
-export GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_ENABLED
+EMAIL_ENABLED="$(supabase_app_env_val "${SB_DIR}/.env" EMAIL_ENABLED)"
+export GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_ENABLED EMAIL_ENABLED
 ANON_KEY="$(supabase_app_env_val "${SB_DIR}/.env" ANON_KEY)"
 SERVICE_ROLE_KEY="$(supabase_app_env_val "${SB_DIR}/.env" SERVICE_ROLE_KEY)"
 supabase_render_kong "${TEMPLATES}/kong.yml" "${SB_DIR}/kong.yml" "${ANON_KEY}" "${SERVICE_ROLE_KEY}"

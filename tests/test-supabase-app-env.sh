@@ -58,4 +58,24 @@ ERR="$(render_supabase_app_env "${TMP}/g.env" "${TMP}/f.env" 2>&1)" \
 printf '%s' "$ERR" | grep -q 'ERROR:.*STACK_NAME' \
   && ok "missing-param error names the param" || bad "missing-param error names the param"
 
+# EMAIL_ENABLED: defaults true, explicit false honored, carried forward, junk refused
+export STACK_NAME=hia KONG_PORT=8010 \
+  SUPABASE_PUBLIC_URL=https://sb-hia.jnow.io SITE_URL=https://hia.example.com
+unset EMAIL_ENABLED
+render_supabase_app_env "${TMP}/h.env" "" || bad "email default render exits 0"
+[ "$(supabase_app_env_val "${TMP}/h.env" EMAIL_ENABLED)" = "true" ] \
+  && ok "EMAIL_ENABLED defaults true" || bad "EMAIL_ENABLED defaults true"
+export EMAIL_ENABLED=false
+render_supabase_app_env "${TMP}/i.env" "" || bad "email false render exits 0"
+[ "$(supabase_app_env_val "${TMP}/i.env" EMAIL_ENABLED)" = "false" ] \
+  && ok "EMAIL_ENABLED=false honored" || bad "EMAIL_ENABLED=false honored"
+unset EMAIL_ENABLED
+render_supabase_app_env "${TMP}/j.env" "${TMP}/i.env" || bad "email carry render exits 0"
+[ "$(supabase_app_env_val "${TMP}/j.env" EMAIL_ENABLED)" = "false" ] \
+  && ok "EMAIL_ENABLED carried forward" || bad "EMAIL_ENABLED carried forward"
+export EMAIL_ENABLED=maybe
+render_supabase_app_env "${TMP}/k.env" "" 2>/dev/null \
+  && bad "EMAIL_ENABLED junk refused" || ok "EMAIL_ENABLED junk refused"
+unset EMAIL_ENABLED
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
