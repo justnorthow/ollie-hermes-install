@@ -85,14 +85,19 @@ HERMES_UI_HOSTNAME=hermes.jnow.io
 DASHBOARD_BIND=0.0.0.0
 HIA_BASE_URL=https://hia.example.com
 NEWSLETTER_BASE_URL=https://ns.example.com
+REPORTS_DIR=/reports
+REPORTS_HOST_DIR=/home/ollie/.hermes/profiles/olivia-marketing/workspace
 OLD
   ( unset HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL \
+          REPORTS_DIR REPORTS_HOST_DIR \
           CORTEX_API_KEY FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE
     render_stack_env "$new" "$old" )
   assert_eq "HERMES_UI_HOSTNAME preserved" "$(grep -E '^HERMES_UI_HOSTNAME=' "$new" | cut -d= -f2-)" "hermes.jnow.io"
   assert_eq "DASHBOARD_BIND preserved"     "$(grep -E '^DASHBOARD_BIND=' "$new" | cut -d= -f2-)" "0.0.0.0"
   assert_eq "HIA_BASE_URL preserved"       "$(grep -E '^HIA_BASE_URL=' "$new" | cut -d= -f2-)" "https://hia.example.com"
   assert_eq "NEWSLETTER_BASE_URL preserved" "$(grep -E '^NEWSLETTER_BASE_URL=' "$new" | cut -d= -f2-)" "https://ns.example.com"
+  assert_eq "REPORTS_DIR preserved"        "$(grep -E '^REPORTS_DIR=' "$new" | cut -d= -f2-)" "/reports"
+  assert_eq "REPORTS_HOST_DIR preserved"   "$(grep -E '^REPORTS_HOST_DIR=' "$new" | cut -d= -f2-)" "/home/ollie/.hermes/profiles/olivia-marketing/workspace"
   rm -f "$old" "$new"
 }
 
@@ -148,9 +153,12 @@ HERMES_UI_HOSTNAME=hermes.jnow.io
 DASHBOARD_BIND=0.0.0.0
 HIA_BASE_URL=https://hia
 NEWSLETTER_BASE_URL=https://ns
+REPORTS_DIR=/reports
+REPORTS_HOST_DIR=/srv/reports
 OLD
   ( unset FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE CORTEX_API_KEY \
-          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL
+          HERMES_UI_HOSTNAME DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL \
+          REPORTS_DIR REPORTS_HOST_DIR
     render_stack_env "$new" "$old" )
   local k
   for k in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET \
@@ -158,9 +166,11 @@ OLD
            OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE DASHBOARD_PUBLIC_HTTPS DASHBOARD_USER \
            DASHBOARD_PASS SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_COOKIE_DOMAIN \
            FIRECRAWL_API_KEY HERMES_UI_URL VERTICAL INSTANCE_TITLE CORTEX_API_KEY HERMES_UI_HOSTNAME \
-           DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL CORTEX_IMAGE FRONTEND_IMAGE; do
+           DASHBOARD_BIND HIA_BASE_URL NEWSLETTER_BASE_URL REPORTS_DIR REPORTS_HOST_DIR \
+           CORTEX_IMAGE FRONTEND_IMAGE; do
     assert_count "exactly one ${k}" "$new" "$k" 1
   done
+  assert_eq "REPORTS_HOST_DIR preserved" "$(grep -E '^REPORTS_HOST_DIR=' "$new" | cut -d= -f2-)" "/srv/reports"
   assert_eq "pin bumped to new" "$(grep -E '^CORTEX_IMAGE=' "$new" | cut -d= -f2-)" "justnorthow/cortex@sha256:NEW"
   assert_eq "supabase cookie domain preserved" "$(grep -E '^SUPABASE_COOKIE_DOMAIN=' "$new" | cut -d= -f2-)" ".jnow.io"
   assert_eq "apollo-not-a-key sanity: vertical preserved" "$(grep -E '^VERTICAL=' "$new" | cut -d= -f2-)" "real-estate"
