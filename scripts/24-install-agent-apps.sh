@@ -98,7 +98,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
 
   echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
   ANON="$(supabase_app_env_val "${SB_ENV}" ANON_KEY)"
-  ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2 || true)"
+  ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
   {
     echo "APP_NAME=${NAME}"
     echo "APP_PORT=${APP_PORT}"

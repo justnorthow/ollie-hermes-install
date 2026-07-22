@@ -41,7 +41,7 @@ export STACKS_DIR="$T/stacks"; mkdir -p "$STACKS_DIR"
 # ---- fixture orchestrator env file ----
 mkdir -p "$T/hermes-stack"
 cat > "$T/hermes-stack/.env" <<'EOF'
-ORCHESTRATOR_KEY=orch-key-1
+ORCHESTRATOR_KEY=orch-key-1==
 EOF
 
 # ---- fixture migrations (what the fake docker cp extracts from the image) ----
@@ -165,7 +165,7 @@ grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" && ok "SUB2
 grep -q '^APP_ENV_SUPABASE_ANON_KEY=stub-anon$' "$SUB23_LOG" && ok "SUB23 got SUPABASE_ANON_KEY" || bad "SUB23 got SUPABASE_ANON_KEY"
 grep -q '^APP_ENV_OLLIE_ENDPOINT=http://127.0.0.1:9123$' "$SUB23_LOG" && ok "SUB23 got OLLIE_ENDPOINT" || bad "SUB23 got OLLIE_ENDPOINT"
 grep -q '^APP_ENV_OLLIE_AGENT=real-estate$' "$SUB23_LOG" && ok "SUB23 got OLLIE_AGENT" || bad "SUB23 got OLLIE_AGENT"
-grep -q '^APP_ENV_OLLIE_ORCHESTRATOR_KEY=orch-key-1$' "$SUB23_LOG" && ok "SUB23 got OLLIE_ORCHESTRATOR_KEY" || bad "SUB23 got OLLIE_ORCHESTRATOR_KEY"
+grep -q '^APP_ENV_OLLIE_ORCHESTRATOR_KEY=orch-key-1==$' "$SUB23_LOG" && ok "SUB23 got OLLIE_ORCHESTRATOR_KEY with = padding" || bad "SUB23 got OLLIE_ORCHESTRATOR_KEY with = padding"
 grep -q "^IMAGE_TARBALL=$T/img.tar$" "$SUB23_LOG" && ok "SUB23 got IMAGE_TARBALL" || bad "SUB23 got IMAGE_TARBALL"
 
 # 3. migration tracking: create-table + a SELECT per file + -f apply + INSERT per file
@@ -190,5 +190,17 @@ grep -q "EVERY vhost this box serves" "$T/out.log" && ok "warns to pass the FULL
 
 # 6. unknown profile -> exit 1
 run "no-such-profile" "${STDIN[@]}" && bad "unknown profile refused" || ok "unknown profile refused"
+
+# 7. carry-forward test: re-run without APP_HOST/SB_HOST, derive from stack .env
+STDIN_CARRY=(
+  "IMAGE_TARBALL=$T/img.tar"
+  "GOOGLE_CLIENT_ID=gid"
+  "ORCH_ENV_FILE=$T/hermes-stack/.env"
+)
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+run "real-estate" "${STDIN_CARRY[@]}" && ok "carry-forward run exits 0" || bad "carry-forward run exits 0"
+grep -q '^SUPABASE_PUBLIC_URL=https://sb-popbys.test$' "$SUB20_LOG" && ok "SUB20 got derived SUPABASE_PUBLIC_URL" || bad "SUB20 got derived SUPABASE_PUBLIC_URL"
+grep -q '^SITE_URL=https://popbys.test$' "$SUB20_LOG" && ok "SUB20 got derived SITE_URL" || bad "SUB20 got derived SITE_URL"
+grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" && ok "SUB23 got derived SUPABASE_URL from carry-forward" || bad "SUB23 got derived SUPABASE_URL from carry-forward"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
