@@ -22,6 +22,7 @@ Run in the project's SQL Editor (or via psql) in numeric order:
 | `0010_compliance.sql` | `compliance_rules`, `compliance_config` + `review_rules`/`set_auto_approve`/`traiga_readiness_*` RPCs | ported compliance KB + review RPCs + TRAIGA-readiness aggregations (service-role only; orchestrator enforces authz) |
 | `0011_profile_rpc.sql` | `get_profile_by_email()` | orchestrator GET /v1/profile (app-facing profile read: Newsletter Studio prefill + market areas) |
 | `0012_market_data.sql` | `market_data` | orchestrator GET /v1/market-data (Newsletter Studio auto-fill; populated by the monthly Redfin ingest) |
+| `0013_market_datasets.sql` | `market_datasets` + `market-uploads` bucket | orchestrator /v1/market-datasets (Newsletter Studio MLS upload; instance-shared, human-confirmed) |
 
 0005 depends on 0003 (its RLS policy subqueries `user_roles`); 0006 depends on
 0004 (reads `user_tags`, relies on its `supabase_auth_admin` grant).
