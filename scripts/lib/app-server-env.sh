@@ -34,7 +34,9 @@ render_app_server_env() { # OUT OLD_FILE(optional, "" for none)
   fi
   local var
   for var in $(compgen -A variable APP_ENV_ || true); do
-    appenv["${var#APP_ENV_}"]="${!var}"
+    k="${var#APP_ENV_}"
+    case "$k" in APP_NAME|APP_PORT|CONTAINER_PORT|HEALTH_PATH|APP_IMAGE|PORT) continue ;; esac
+    appenv["$k"]="${!var}"
   done
   if [[ ${#appenv[@]} -gt 0 ]]; then
     for k in $(printf '%s\n' "${!appenv[@]}" | sort); do
