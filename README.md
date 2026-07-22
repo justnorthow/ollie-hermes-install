@@ -94,6 +94,16 @@ bash scripts/10-install-fleetctl.sh
 
 Each script prints what it's doing and is idempotent — re-running won't break anything.
 
+## Agent apps (scripts 20–24)
+
+Beyond the core Ollie + Hermes stack, a box can also host one or more **agent apps** — standalone frontend/backend apps that talk to their own Supabase stack and to the orchestrator, bundled with an agent profile.
+
+- **Tier:** `20-install-app-stack.sh` (per-app Supabase stack), `21-migrate-app.sh` (manual schema apply), `22-install-caddy-vhosts.sh` (root-only Caddy vhosts — renders from ONLY its args, so it needs the box's FULL vhost set every time it's run), `23-install-app-server.sh` (the dockerized app server itself), and `24-install-agent-apps.sh` (the orchestrator that drives 20 → migrations → 23 for a whole manifest).
+- **Manifest concept:** each agent profile that ships apps has a manifest at `apps/<profile>.json` describing its app(s) — stack params (kong port, email), server params (app port, container port, health path). `24-install-agent-apps.sh <profile>` reads it and drives the install. Multi-app manifests are not yet supported (per-app host fields aren't in the schema yet) — 24 fails loud rather than guessing.
+- **Install order:** run `24-install-agent-apps.sh <profile>` **as the service user** first (stack + migrations + app server). It then prints the exact `22-install-caddy-vhosts.sh` invocation to run **as root** — copy-paste it verbatim (it already wraps the call in `sudo bash ...`, since every script here is committed mode 644 and isn't directly executable) and make sure you pass every vhost the box serves, not just this app's.
+- **Update runbook:** ship a new image tarball, then re-run `24-install-agent-apps.sh <profile>` with `IMAGE_TARBALL=<path>` on stdin. It re-extracts and applies any new migrations (tracked in `public._app_migrations`, applied transactionally so a bad migration can't half-apply) and restamps the app server's image.
+- **Portability warning:** the app image bakes its SPA config (Supabase URL, etc.) in **at build time**. An image built for one hostname must **not** be shipped to a box with different hostnames — rebuild per target until runtime SPA config lands.
+
 ## Voice (STT/TTS)
 
 The orchestrator supports speech-to-text and text-to-speech for agent interactions:

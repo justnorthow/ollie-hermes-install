@@ -4,7 +4,8 @@
 # compose project = STACK_NAME, containers <STACK_NAME>-*, kong on
 # 127.0.0.1:<KONG_PORT>. NO orchestrator/dashboard coupling (that's the Ollie
 # stack's 11-install-supabase.sh). Schema/data arrive later via
-# 21-migrate-app.sh.
+# 21-migrate-app.sh — or via 24-install-agent-apps.sh (image-bundled
+# migrations) for manifest apps.
 #
 # Run as: the service user. Idempotent — re-runs preserve secrets, restamp pins.
 # Input (stdin, KEY=VALUE lines):

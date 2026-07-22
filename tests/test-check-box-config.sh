@@ -125,9 +125,144 @@ test_token_dot_exact_match() {
   assert_eq "token mismatch error" "$(echo "$out" | grep -c 'FAIL: session-token')" "1"
 }
 
+test_agent_apps_gate() {
+  local d rc out manifest_dir
+
+  # ---- fixture manifest (mirrors tests/test-24-install-agent-apps.sh) ----
+  # 24's mf()-style python3 -c embeds the manifest path directly in the
+  # python source string. On MSYS bash + a native Windows python3.exe, MSYS
+  # only rewrites POSIX paths that are argv tokens, not ones embedded inside
+  # a larger string argument — so a plain mktemp path 404s from python3's
+  # perspective even though bash can see it fine. Use a Windows-native
+  # (drive-letter, forward-slash) path for the manifest dir; harmless no-op
+  # on real POSIX boxes where cygpath doesn't exist.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+    }
+  ]
+}
+JSON
+
+  # (a) profile installed, manifest present, app .env missing -> FAIL + GAPS>=1
+  mkdir -p "$d/profiles/real-estate"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "missing app .env exit 1" "$rc" "1"
+  assert_eq "missing app .env named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent app popbys')" "1"
+
+  # (b) app .env present + CHECK_SKIP_LIVE=1 -> PASS, healthy overall
+  mkdir -p "$d/apps/popbys"; : > "$d/apps/popbys/.env"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "app .env present + skip-live exit 0" "$rc" "0"
+  assert_eq "app .env present named PASS" \
+    "$(echo "$out" | grep -c 'PASS: agent app popbys: .env present')" "1"
+
+  # (c) profile NOT installed (no ~/.hermes/profiles/<profile> dir) -> no
+  # agent-apps check lines emitted at all, even though the manifest exists
+  # and the .env is missing.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+    }
+  ]
+}
+JSON
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "uninstalled profile exit 0" "$rc" "0"
+  assert_eq "uninstalled profile emits no agent-apps lines" \
+    "$(echo "$out" | grep -c 'agent app')" "0"
+}
+
+test_agent_apps_malformed_manifest() {
+  local d rc out manifest_dir
+
+  # Malformed manifest JSON (syntactically broken) whose profile dir IS
+  # installed and whose app .env is missing. Before the fix, mf() silently
+  # returns an empty string on the json.load() failure; the empty $profile
+  # then makes `[[ -d "${PROFILES_DIR}/${profile}" ]]` test PROFILES_DIR
+  # itself (which exists), so the loop takes the "not installed, skip"
+  # branch instead of failing loud — a false done-done. This must reproduce
+  # that bug (RED) before the fix lands.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests" "$d/profiles/real-estate"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+JSON
+
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "malformed manifest exit 1" "$rc" "1"
+  assert_eq "malformed manifest named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent apps: unreadable manifest')" "1"
+  assert_eq "malformed manifest GAPS>=1" "$(echo "$out" | grep -qE '^GAPS: [1-9]' && echo yes || echo no)" "yes"
+}
+
+test_agent_apps_wrong_shape_manifest() {
+  local d rc out manifest_dir
+
+  # Valid JSON that survives json.load() but is missing the apps/server
+  # structure the gate's checks depend on (F5). Before the fix, a bare
+  # {"profile": "..."} with no "apps" key passes the plain json.load() probe,
+  # profile resolves non-empty, but `['apps'].__len__()` blows up inside mf()
+  # with no error handling — or worse, an manifest with "apps" present but an
+  # app missing "server" silently emits zero checks for that entry. Either
+  # way this is a false done-done: the gate must fail loud instead.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests" "$d/profiles/real-estate"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate"
+}
+JSON
+
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "wrong-shape manifest exit 1" "$rc" "1"
+  assert_eq "wrong-shape manifest named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent apps: unreadable manifest')" "1"
+  assert_eq "wrong-shape manifest GAPS>=1" "$(echo "$out" | grep -qE '^GAPS: [1-9]' && echo yes || echo no)" "yes"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
 test_dashboard_bind_gate
 test_token_dot_exact_match
+test_agent_apps_gate
+test_agent_apps_malformed_manifest
+test_agent_apps_wrong_shape_manifest
 finish

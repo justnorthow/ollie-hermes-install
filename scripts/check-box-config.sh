@@ -17,6 +17,9 @@ ORCH_ENV="${ORCH_ENV:-$HOME/.config/ollie-orchestrator/.env}"
 STACK_ENV_FILE="${STACK_ENV_FILE:-$HOME/hermes-stack/.env}"
 UNIT_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 SKIP_LIVE="${CHECK_SKIP_LIVE:-0}"
+PROFILES_DIR="${PROFILES_DIR:-$HOME/.hermes/profiles}"
+MANIFEST_DIR="${MANIFEST_DIR:-${SCRIPT_DIR}/../apps}"
+APPS_DIR="${APPS_DIR:-$HOME/apps}"
 
 gaps=0
 pass() { echo "PASS: $1"; }
@@ -134,6 +137,69 @@ PY
     fi
   fi
 fi
+
+# 6. agent apps — manifest parity for installed profiles (apps/<profile>.json,
+# Task 5). A profile is "installed" when ~/.hermes/profiles/<profile> exists;
+# manifests whose profile is NOT installed emit no checks at all. mf() mirrors
+# scripts/24-install-agent-apps.sh's manifest-reader style: the manifest path
+# is embedded directly in the python source (like 24's ${MANIFEST}), and only
+# fixed literal jq-path expressions are eval'd — never manifest-derived data.
+# native_path: passes through unchanged on real POSIX boxes (cygpath doesn't
+# exist there); on MSYS bash + a native Windows python3.exe, rewrites a POSIX
+# path to drive-letter form so open() embedded inside a python -c string
+# argument resolves it (MSYS only auto-rewrites paths that are argv tokens).
+native_path() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+mf() { # MANIFEST JQPATH — read a manifest value
+  local m; m="$(native_path "$1")"
+  python3 -c "import json,sys; d=json.load(open('${m}')); print(eval('d'+sys.argv[1]))" "$2"
+}
+for manifest in "${MANIFEST_DIR}"/*.json; do
+  [[ -f "${manifest}" ]] || continue
+  manifest_native="$(native_path "${manifest}")"
+  # Beyond parsing: require the shape every check below assumes (profile is
+  # a string, apps is a list, each app has name/server/app_port/health_path)
+  # — valid-but-wrong-shape JSON must fail loud here instead of silently
+  # emitting zero checks (a false done-done).
+  if ! python3 -c "
+import json, sys
+d = json.load(open('${manifest_native}'))
+assert isinstance(d.get('profile'), str) and isinstance(d.get('apps'), list)
+[(a['name'], a['server']['app_port'], a['server']['health_path']) for a in d['apps']]
+" >/dev/null 2>&1; then
+    fail "agent apps: unreadable manifest $(basename "${manifest}")"
+    continue
+  fi
+  profile="$(mf "${manifest}" "['profile']")"
+  if [[ -z "${profile}" ]]; then
+    fail "agent apps: unreadable manifest $(basename "${manifest}")"
+    continue
+  fi
+  [[ -d "${PROFILES_DIR}/${profile}" ]] || continue
+  app_count="$(mf "${manifest}" "['apps'].__len__()")"
+  for i in $(seq 0 $((app_count-1))); do
+    name="$(mf "${manifest}" "['apps'][${i}]['name']")"
+    env_file="${APPS_DIR}/${name}/.env"
+    if [[ ! -f "${env_file}" ]]; then
+      fail "agent app ${name}: .env missing (${env_file})"
+      continue
+    fi
+    pass "agent app ${name}: .env present"
+    if [[ "${SKIP_LIVE}" != "1" ]]; then
+      if docker ps --format '{{.Names}}' | grep -q "^${name}-app"; then
+        pass "agent app ${name}: container running"
+      else
+        fail "agent app ${name}: no container named ${name}-app*"
+      fi
+      app_port="$(mf "${manifest}" "['apps'][${i}]['server']['app_port']")"
+      health_path="$(mf "${manifest}" "['apps'][${i}]['server']['health_path']")"
+      if curl -fsS -m 10 "127.0.0.1:${app_port}${health_path}" >/dev/null 2>&1; then
+        pass "agent app ${name}: health check ok"
+      else
+        fail "agent app ${name}: health check failed (127.0.0.1:${app_port}${health_path})"
+      fi
+    fi
+  done
+done
 
 echo
 if [[ ${gaps} -eq 0 ]]; then
