@@ -199,10 +199,40 @@ JSON
     "$(echo "$out" | grep -c 'agent app')" "0"
 }
 
+test_agent_apps_malformed_manifest() {
+  local d rc out manifest_dir
+
+  # Malformed manifest JSON (syntactically broken) whose profile dir IS
+  # installed and whose app .env is missing. Before the fix, mf() silently
+  # returns an empty string on the json.load() failure; the empty $profile
+  # then makes `[[ -d "${PROFILES_DIR}/${profile}" ]]` test PROFILES_DIR
+  # itself (which exists), so the loop takes the "not installed, skip"
+  # branch instead of failing loud — a false done-done. This must reproduce
+  # that bug (RED) before the fix lands.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests" "$d/profiles/real-estate"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+JSON
+
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "malformed manifest exit 1" "$rc" "1"
+  assert_eq "malformed manifest named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent apps: unreadable manifest')" "1"
+  assert_eq "malformed manifest GAPS>=1" "$(echo "$out" | grep -qE '^GAPS: [1-9]' && echo yes || echo no)" "yes"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
 test_dashboard_bind_gate
 test_token_dot_exact_match
 test_agent_apps_gate
+test_agent_apps_malformed_manifest
 finish

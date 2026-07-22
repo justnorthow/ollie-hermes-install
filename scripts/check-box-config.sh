@@ -144,13 +144,27 @@ fi
 # scripts/24-install-agent-apps.sh's manifest-reader style: the manifest path
 # is embedded directly in the python source (like 24's ${MANIFEST}), and only
 # fixed literal jq-path expressions are eval'd — never manifest-derived data.
+# native_path: passes through unchanged on real POSIX boxes (cygpath doesn't
+# exist there); on MSYS bash + a native Windows python3.exe, rewrites a POSIX
+# path to drive-letter form so open() embedded inside a python -c string
+# argument resolves it (MSYS only auto-rewrites paths that are argv tokens).
+native_path() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
 mf() { # MANIFEST JQPATH — read a manifest value
-  local m="$1"
+  local m; m="$(native_path "$1")"
   python3 -c "import json,sys; d=json.load(open('${m}')); print(eval('d'+sys.argv[1]))" "$2"
 }
 for manifest in "${MANIFEST_DIR}"/*.json; do
   [[ -f "${manifest}" ]] || continue
+  manifest_native="$(native_path "${manifest}")"
+  if ! python3 -c "import json; json.load(open('${manifest_native}'))" >/dev/null 2>&1; then
+    fail "agent apps: unreadable manifest $(basename "${manifest}")"
+    continue
+  fi
   profile="$(mf "${manifest}" "['profile']")"
+  if [[ -z "${profile}" ]]; then
+    fail "agent apps: unreadable manifest $(basename "${manifest}")"
+    continue
+  fi
   [[ -d "${PROFILES_DIR}/${profile}" ]] || continue
   app_count="$(mf "${manifest}" "['apps'].__len__()")"
   for i in $(seq 0 $((app_count-1))); do
@@ -169,7 +183,7 @@ for manifest in "${MANIFEST_DIR}"/*.json; do
       fi
       app_port="$(mf "${manifest}" "['apps'][${i}]['server']['app_port']")"
       health_path="$(mf "${manifest}" "['apps'][${i}]['server']['health_path']")"
-      if curl -fsS "127.0.0.1:${app_port}${health_path}" >/dev/null 2>&1; then
+      if curl -fsS -m 10 "127.0.0.1:${app_port}${health_path}" >/dev/null 2>&1; then
         pass "agent app ${name}: health check ok"
       else
         fail "agent app ${name}: health check failed (127.0.0.1:${app_port}${health_path})"
