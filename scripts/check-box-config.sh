@@ -156,7 +156,16 @@ mf() { # MANIFEST JQPATH — read a manifest value
 for manifest in "${MANIFEST_DIR}"/*.json; do
   [[ -f "${manifest}" ]] || continue
   manifest_native="$(native_path "${manifest}")"
-  if ! python3 -c "import json; json.load(open('${manifest_native}'))" >/dev/null 2>&1; then
+  # Beyond parsing: require the shape every check below assumes (profile is
+  # a string, apps is a list, each app has name/server/app_port/health_path)
+  # — valid-but-wrong-shape JSON must fail loud here instead of silently
+  # emitting zero checks (a false done-done).
+  if ! python3 -c "
+import json, sys
+d = json.load(open('${manifest_native}'))
+assert isinstance(d.get('profile'), str) and isinstance(d.get('apps'), list)
+[(a['name'], a['server']['app_port'], a['server']['health_path']) for a in d['apps']]
+" >/dev/null 2>&1; then
     fail "agent apps: unreadable manifest $(basename "${manifest}")"
     continue
   fi

@@ -228,6 +228,35 @@ JSON
   assert_eq "malformed manifest GAPS>=1" "$(echo "$out" | grep -qE '^GAPS: [1-9]' && echo yes || echo no)" "yes"
 }
 
+test_agent_apps_wrong_shape_manifest() {
+  local d rc out manifest_dir
+
+  # Valid JSON that survives json.load() but is missing the apps/server
+  # structure the gate's checks depend on (F5). Before the fix, a bare
+  # {"profile": "..."} with no "apps" key passes the plain json.load() probe,
+  # profile resolves non-empty, but `['apps'].__len__()` blows up inside mf()
+  # with no error handling — or worse, an manifest with "apps" present but an
+  # app missing "server" silently emits zero checks for that entry. Either
+  # way this is a false done-done: the gate must fail loud instead.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests" "$d/profiles/real-estate"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate"
+}
+JSON
+
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "wrong-shape manifest exit 1" "$rc" "1"
+  assert_eq "wrong-shape manifest named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent apps: unreadable manifest')" "1"
+  assert_eq "wrong-shape manifest GAPS>=1" "$(echo "$out" | grep -qE '^GAPS: [1-9]' && echo yes || echo no)" "yes"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
@@ -235,4 +264,5 @@ test_dashboard_bind_gate
 test_token_dot_exact_match
 test_agent_apps_gate
 test_agent_apps_malformed_manifest
+test_agent_apps_wrong_shape_manifest
 finish

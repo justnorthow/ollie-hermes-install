@@ -45,6 +45,10 @@ mf() { # JQPATH — read a manifest value
   python3 -c "import json,sys; d=json.load(open('${MANIFEST}')); print(eval('d'+sys.argv[1]))" "$1"
 }
 APP_COUNT="$(mf "['apps'].__len__()")"
+if [[ "${APP_COUNT}" -gt 1 ]]; then
+  echo "error: multi-app manifests are not yet supported (APP_HOST/SB_HOST/IMAGE_TARBALL are single-app; add per-app host fields to the manifest schema first)" >&2
+  exit 1
+fi
 
 for i in $(seq 0 $((APP_COUNT-1))); do
   NAME="$(mf "['apps'][${i}]['name']")"
@@ -74,7 +78,11 @@ for i in $(seq 0 $((APP_COUNT-1))); do
 
   echo "==> agent-apps [${NAME}] 2/4: app migrations"
   if [[ -n "${IMAGE_TARBALL}" ]]; then
-    LOADED="$(docker load -i "${IMAGE_TARBALL}" | tail -n1)"; IMG="${LOADED##*: }"
+    LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
+    if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
+      echo "error: tarball must contain exactly one image (got: ${LOAD_OUT})" >&2; exit 1
+    fi
+    LOADED="$(tail -n1 <<<"${LOAD_OUT}")"; IMG="${LOADED##*: }"
   else
     IMG="$(app_image_from_env "${NAME}")"   # helper: APP_IMAGE from ~/apps/<name>/.env
   fi
@@ -91,8 +99,12 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     applied="$("${PSQL[@]}" -c "select 1 from public._app_migrations where name='${base}';")"
     if [[ "${applied}" == "1" ]]; then echo "    skip ${base} (applied)"; continue; fi
     echo "    apply ${base}"
-    "${PSQL[@]}" -f - < "$f"
-    "${PSQL[@]}" -c "insert into public._app_migrations (name) values ('${base}');"
+    # Single-transaction apply (-1 = --single-transaction): the migration
+    # file and its tracker INSERT travel in ONE psql invocation, so a
+    # mid-file failure rolls back everything — including the insert — and
+    # re-runs stay clean (no partially-applied file left recorded as done,
+    # and no successfully-applied file left unrecorded).
+    { cat "$f"; printf "\ninsert into public._app_migrations (name) values ('%s');\n" "${base}"; } | "${PSQL[@]}" -1 -f -
   done
   rm -rf "${MIG_DIR}"
 
@@ -114,7 +126,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   } | bash "${SUB23}"
 
   echo "==> agent-apps [${NAME}] 4/4: caddy (root step — run yourself)"
-  echo "    sudo ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
+  echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
   echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
 done
 echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"
