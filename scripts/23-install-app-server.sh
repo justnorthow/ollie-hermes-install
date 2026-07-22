@@ -49,7 +49,11 @@ APP_IMAGE=""
 if [[ -n "${IMAGE_TARBALL}" ]]; then
   [[ -f "${IMAGE_TARBALL}" ]] || { echo "error: IMAGE_TARBALL not found: ${IMAGE_TARBALL}" >&2; exit 1; }
   echo "==> app 1: docker load ${IMAGE_TARBALL}"
-  LOADED="$(docker load -i "${IMAGE_TARBALL}" | tail -n1)"
+  LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
+  if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
+    echo "error: tarball must contain exactly one image (got: ${LOAD_OUT})" >&2; exit 1
+  fi
+  LOADED="$(tail -n1 <<<"${LOAD_OUT}")"
   REF="${LOADED##*: }"
   APP_IMAGE="$(docker inspect --format '{{.Id}}' "${REF}")"
 elif [[ -n "${IMAGE_REF}" ]]; then

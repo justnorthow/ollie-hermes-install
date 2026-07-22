@@ -18,7 +18,13 @@ case "$1" in
     [[ -f "${DOCKER_STATE}" ]] && n="$(cat "${DOCKER_STATE}")"
     n=$((n+1))
     echo "$n" > "${DOCKER_STATE}"
-    echo "Loaded image: pop-bys:local"
+    # Emit two "Loaded image:" lines for multi.tar to test fail-loud detection
+    if [[ "$3" == *"multi.tar"* ]]; then
+      echo "Loaded image: image1:tag1"
+      echo "Loaded image: image2:tag2"
+    else
+      echo "Loaded image: pop-bys:local"
+    fi
     ;;
   inspect)
     n="$(cat "${DOCKER_STATE}" 2>/dev/null || echo 1)"
@@ -86,7 +92,15 @@ grep -q '^APP_IMAGE=sha256:fake2$' "$HOME/apps/popbys/.env" && ok "APP_IMAGE res
 run "APP_NAME=PopBys" "APP_PORT=8132" \
   >/dev/null 2>&1 && bad "bad APP_NAME refused" || ok "bad APP_NAME refused"
 
-# 6. health check failure -> exit 1 (fail loud), fast via HEALTH_TRIES/HEALTH_SLEEP
+# 6. multi-image tarball -> exit 1 (fail loud on ambiguous load)
+: > "$T/multi.tar"
+: > "$DOCKER_LOG"; : > "$CURL_LOG"
+run "APP_NAME=popbys3" "APP_PORT=8133" "IMAGE_TARBALL=$T/multi.tar" \
+  "APP_ENV_SUPABASE_URL=https://sb-popbys.jnow.io" "APP_ENV_SUPABASE_ANON_KEY=anon1" \
+  >/dev/null 2>&1 && bad "multi-image tarball refused" || ok "multi-image tarball refused"
+grep -q -- "up -d" "$DOCKER_LOG" && bad "no compose up on multi-image" || ok "no compose up on multi-image"
+
+# 7. health check failure -> exit 1 (fail loud), fast via HEALTH_TRIES/HEALTH_SLEEP
 echo "fail" > "$CURL_MODE"
 : > "$DOCKER_LOG"; : > "$CURL_LOG"
 HEALTH_TRIES=2 HEALTH_SLEEP=0 run "APP_NAME=popbys" \
