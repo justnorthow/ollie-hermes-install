@@ -125,9 +125,84 @@ test_token_dot_exact_match() {
   assert_eq "token mismatch error" "$(echo "$out" | grep -c 'FAIL: session-token')" "1"
 }
 
+test_agent_apps_gate() {
+  local d rc out manifest_dir
+
+  # ---- fixture manifest (mirrors tests/test-24-install-agent-apps.sh) ----
+  # 24's mf()-style python3 -c embeds the manifest path directly in the
+  # python source string. On MSYS bash + a native Windows python3.exe, MSYS
+  # only rewrites POSIX paths that are argv tokens, not ones embedded inside
+  # a larger string argument — so a plain mktemp path 404s from python3's
+  # perspective even though bash can see it fine. Use a Windows-native
+  # (drive-letter, forward-slash) path for the manifest dir; harmless no-op
+  # on real POSIX boxes where cygpath doesn't exist.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+    }
+  ]
+}
+JSON
+
+  # (a) profile installed, manifest present, app .env missing -> FAIL + GAPS>=1
+  mkdir -p "$d/profiles/real-estate"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "missing app .env exit 1" "$rc" "1"
+  assert_eq "missing app .env named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent app popbys')" "1"
+
+  # (b) app .env present + CHECK_SKIP_LIVE=1 -> PASS, healthy overall
+  mkdir -p "$d/apps/popbys"; : > "$d/apps/popbys/.env"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "app .env present + skip-live exit 0" "$rc" "0"
+  assert_eq "app .env present named PASS" \
+    "$(echo "$out" | grep -c 'PASS: agent app popbys: .env present')" "1"
+
+  # (c) profile NOT installed (no ~/.hermes/profiles/<profile> dir) -> no
+  # agent-apps check lines emitted at all, even though the manifest exists
+  # and the .env is missing.
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+    }
+  ]
+}
+JSON
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "uninstalled profile exit 0" "$rc" "0"
+  assert_eq "uninstalled profile emits no agent-apps lines" \
+    "$(echo "$out" | grep -c 'agent app')" "0"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
 test_dashboard_bind_gate
 test_token_dot_exact_match
+test_agent_apps_gate
 finish

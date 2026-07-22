@@ -17,6 +17,9 @@ ORCH_ENV="${ORCH_ENV:-$HOME/.config/ollie-orchestrator/.env}"
 STACK_ENV_FILE="${STACK_ENV_FILE:-$HOME/hermes-stack/.env}"
 UNIT_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 SKIP_LIVE="${CHECK_SKIP_LIVE:-0}"
+PROFILES_DIR="${PROFILES_DIR:-$HOME/.hermes/profiles}"
+MANIFEST_DIR="${MANIFEST_DIR:-${SCRIPT_DIR}/../apps}"
+APPS_DIR="${APPS_DIR:-$HOME/apps}"
 
 gaps=0
 pass() { echo "PASS: $1"; }
@@ -134,6 +137,46 @@ PY
     fi
   fi
 fi
+
+# 6. agent apps — manifest parity for installed profiles (apps/<profile>.json,
+# Task 5). A profile is "installed" when ~/.hermes/profiles/<profile> exists;
+# manifests whose profile is NOT installed emit no checks at all. mf() mirrors
+# scripts/24-install-agent-apps.sh's manifest-reader style: the manifest path
+# is embedded directly in the python source (like 24's ${MANIFEST}), and only
+# fixed literal jq-path expressions are eval'd — never manifest-derived data.
+mf() { # MANIFEST JQPATH — read a manifest value
+  local m="$1"
+  python3 -c "import json,sys; d=json.load(open('${m}')); print(eval('d'+sys.argv[1]))" "$2"
+}
+for manifest in "${MANIFEST_DIR}"/*.json; do
+  [[ -f "${manifest}" ]] || continue
+  profile="$(mf "${manifest}" "['profile']")"
+  [[ -d "${PROFILES_DIR}/${profile}" ]] || continue
+  app_count="$(mf "${manifest}" "['apps'].__len__()")"
+  for i in $(seq 0 $((app_count-1))); do
+    name="$(mf "${manifest}" "['apps'][${i}]['name']")"
+    env_file="${APPS_DIR}/${name}/.env"
+    if [[ ! -f "${env_file}" ]]; then
+      fail "agent app ${name}: .env missing (${env_file})"
+      continue
+    fi
+    pass "agent app ${name}: .env present"
+    if [[ "${SKIP_LIVE}" != "1" ]]; then
+      if docker ps --format '{{.Names}}' | grep -q "^${name}-app"; then
+        pass "agent app ${name}: container running"
+      else
+        fail "agent app ${name}: no container named ${name}-app*"
+      fi
+      app_port="$(mf "${manifest}" "['apps'][${i}]['server']['app_port']")"
+      health_path="$(mf "${manifest}" "['apps'][${i}]['server']['health_path']")"
+      if curl -fsS "127.0.0.1:${app_port}${health_path}" >/dev/null 2>&1; then
+        pass "agent app ${name}: health check ok"
+      else
+        fail "agent app ${name}: health check failed (127.0.0.1:${app_port}${health_path})"
+      fi
+    fi
+  done
+done
 
 echo
 if [[ ${gaps} -eq 0 ]]; then
