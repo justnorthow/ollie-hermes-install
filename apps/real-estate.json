@@ -1,0 +1,10 @@
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+    }
+  ]
+}

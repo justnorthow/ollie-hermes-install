@@ -34,4 +34,11 @@ assert_eq "managed APP_PORT wins" "$(app_server_env_val "$T/.env3" APP_PORT)" "9
 assert_eq "synthesized PORT wins" "$(app_server_env_val "$T/.env3" PORT)" "8000"
 unset APP_ENV_PORT APP_ENV_APP_PORT
 
+# app_image_from_env: reads APP_IMAGE from ${APPS_DIR:-$HOME/apps}/<name>/.env
+export APPS_DIR="$T/apps"
+mkdir -p "$APPS_DIR/popbys"
+cp "$T/.env" "$APPS_DIR/popbys/.env"
+assert_eq "app_image_from_env reads APP_IMAGE" "$(app_image_from_env popbys)" "sha256:abc"
+assert_eq "app_image_from_env empty for missing app" "$(app_image_from_env nope)" ""
+
 finish

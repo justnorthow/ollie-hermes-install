@@ -12,6 +12,10 @@ app_server_env_val() { # FILE KEY
   echo "${line#*=}"
 }
 
+app_image_from_env() { # NAME — reads APP_IMAGE from ${APPS_DIR:-$HOME/apps}/<name>/.env
+  app_server_env_val "${APPS_DIR:-$HOME/apps}/$1/.env" APP_IMAGE
+}
+
 render_app_server_env() { # OUT OLD_FILE(optional, "" for none)
   local out="$1" old="${2:-}"
   local managed=(APP_NAME APP_PORT CONTAINER_PORT HEALTH_PATH APP_IMAGE)
