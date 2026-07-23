@@ -73,7 +73,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   [[ -z "${APP_HOST}" && -f "${SB_ENV}" ]] && APP_HOST="$(supabase_app_env_val "${SB_ENV}" SITE_URL)" && APP_HOST="${APP_HOST#https://}"
   [[ -n "${APP_HOST}" && -n "${SB_HOST}" ]] || { echo "error: APP_HOST and SB_HOST required" >&2; exit 1; }
 
-  echo "==> agent-apps [${NAME}] 1/4: supabase stack (kong ${KONG_PORT})"
+  echo "==> agent-apps [${NAME}] 1/5: supabase stack (kong ${KONG_PORT})"
   {
     echo "STACK_NAME=${NAME}"
     echo "KONG_PORT=${KONG_PORT}"
@@ -85,7 +85,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     true   # group's exit status must not hinge on the last optional field being absent (pipefail)
   } | bash "${SUB20}"
 
-  echo "==> agent-apps [${NAME}] 2/4: app migrations"
+  echo "==> agent-apps [${NAME}] 2/5: app migrations"
   if [[ -n "${IMAGE_TARBALL}" ]]; then
     LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
     if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
