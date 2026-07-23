@@ -47,6 +47,7 @@ command -v socat >/dev/null 2>&1 || apt-get install -y -q socat
 for a in "$@"; do
   name="${a%%:*}"; port="${a##*:}"
   render "${name}" "${port}" /etc/systemd/system
+  chmod 0644 "/etc/systemd/system/${name}-bridge.service"
   systemctl daemon-reload
   systemctl enable --now "${name}-bridge.service"
   echo "    bridge (${name}): $(systemctl is-active "${name}-bridge.service")"
