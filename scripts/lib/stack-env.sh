@@ -41,11 +41,12 @@ render_stack_env() {
   vertical="$(_forward VERTICAL "$old")"
   local instance_title; instance_title="$(_forward INSTANCE_TITLE "$old")"
   local cortex_api_key; cortex_api_key="$(_forward CORTEX_API_KEY "$old")"
-  local hermes_ui_hostname dashboard_bind hia_base_url newsletter_base_url
+  local hermes_ui_hostname dashboard_bind hia_base_url newsletter_base_url popbys_base_url
   hermes_ui_hostname="$(_forward HERMES_UI_HOSTNAME "$old")"
   dashboard_bind="$(_forward DASHBOARD_BIND "$old")"
   hia_base_url="$(_forward HIA_BASE_URL "$old")"
   newsletter_base_url="$(_forward NEWSLETTER_BASE_URL "$old")"
+  popbys_base_url="$(_forward POPBYS_BASE_URL "$old")"
   local reports_dir reports_host_dir
   reports_dir="$(_forward REPORTS_DIR "$old")"
   reports_host_dir="$(_forward REPORTS_HOST_DIR "$old")"
@@ -73,6 +74,7 @@ HERMES_UI_HOSTNAME=${hermes_ui_hostname}
 DASHBOARD_BIND=${dashboard_bind}
 HIA_BASE_URL=${hia_base_url}
 NEWSLETTER_BASE_URL=${newsletter_base_url}
+POPBYS_BASE_URL=${popbys_base_url}
 # ReportsViewer storage: REPORTS_DIR (in-container path, usually /reports) turns
 # the nginx /reports-files/ autoindex on; REPORTS_HOST_DIR is the host directory
 # mounted there (empty = compose's auto-created ./reports).

@@ -2,13 +2,22 @@
 # 24-install-agent-apps.sh <profile> — install every app the manifest
 # (apps/<profile>.json) bundles with an agent profile: 20 (Supabase stack) ->
 # app migrations (extracted from the app image; tracked in _app_migrations) ->
-# 23 (app server). Caddy (22) needs root, so this prints the exact command —
+# 23 (app server) -> dashboard tile registration (manifest apps with a "tile"
+# key are upserted into the orchestrator's per-profile app registry). Caddy
+# (22) needs root, so this prints the exact command —
 # REMINDER: 22 renders from ONLY its args; pass the box's FULL vhost set.
 # Box-derived config is resolved here (stack anon key, orchestrator loopback);
 # operator secrets arrive on stdin and flow through, never argv.
 # Input (stdin): APP_HOST, SB_HOST (req first run), IMAGE_TARBALL (req first
 #   run), GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT,
 #   APP_ENV_<KEY>... passthrough.
+# ORCH_ENV_FILE also supplies HIA_SSO_SECRET (dashboard SSO signing secret,
+# passed through as APP_ENV_HIA_SSO_SECRET; absent = WARN + continue, the
+# rollout runbook creates it) and ORCHESTRATOR_KEY (used both as
+# APP_ENV_OLLIE_ORCHESTRATOR_KEY and as the bearer for the tile-registry POST).
+# SUPABASE_SERVICE_ROLE_KEY is read from the app's own stack .env (20 always
+# renders it) and passed through as APP_ENV_SUPABASE_SERVICE_ROLE_KEY — its
+# absence fails loud, since that means the stack render never ran.
 set -euo pipefail
 if [[ "$(id -u)" -eq 0 ]]; then
   echo "error: run as the service user, not root" >&2; exit 1
@@ -108,9 +117,22 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   done
   rm -rf "${MIG_DIR}"
 
-  echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
+  echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
   ANON="$(supabase_app_env_val "${SB_ENV}" ANON_KEY)"
   ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
+  # Dashboard SSO: HIA_SSO_SECRET signs/validates the orchestrator's app-token
+  # (verified by the app's own /sso endpoint). Absent on a fresh box is
+  # expected pre-rollout — SSO just 503s gracefully — so warn and continue
+  # rather than fail the whole app install over it.
+  HIA_SSO_SECRET="$(grep -E '^HIA_SSO_SECRET=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
+  [[ -n "${HIA_SSO_SECRET}" ]] || echo "WARN: HIA_SSO_SECRET missing from ${ORCH_ENV_FILE} — SSO will 503 until the rollout sets it" >&2
+  # SERVICE_ROLE_KEY: the app stack's supabase-app-env.sh renders this as part
+  # of the all-or-nothing 6-secret bundle every time (Step 1 above), so its
+  # absence here means that render never happened — a real misconfiguration,
+  # not a rollout gap. Fail loud instead of shipping an app that can never
+  # mint an SSO session.
+  SERVICE_ROLE_KEY="$(supabase_app_env_val "${SB_ENV}" SERVICE_ROLE_KEY)"
+  [[ -n "${SERVICE_ROLE_KEY}" ]] || { echo "error: SERVICE_ROLE_KEY missing from ${SB_ENV} (stack .env should always have it)" >&2; exit 1; }
   {
     echo "APP_NAME=${NAME}"
     echo "APP_PORT=${APP_PORT}"
@@ -122,10 +144,46 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     echo "APP_ENV_OLLIE_ENDPOINT=http://127.0.0.1:${ORCH_PORT}"
     echo "APP_ENV_OLLIE_AGENT=${PROFILE}"
     [[ -n "${ORCH_KEY}" ]] && echo "APP_ENV_OLLIE_ORCHESTRATOR_KEY=${ORCH_KEY}"
+    [[ -n "${HIA_SSO_SECRET}" ]] && echo "APP_ENV_HIA_SSO_SECRET=${HIA_SSO_SECRET}"
+    echo "APP_ENV_SUPABASE_SERVICE_ROLE_KEY=${SERVICE_ROLE_KEY}"
+    echo "APP_ENV_APP_BASE_PATH=/apps/${NAME}"
     printf '%s\n' "${PASSTHRU[@]:-}" | grep -v '^$' || true
+    true   # group's exit status must not hinge on the last optional/passthrough line (pipefail)
   } | bash "${SUB23}"
 
-  echo "==> agent-apps [${NAME}] 4/4: caddy (root step — run yourself)"
+  echo "==> agent-apps [${NAME}] 4/5: dashboard tile registration"
+  HAS_TILE="$(python3 -c "import json; d=json.load(open('${MANIFEST}')); print('1' if 'tile' in d['apps'][${i}] else '')")"
+  if [[ -n "${HAS_TILE}" ]]; then
+    # Build the whole JSON payload in python (json.dumps) so tile field
+    # values never get bash-string-spliced into a JSON literal — they come
+    # straight out of the committed manifest, read by python, not interpolated.
+    PAYLOAD="$(python3 -c "
+import json
+d = json.load(open('${MANIFEST}'))
+app = d['apps'][${i}]
+tile = app['tile']
+payload = {
+    'id': app['name'],
+    'label': tile['label'],
+    'icon': tile['icon'],
+    'description': tile['description'],
+    'order': tile['order'],
+    'componentType': 'ExternalWebApp',
+    'config': {'url': '/apps/' + app['name'] + '/', 'sso': True},
+}
+print(json.dumps(payload))
+")"
+    curl -fsS -X POST "http://127.0.0.1:${ORCH_PORT}/v1/agents/${PROFILE}/apps" \
+      -H "Authorization: Bearer ${ORCH_KEY}" \
+      -H 'Content-Type: application/json' \
+      -d "${PAYLOAD}" >/dev/null \
+      || { echo "error: dashboard tile registration failed for ${NAME}" >&2; exit 1; }
+    echo "    tile registered (id=${NAME})"
+  else
+    echo "    (no tile in manifest — skipping)"
+  fi
+
+  echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
   echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
   echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
 done

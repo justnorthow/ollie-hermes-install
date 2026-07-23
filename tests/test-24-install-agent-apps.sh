@@ -29,7 +29,13 @@ cat > "$MANIFEST_DIR/real-estate.json" <<'JSON'
     {
       "name": "popbys",
       "stack": { "kong_port": 8030, "email_enabled": "false" },
-      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" },
+      "tile": {
+        "label": "Pop Bys",
+        "icon": "M15 10.5a3 3 0 11-6 0 3 3 0 016 0z M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z",
+        "description": "Pop-by planning: contacts, cadence, routes, calendar",
+        "order": 10
+      }
     }
   ]
 }
@@ -38,9 +44,16 @@ JSON
 # ---- fixture stacks dir (SUB20 stub writes popbys/.env here) ----
 export STACKS_DIR="$T/stacks"; mkdir -p "$STACKS_DIR"
 
-# ---- fixture orchestrator env file ----
+# ---- fixture orchestrator env file (HIA_SSO_SECRET present: happy path) ----
 mkdir -p "$T/hermes-stack"
 cat > "$T/hermes-stack/.env" <<'EOF'
+ORCHESTRATOR_KEY=orch-key-1==
+HIA_SSO_SECRET=sso-secret-1
+EOF
+
+# ---- fixture orchestrator env file WITHOUT HIA_SSO_SECRET (warn-and-continue case) ----
+mkdir -p "$T/hermes-stack-nosso"
+cat > "$T/hermes-stack-nosso/.env" <<'EOF'
 ORCHESTRATOR_KEY=orch-key-1==
 EOF
 
@@ -70,6 +83,7 @@ ANON_KEY=stub-anon
 POSTGRES_PASSWORD=pw
 SUPABASE_PUBLIC_URL=https://sb-popbys.test
 SITE_URL=https://popbys.test
+SERVICE_ROLE_KEY=stub-service-role
 ENVEOF
 SH
 export SUB20="$T/bin/sub20.sh"
@@ -151,6 +165,31 @@ esac
 exit 0
 SH
 chmod +x "$T/bin/docker"
+
+# ---- fake curl: logs full argv + the -d payload; CURL_FAIL_FILE (if present)
+# simulates a registry POST failure (fake curl exits nonzero, like real curl -f
+# on a non-2xx response) ----
+export CURL_LOG="$T/curl.log"
+export CURL_FAIL_FILE="$T/curl-fail"
+cat > "$T/bin/curl" <<'SH'
+#!/usr/bin/env bash
+echo "curl $*" >> "${CURL_LOG}"
+prev=""
+for a in "$@"; do
+  if [[ "${prev}" == "-d" ]]; then
+    printf '%s' "$a" > "${CURL_LOG}.payload"
+  fi
+  prev="$a"
+done
+if [[ -f "${CURL_FAIL_FILE}" ]]; then
+  echo "curl: fake failure" >&2
+  exit 22
+fi
+exit 0
+SH
+export CURL="$T/bin/curl"
+chmod +x "$T/bin/curl"
+
 export PATH="$T/bin:$PATH"
 
 : > "$T/img.tar"
@@ -169,7 +208,8 @@ run() { # PROFILE KEY=VALUE...
 }
 
 # 1. happy path: SUB20 gets the right stack params
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && ok "happy path exits 0" || bad "happy path exits 0"
 grep -q '^STACK_NAME=popbys$' "$SUB20_LOG" && ok "SUB20 got STACK_NAME" || bad "SUB20 got STACK_NAME"
@@ -188,6 +228,38 @@ grep -q '^APP_ENV_OLLIE_ENDPOINT=http://127.0.0.1:9123$' "$SUB23_LOG" && ok "SUB
 grep -q '^APP_ENV_OLLIE_AGENT=real-estate$' "$SUB23_LOG" && ok "SUB23 got OLLIE_AGENT" || bad "SUB23 got OLLIE_AGENT"
 grep -q '^APP_ENV_OLLIE_ORCHESTRATOR_KEY=orch-key-1==$' "$SUB23_LOG" && ok "SUB23 got OLLIE_ORCHESTRATOR_KEY with = padding" || bad "SUB23 got OLLIE_ORCHESTRATOR_KEY with = padding"
 grep -q "^IMAGE_TARBALL=$T/img.tar$" "$SUB23_LOG" && ok "SUB23 got IMAGE_TARBALL" || bad "SUB23 got IMAGE_TARBALL"
+
+# 2b. SUB23 gets the dashboard-SSO env: HIA_SSO_SECRET (from the orchestrator
+# env file), SUPABASE_SERVICE_ROLE_KEY (from the stack .env SUB20 rendered),
+# and APP_BASE_PATH (derived from the app name).
+grep -q '^APP_ENV_HIA_SSO_SECRET=sso-secret-1$' "$SUB23_LOG" && ok "SUB23 got HIA_SSO_SECRET" || bad "SUB23 got HIA_SSO_SECRET"
+grep -q '^APP_ENV_SUPABASE_SERVICE_ROLE_KEY=stub-service-role$' "$SUB23_LOG" && ok "SUB23 got SUPABASE_SERVICE_ROLE_KEY" || bad "SUB23 got SUPABASE_SERVICE_ROLE_KEY"
+grep -q '^APP_ENV_APP_BASE_PATH=/apps/popbys$' "$SUB23_LOG" && ok "SUB23 got APP_BASE_PATH" || bad "SUB23 got APP_BASE_PATH"
+
+# 2c. dashboard tile registration: manifest app has a "tile" key -> 24 POSTs
+# the upsert payload to the orchestrator's app-registry endpoint.
+grep -q "curl -fsS -X POST http://127.0.0.1:9123/v1/agents/real-estate/apps" "$CURL_LOG" \
+  && ok "tile registration POST hit the registry endpoint" || bad "tile registration POST hit the registry endpoint"
+grep -q "Authorization: Bearer orch-key-1==" "$CURL_LOG" && ok "tile registration POST carries the bearer" || bad "tile registration POST carries the bearer"
+# python3 -c embeds the path in the source string, not as an argv token, so on
+# MSYS bash + a native Windows python3.exe it needs the drive-letter form (see
+# the MANIFEST_DIR/TW note above) — harmless no-op on real POSIX boxes.
+PAYLOAD_FILE_NATIVE="$(cygpath -m "$CURL_LOG.payload" 2>/dev/null || printf '%s' "$CURL_LOG.payload")"
+if [ -f "$CURL_LOG.payload" ] && python3 -c "
+import json
+d = json.load(open('$PAYLOAD_FILE_NATIVE'))
+assert d['id'] == 'popbys', d
+assert d['label'] == 'Pop Bys', d
+assert d['description'] == 'Pop-by planning: contacts, cadence, routes, calendar', d
+assert d['order'] == 10, d
+assert d['componentType'] == 'ExternalWebApp', d
+assert d['config']['url'] == '/apps/popbys/', d
+assert d['config']['sso'] is True, d
+" 2>"$T/payload-check.err"; then
+  ok "tile registration payload shape correct"
+else
+  bad "tile registration payload shape correct"; cat "$T/payload-check.err" >&2
+fi
 
 # 3. migration tracking: create-table + a SELECT per file + one
 # single-transaction (-1 -f -) apply per file, with the tracker INSERT
@@ -283,5 +355,53 @@ run "real-estate" "${STDIN_CARRY[@]}" && ok "carry-forward run exits 0" || bad "
 grep -q '^SUPABASE_PUBLIC_URL=https://sb-popbys.test$' "$SUB20_LOG" && ok "SUB20 got derived SUPABASE_PUBLIC_URL" || bad "SUB20 got derived SUPABASE_PUBLIC_URL"
 grep -q '^SITE_URL=https://popbys.test$' "$SUB20_LOG" && ok "SUB20 got derived SITE_URL" || bad "SUB20 got derived SITE_URL"
 grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" && ok "SUB23 got derived SUPABASE_URL from carry-forward" || bad "SUB23 got derived SUPABASE_URL from carry-forward"
+
+# 8. missing HIA_SSO_SECRET (orchestrator env file has no key at all) -> WARN
+# on stderr but the install still completes (SSO 503s gracefully; the rollout
+# runbook is what actually creates the secret).
+STDIN_NOSSO=(
+  "APP_HOST=popbys.test"
+  "SB_HOST=sb-popbys.test"
+  "IMAGE_TARBALL=$T/img.tar"
+  "ORCH_ENV_FILE=$T/hermes-stack-nosso/.env"
+)
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
+rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
+run "real-estate" "${STDIN_NOSSO[@]}" && ok "missing HIA_SSO_SECRET still exits 0" || bad "missing HIA_SSO_SECRET still exits 0"
+grep -q "WARN:.*HIA_SSO_SECRET" "$T/out.log" && ok "missing HIA_SSO_SECRET warns" || bad "missing HIA_SSO_SECRET warns"
+grep -q '^APP_ENV_HIA_SSO_SECRET=' "$SUB23_LOG" && bad "no HIA_SSO_SECRET line when absent" || ok "no HIA_SSO_SECRET line when absent"
+grep -q '^APP_ENV_SUPABASE_SERVICE_ROLE_KEY=stub-service-role$' "$SUB23_LOG" && ok "SERVICE_ROLE_KEY still passed without SSO secret" || bad "SERVICE_ROLE_KEY still passed without SSO secret"
+
+# 9. missing SERVICE_ROLE_KEY in the stack .env -> fail loud (20 always
+# renders it; its absence means the stack render never ran).
+export SUB20_NOSRK_LOG="$T/sub20-nosrk.log"
+cat > "$T/bin/sub20-nosrk.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+cat > "${SUB20_NOSRK_LOG}"
+mkdir -p "${STACKS_DIR}/popbys"
+cat > "${STACKS_DIR}/popbys/.env" <<ENVEOF
+ANON_KEY=stub-anon
+POSTGRES_PASSWORD=pw
+SUPABASE_PUBLIC_URL=https://sb-popbys.test
+SITE_URL=https://popbys.test
+ENVEOF
+SH
+chmod +x "$T/bin/sub20-nosrk.sh"
+: > "$DOCKER_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
+rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
+SUB20="$T/bin/sub20-nosrk.sh" run "real-estate" "${STDIN[@]}" && bad "missing SERVICE_ROLE_KEY refused" || ok "missing SERVICE_ROLE_KEY refused"
+grep -q "^error:.*SERVICE_ROLE_KEY" "$T/out.log" && ok "missing SERVICE_ROLE_KEY error message" || bad "missing SERVICE_ROLE_KEY error message"
+[ -s "$SUB23_LOG" ] && bad "no SUB23 invocation when SERVICE_ROLE_KEY missing" || ok "no SUB23 invocation when SERVICE_ROLE_KEY missing"
+
+# 10. registry POST failure (tile present in manifest, curl fails) -> exit 1
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+rm -f "$CURL_LOG.payload"; : > "$CURL_FAIL_FILE"
+rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
+run "real-estate" "${STDIN[@]}" && bad "registry POST failure refused" || ok "registry POST failure refused"
+grep -q "tile registration failed" "$T/out.log" && ok "registry POST failure error message" || bad "registry POST failure error message"
+rm -f "$CURL_FAIL_FILE"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

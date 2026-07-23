@@ -123,6 +123,10 @@ services:
       # this was only a hand-edit on boxes and template refreshes wiped it —
       # blank app tile (sandbox 2026-07-16).
       - NEWSLETTER_BASE_URL=${NEWSLETTER_BASE_URL:-}
+      # Base origin of the sandboxed Pop Bys app server (127.0.0.1:<app_port> via
+      # host.docker.internal — same pattern as HIA/Newsletter: generate-nginx.sh
+      # adds an /apps/popbys/ proxy when set). Unset = no proxy, blank tile.
+      - POPBYS_BASE_URL=${POPBYS_BASE_URL:-}
       # Browser-facing HTTPS URL of the native Hermes dashboard, used by the
       # frontend's "Backend Settings" link. Leave unset and the link falls back
       # to http://<host>:9119 — which HTTPS-First browsers refuse, producing

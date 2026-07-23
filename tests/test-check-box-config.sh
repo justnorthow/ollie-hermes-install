@@ -199,6 +199,91 @@ JSON
     "$(echo "$out" | grep -c 'agent app')" "0"
 }
 
+test_agent_apps_tile_gate() {
+  local d rc out manifest_dir
+
+  # ---- fixture manifest: app carries a "tile" key (Task 5) ----
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests" "$d/profiles/real-estate"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" },
+      "tile": {
+        "label": "Pop Bys",
+        "icon": "M15",
+        "description": "Pop-by planning: contacts, cadence, routes, calendar",
+        "order": 10
+      }
+    }
+  ]
+}
+JSON
+  mkdir -p "$d/apps/popbys"; : > "$d/apps/popbys/.env"
+
+  # (a) tile app missing from the profile's apps.json (never registered, or
+  # apps.json absent entirely) -> FAIL + gap
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "tile missing from apps.json exit 1" "$rc" "1"
+  assert_eq "tile missing from apps.json named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent app popbys: tile missing')" "1"
+
+  # (b) apps.json exists but doesn't include this app's id -> still FAIL
+  printf '[{"id":"someother-app","label":"Other"}]' > "$d/profiles/real-estate/apps.json"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "tile id absent from apps.json exit 1" "$rc" "1"
+  assert_eq "tile id absent from apps.json named FAIL" \
+    "$(echo "$out" | grep -c 'FAIL: agent app popbys: tile missing')" "1"
+
+  # (c) apps.json includes this app's id -> PASS, healthy overall
+  printf '[{"id":"popbys","label":"Pop Bys"}]' > "$d/profiles/real-estate/apps.json"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "tile registered exit 0" "$rc" "0"
+  assert_eq "tile registered named PASS" \
+    "$(echo "$out" | grep -c 'PASS: agent app popbys: tile registered')" "1"
+
+  # (d) sanity: a manifest app with NO "tile" key emits no tile check at all
+  # (dashboard-embedded tiles are opt-in per app; the existing non-tile fixture
+  # in test_agent_apps_gate must not regress).
+  d="$(setup_healthy)"
+  mkdir -p "$d/apps" "$d/manifests" "$d/profiles/real-estate"
+  manifest_dir="$(cygpath -m "$d/manifests" 2>/dev/null || printf '%s' "$d/manifests")"
+  cat > "$d/manifests/real-estate.json" <<'JSON'
+{
+  "profile": "real-estate",
+  "apps": [
+    {
+      "name": "popbys",
+      "stack": { "kong_port": 8030, "email_enabled": "false" },
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" }
+    }
+  ]
+}
+JSON
+  mkdir -p "$d/apps/popbys"; : > "$d/apps/popbys/.env"
+  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
+    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  assert_eq "no-tile app exit 0" "$rc" "0"
+  assert_eq "no-tile app emits no tile check" \
+    "$(echo "$out" | grep -c 'tile')" "0"
+}
+
 test_agent_apps_malformed_manifest() {
   local d rc out manifest_dir
 
@@ -263,6 +348,7 @@ test_detection_failure_fails_loudly
 test_dashboard_bind_gate
 test_token_dot_exact_match
 test_agent_apps_gate
+test_agent_apps_tile_gate
 test_agent_apps_malformed_manifest
 test_agent_apps_wrong_shape_manifest
 finish

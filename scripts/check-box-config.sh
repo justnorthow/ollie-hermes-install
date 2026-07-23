@@ -184,6 +184,24 @@ assert isinstance(d.get('profile'), str) and isinstance(d.get('apps'), list)
       continue
     fi
     pass "agent app ${name}: .env present"
+    # Tile registration is a config check (file-based), not a live probe —
+    # runs regardless of CHECK_SKIP_LIVE. Manifest apps without a "tile" key
+    # (dashboard-embedded tiles are opt-in per app) emit no check here.
+    has_tile="$(mf "${manifest}" "['apps'][${i}].get('tile')")"
+    if [[ "${has_tile}" != "None" ]]; then
+      apps_json="${PROFILES_DIR}/${profile}/apps.json"
+      apps_json_native="$(native_path "${apps_json}")"
+      if [[ -f "${apps_json}" ]] && python3 -c "
+import json, sys
+d = json.load(open('${apps_json_native}'))
+ids = {a.get('id') for a in d} if isinstance(d, list) else set()
+sys.exit(0 if '${name}' in ids else 1)
+" >/dev/null 2>&1; then
+        pass "agent app ${name}: tile registered (${apps_json})"
+      else
+        fail "agent app ${name}: tile missing from ${apps_json}"
+      fi
+    fi
     if [[ "${SKIP_LIVE}" != "1" ]]; then
       if docker ps --format '{{.Names}}' | grep -q "^${name}-app"; then
         pass "agent app ${name}: container running"
