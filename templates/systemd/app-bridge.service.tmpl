@@ -1,0 +1,15 @@
+[Unit]
+Description=Bridge docker0 172.17.0.1:__PORT__ -> loopback app __NAME__ 127.0.0.1:__PORT__
+Documentation=Lets the dashboard container reach the loopback-bound __NAME__ app server. Bound to the private docker bridge IP only; the host firewall blocks :__PORT__ externally.
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP4-LISTEN:__PORT__,bind=172.17.0.1,fork,reuseaddr TCP4:127.0.0.1:__PORT__
+Restart=always
+RestartSec=2
+DynamicUser=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

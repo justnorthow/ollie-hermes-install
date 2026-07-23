@@ -186,5 +186,13 @@ print(json.dumps(payload))
   echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
   echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
   echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
+  if [[ -n "${HAS_TILE}" ]]; then
+    # Tile apps are embedded in the dashboard, which reaches the host via
+    # host.docker.internal = 172.17.0.1 (the docker0 gateway) — unreachable
+    # for a loopback-only (127.0.0.1) app server. 25 installs a static socat
+    # bridge (same fix 06-install-stack.sh hand-builds for the native Hermes
+    # dashboard on 9119) so the tile doesn't 502.
+    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}"
+  fi
 done
 echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"

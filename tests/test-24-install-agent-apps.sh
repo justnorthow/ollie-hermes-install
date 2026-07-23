@@ -297,6 +297,13 @@ grep -q "popbys.test:8130" "$T/out.log" && ok "caddy command has app vhost" || b
 grep -q "sb-popbys.test:8030" "$T/out.log" && ok "caddy command has supabase vhost" || bad "caddy command has supabase vhost"
 grep -q "EVERY vhost this box serves" "$T/out.log" && ok "warns to pass the FULL vhost set" || bad "warns to pass the FULL vhost set"
 
+# 5c. tile-bearing app (popbys has a "tile" key) -> also prints the bridge
+# sudo command, right after the caddy line, so the dashboard container can
+# reach the loopback-only app server.
+grep -qE "sudo bash [^ ]*25-install-app-bridge\.sh popbys:8130" "$T/out.log" \
+  && ok "prints copy-paste runnable bridge command (sudo bash) for tile app" \
+  || bad "prints copy-paste runnable bridge command (sudo bash) for tile app"
+
 # 5b. multi-image tarball -> exit 1 before any docker create/cp (F4: apply
 # the same single-image guard 23 uses, so migrations aren't extracted from
 # an arbitrary image before a later multi-image rejection).
