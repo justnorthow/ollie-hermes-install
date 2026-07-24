@@ -13,6 +13,7 @@ whatever the current install scripts set up.
 """
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -1378,6 +1379,124 @@ def cmd_heartbeat_daemon(args):
         time.sleep(CONTROL_POLL_SECONDS)
 
 
+# ------------------------------------------------------- supabase admin (users)
+
+def _sb_conf():
+    env = read_env_file(ORCH_ENV)
+    url = (env.get("SUPABASE_URL") or "").strip().rstrip("/")
+    key = (env.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not (url and key):
+        fail("Supabase auth not configured on this instance")
+    return url, key
+
+
+def _sb_req(method, path, body=None, params=None):
+    url, key = _sb_conf()
+    full = url + path
+    if params:
+        full += "?" + urllib.parse.urlencode(params)
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"apikey": key, "Authorization": "Bearer " + key,
+               "Content-Type": "application/json", "User-Agent": USER_AGENT}
+    req = urllib.request.Request(full, method=method, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw.strip() else None)
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        return e.code, (json.loads(raw) if raw.strip() else None)
+
+
+TIERS = ("member", "manager", "account_admin", "platform_operator")
+
+
+def _find_auth_user(email):
+    _, users = _sb_req("GET", "/auth/v1/admin/users", params={"per_page": 200})
+    lst = (users or {}).get("users", users if isinstance(users, list) else [])
+    el = email.strip().lower()
+    for u in lst:
+        if (u.get("email") or "").strip().lower() == el:
+            return u
+    return None
+
+
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _write_roles(instance_id, user_id, tier, governance_view, tags):
+    # upsert user_roles (merge-duplicates on instance_id,user_id)
+    st, _ = _sb_req("POST", "/rest/v1/user_roles",
+                    params={"on_conflict": "instance_id,user_id"},
+                    body={"instance_id": instance_id, "user_id": user_id, "tier": tier,
+                          "governance_view": bool(governance_view), "updated_at": _now_iso()})
+    if st >= 300:
+        fail("user_roles write failed (%s)" % st)
+    # replace user_tags: delete then insert
+    _sb_req("DELETE", "/rest/v1/user_tags", params={"user_id": "eq." + user_id})
+    clean = sorted({str(t).strip() for t in (tags or []) if str(t).strip()})
+    if clean:
+        _sb_req("POST", "/rest/v1/user_tags",
+                body=[{"user_id": user_id, "tag": t} for t in clean])
+
+
+def cmd_users_add(args):
+    payload = json.loads(sys.stdin.read() or "{}")
+    email = (payload.get("email") or "").strip()
+    tier = payload.get("tier") or "member"
+    instance_id = payload.get("instanceId") or ""
+    if not email or "@" not in email:
+        fail("invalid email")
+    if tier not in TIERS:
+        fail("invalid tier")
+    if not instance_id:
+        fail("instanceId is required")
+    existing = _find_auth_user(email)
+    if existing is not None:
+        # configured on this instance?
+        st, rows = _sb_req("GET", "/rest/v1/user_roles",
+                           params={"instance_id": "eq." + instance_id,
+                                   "user_id": "eq." + existing["id"], "select": "user_id"})
+        if rows:
+            fail("User already exists on this instance — edit them instead")
+        _, link = _sb_req("POST", "/auth/v1/admin/generate_link",
+                          body={"type": "magiclink", "email": email})
+    else:
+        _, link = _sb_req("POST", "/auth/v1/admin/generate_link",
+                         body={"type": "invite", "email": email})
+    user_id = ((link or {}).get("user") or {}).get("id") or (existing or {}).get("id")
+    if not user_id:
+        fail("could not resolve user id")
+    _write_roles(instance_id, user_id, tier, payload.get("governanceView"), payload.get("tags"))
+    emit({"userId": user_id, "email": email, "inviteLink": (link or {}).get("action_link", "")})
+
+
+def cmd_users_list(args):
+    payload = json.loads(sys.stdin.read() or "{}")
+    instance_id = payload.get("instanceId") or ""
+    if not instance_id:
+        fail("instanceId is required")
+    _, users = _sb_req("GET", "/auth/v1/admin/users", params={"per_page": 200})
+    lst = (users or {}).get("users", users if isinstance(users, list) else [])
+    _, roles_rows = _sb_req("GET", "/rest/v1/user_roles",
+                           params={"instance_id": "eq." + instance_id,
+                                   "select": "user_id,tier,governance_view"})
+    role_by = {r["user_id"]: r for r in (roles_rows or [])}
+    _, tag_rows = _sb_req("GET", "/rest/v1/user_tags", params={"select": "user_id,tag"})
+    tags_by = {}
+    for tr in (tag_rows or []):
+        tags_by.setdefault(tr["user_id"], []).append(tr["tag"])
+    out = []
+    for u in lst:
+        r = role_by.get(u["id"], {})
+        out.append({"userId": u["id"], "email": u.get("email", ""),
+                    "tier": r.get("tier", "member"),
+                    "tags": sorted(tags_by.get(u["id"], [])),
+                    "governanceView": bool(r.get("governance_view", False))})
+    emit({"users": out})
+
+
 # -------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -1427,6 +1546,9 @@ def main(argv=None):
                    help="set VERTICAL in the dashboard .env and recreate the "
                         "dashboard ({\"vertical\": ...} JSON on stdin; empty clears)")
     sub.add_parser("check-config", help="run the done-done parity gate")
+    sub.add_parser("users-add", help="create+invite a user and provision role/tags/governance "
+                                     "({email,tier,tags,governanceView,instanceId} JSON on stdin)")
+    sub.add_parser("users-list", help="list an instance's users ({instanceId} JSON on stdin)")
 
     args = p.parse_args(argv)
 
@@ -1470,6 +1592,10 @@ def main(argv=None):
             cmd_set_vertical(args)
         elif args.verb == "check-config":
             cmd_check_config(args)
+        elif args.verb == "users-add":
+            cmd_users_add(args)
+        elif args.verb == "users-list":
+            cmd_users_list(args)
     except SystemExit:
         raise
     except Exception as e:

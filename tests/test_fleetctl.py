@@ -1154,5 +1154,116 @@ class TestCheckConfig(unittest.TestCase):
         self.assertTrue(out[-1]["ok"])
 
 
+class TestUsersAdd(unittest.TestCase):
+    def _run(self, mod, payload, fake_req):
+        with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
+            with mock.patch.object(mod, "_sb_req", fake_req):
+                with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+                    return run_main(mod, ["users-add"])
+
+    def test_users_add_new_user(self):
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None):
+            calls.append((method, path, body, params))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            if path == "/rest/v1/user_tags":
+                return 200, None
+            return 200, None
+
+        code, out = self._run(mod, {
+            "email": "n@b.com", "tier": "account_admin", "tags": ["compliance"],
+            "governanceView": True, "instanceId": "inst1",
+        }, fake_req)
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1], {"userId": "u-new", "email": "n@b.com",
+                                   "inviteLink": "https://site/invite#t=1"})
+        # invite (not magiclink) used for a brand-new user
+        link_calls = [c for c in calls if c[1] == "/auth/v1/admin/generate_link"]
+        self.assertEqual(link_calls[0][2]["type"], "invite")
+        # roles written for the right instance/user/tier
+        role_calls = [c for c in calls if c[1] == "/rest/v1/user_roles" and c[0] == "POST"]
+        self.assertEqual(role_calls[0][2]["instance_id"], "inst1")
+        self.assertEqual(role_calls[0][2]["user_id"], "u-new")
+        self.assertEqual(role_calls[0][2]["tier"], "account_admin")
+        self.assertTrue(role_calls[0][2]["governance_view"])
+
+    def test_users_add_existing_configured_user_fails(self):
+        mod = load_fleetctl()
+
+        def fake_req(method, path, body=None, params=None):
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u-exist", "email": "dup@b.com"}]}
+            if path == "/rest/v1/user_roles" and method == "GET":
+                # a user_roles row already exists for this instance -> configured
+                return 200, [{"user_id": "u-exist"}]
+            return 200, None
+
+        code, out = self._run(mod, {
+            "email": "dup@b.com", "tier": "member", "tags": [],
+            "governanceView": False, "instanceId": "inst1",
+        }, fake_req)
+        self.assertNotEqual(code, 0)
+        self.assertIn("error", out[-1])
+        self.assertIn("already exists", out[-1]["error"])
+
+    def test_users_add_existing_unconfigured_user_reprovisions(self):
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None):
+            calls.append((method, path, body, params))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u-half", "email": "half@b.com"}]}
+            if path == "/rest/v1/user_roles" and method == "GET":
+                return 200, []  # no row on this instance yet -> unconfigured
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-half"}, "action_link": "https://site/invite#t=2"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            if path == "/rest/v1/user_tags":
+                return 200, None
+            return 200, None
+
+        code, out = self._run(mod, {
+            "email": "half@b.com", "tier": "member", "tags": [],
+            "governanceView": False, "instanceId": "inst1",
+        }, fake_req)
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1]["userId"], "u-half")
+        link_calls = [c for c in calls if c[1] == "/auth/v1/admin/generate_link"]
+        self.assertEqual(link_calls[0][2]["type"], "magiclink")
+
+
+class TestUsersList(unittest.TestCase):
+    def test_users_list_returns_instance_users(self):
+        mod = load_fleetctl()
+
+        def fake_req(method, path, body=None, params=None):
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u1", "email": "a@b.com"}]}
+            if path == "/rest/v1/user_roles":
+                return 200, [{"user_id": "u1", "tier": "manager", "governance_view": False}]
+            if path == "/rest/v1/user_tags":
+                return 200, [{"user_id": "u1", "tag": "compliance"}]
+            return 200, None
+
+        with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
+            with mock.patch.object(mod, "_sb_req", fake_req):
+                with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"instanceId": "inst1"}))):
+                    code, out = run_main(mod, ["users-list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1]["users"][0], {
+            "userId": "u1", "email": "a@b.com", "tier": "manager",
+            "tags": ["compliance"], "governanceView": False,
+        })
+
+
 if __name__ == "__main__":
     unittest.main()
