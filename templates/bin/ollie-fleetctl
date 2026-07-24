@@ -1525,7 +1525,10 @@ def cmd_users_add(args):
 
 
 def cmd_users_list(args):
-    json.loads(sys.stdin.read() or "{}")  # drain stdin; instance id comes from the box, not Fleet
+    try:
+        sys.stdin.read()  # drain the SSH stdin pipe; no payload needed (instance id
+    except Exception:     # comes from the box, not Fleet). Never parse — tolerate any input.
+        pass
     instance_id = _instance_id()
     _, users = _sb_req("GET", "/auth/v1/admin/users", params={"per_page": 200})
     lst = (users or {}).get("users", users if isinstance(users, list) else [])
