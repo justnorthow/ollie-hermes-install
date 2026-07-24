@@ -1394,6 +1394,17 @@ def _site_url():
     return (read_env_file(ORCH_ENV).get("SITE_URL") or "").strip().rstrip("/")
 
 
+def _instance_id():
+    # The box's authoritative instance id — mirror the orchestrator exactly
+    # (config.py: INSTANCE_ID from env, default "default"). user_roles is scoped
+    # by THIS value, so both the orchestrator and these verbs must agree on it.
+    # Fleet passes its own DB instance id on stdin, which does NOT match the box's
+    # INSTANCE_ID; scoping user_roles by that would read/write the wrong rows
+    # (every user falling back to 'member', and Fleet-created roles invisible to
+    # the orchestrator's access-token hook). Always use the box's own value.
+    return (read_env_file(ORCH_ENV).get("INSTANCE_ID") or "").strip() or "default"
+
+
 def _sb_req(method, path, body=None, params=None, prefer=None):
     """`prefer`, when set, sends a Prefer header (e.g. "resolution=merge-duplicates"
     so PostgREST actually honors an on_conflict upsert instead of a plain INSERT)."""
@@ -1477,13 +1488,11 @@ def cmd_users_add(args):
     payload = json.loads(sys.stdin.read() or "{}")
     email = (payload.get("email") or "").strip()
     tier = payload.get("tier") or "member"
-    instance_id = payload.get("instanceId") or ""
+    instance_id = _instance_id()
     if not email or "@" not in email:
         fail("invalid email")
     if tier not in TIERS:
         fail("invalid tier")
-    if not instance_id:
-        fail("instanceId is required")
     existing = _find_auth_user(email)
     if existing is not None:
         # configured on this instance?
@@ -1516,10 +1525,8 @@ def cmd_users_add(args):
 
 
 def cmd_users_list(args):
-    payload = json.loads(sys.stdin.read() or "{}")
-    instance_id = payload.get("instanceId") or ""
-    if not instance_id:
-        fail("instanceId is required")
+    json.loads(sys.stdin.read() or "{}")  # drain stdin; instance id comes from the box, not Fleet
+    instance_id = _instance_id()
     _, users = _sb_req("GET", "/auth/v1/admin/users", params={"per_page": 200})
     lst = (users or {}).get("users", users if isinstance(users, list) else [])
     _, roles_rows = _sb_req("GET", "/rest/v1/user_roles",
@@ -1590,8 +1597,10 @@ def main(argv=None):
                         "dashboard ({\"vertical\": ...} JSON on stdin; empty clears)")
     sub.add_parser("check-config", help="run the done-done parity gate")
     sub.add_parser("users-add", help="create+invite a user and provision role/tags/governance "
-                                     "({email,tier,tags,governanceView,instanceId} JSON on stdin)")
-    sub.add_parser("users-list", help="list an instance's users ({instanceId} JSON on stdin)")
+                                     "({email,tier,tags,governanceView,operatorEmail} JSON on stdin; "
+                                     "instance id comes from the box's INSTANCE_ID)")
+    sub.add_parser("users-list", help="list this instance's users (no stdin needed; "
+                                      "instance id comes from the box's INSTANCE_ID)")
 
     args = p.parse_args(argv)
 

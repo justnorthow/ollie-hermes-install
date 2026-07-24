@@ -1156,10 +1156,38 @@ class TestCheckConfig(unittest.TestCase):
 
 class TestUsersAdd(unittest.TestCase):
     def _run(self, mod, payload, fake_req):
+        # The verb derives the instance id from the box (INSTANCE_ID), NOT from the
+        # stdin payload — patch it to the value the assertions expect.
         with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
-            with mock.patch.object(mod, "_sb_req", fake_req):
-                with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
-                    return run_main(mod, ["users-add"])
+            with mock.patch.object(mod, "_instance_id", lambda: "inst1"):
+                with mock.patch.object(mod, "_sb_req", fake_req):
+                    with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+                        return run_main(mod, ["users-add"])
+
+    def test_users_add_uses_box_instance_id_not_fleet_stdin(self):
+        # Regression: user_roles must be scoped by the box's INSTANCE_ID, not the
+        # id Fleet passes on stdin (they differ; using Fleet's writes invisible rows).
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-new"}, "action_link": "L"}
+            return 200, None
+
+        with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
+            with mock.patch.object(mod, "_instance_id", lambda: "sandbox"):
+                with mock.patch.object(mod, "_sb_req", fake_req):
+                    with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({
+                            "email": "n@b.com", "tier": "manager",
+                            "instanceId": "fleet-db-uuid-WRONG"}))):
+                        code, out = run_main(mod, ["users-add"])
+        self.assertEqual(code, 0)
+        role_posts = [c for c in calls if c[1] == "/rest/v1/user_roles" and c[0] == "POST"]
+        self.assertEqual(role_posts[0][2]["instance_id"], "sandbox")  # box id, not the stdin one
 
     def test_users_add_new_user(self):
         mod = load_fleetctl()
@@ -1381,19 +1409,25 @@ class TestUsersList(unittest.TestCase):
     def test_users_list_returns_instance_users(self):
         mod = load_fleetctl()
 
-        def fake_req(method, path, body=None, params=None):
+        seen = {}
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": [{"id": "u1", "email": "a@b.com"}]}
             if path == "/rest/v1/user_roles":
+                seen["roles_params"] = params
                 return 200, [{"user_id": "u1", "tier": "manager", "governance_view": False}]
             if path == "/rest/v1/user_tags":
                 return 200, [{"user_id": "u1", "tag": "compliance"}]
             return 200, None
 
         with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
-            with mock.patch.object(mod, "_sb_req", fake_req):
-                with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"instanceId": "inst1"}))):
-                    code, out = run_main(mod, ["users-list"])
+            with mock.patch.object(mod, "_instance_id", lambda: "sandbox"):
+                with mock.patch.object(mod, "_sb_req", fake_req):
+                    with mock.patch.object(sys, "stdin", io.StringIO("")):
+                        code, out = run_main(mod, ["users-list"])
+        # the user_roles query is scoped by the box's INSTANCE_ID, not a stdin id
+        self.assertEqual(seen["roles_params"]["instance_id"], "eq.sandbox")
         self.assertEqual(code, 0)
         self.assertEqual(out[-1]["users"][0], {
             "userId": "u1", "email": "a@b.com", "tier": "manager",
