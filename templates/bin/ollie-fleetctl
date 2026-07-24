@@ -1512,7 +1512,9 @@ def cmd_users_add(args):
         if site:
             body["redirect_to"] = site + "/invite"
         _, link = _sb_req("POST", "/auth/v1/admin/generate_link", body=body)
-    user_id = ((link or {}).get("user") or {}).get("id") or (existing or {}).get("id")
+    # GoTrue admin/generate_link returns the User fields at the TOP LEVEL
+    # (id, email, ... alongside action_link) — no nested "user" object.
+    user_id = (link or {}).get("id") or (existing or {}).get("id")
     if not user_id:
         fail("could not resolve user id")
     _write_roles(instance_id, user_id, tier, payload.get("governanceView"), payload.get("tags"))

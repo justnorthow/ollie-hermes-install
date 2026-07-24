@@ -1175,7 +1175,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-new"}, "action_link": "L"}
+                return 200, {"id": "u-new", "action_link": "L"}
             return 200, None
 
         with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
@@ -1198,7 +1198,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1234,7 +1234,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1260,7 +1260,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1306,7 +1306,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/rest/v1/user_roles" and method == "GET":
                 return 200, []  # no row on this instance yet -> unconfigured
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-half"}, "action_link": "https://site/invite#t=2"}
+                return 200, {"id": "u-half", "action_link": "https://site/invite#t=2"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1334,7 +1334,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             return 200, None
@@ -1361,7 +1361,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-gov"}, "action_link": "https://site/invite#t=3"}
+                return 200, {"id": "u-gov", "action_link": "https://site/invite#t=3"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             return 200, None
@@ -1391,7 +1391,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"user": {"id": "u-resilient"}, "action_link": "https://site/invite#t=4"}
+                return 200, {"id": "u-resilient", "action_link": "https://site/invite#t=4"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             return 200, None
