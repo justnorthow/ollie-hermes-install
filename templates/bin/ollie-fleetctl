@@ -1390,6 +1390,10 @@ def _sb_conf():
     return url, key
 
 
+def _site_url():
+    return (read_env_file(ORCH_ENV).get("SITE_URL") or "").strip().rstrip("/")
+
+
 def _sb_req(method, path, body=None, params=None, prefer=None):
     """`prefer`, when set, sends a Prefer header (e.g. "resolution=merge-duplicates"
     so PostgREST actually honors an on_conflict upsert instead of a plain INSERT)."""
@@ -1488,11 +1492,17 @@ def cmd_users_add(args):
                                    "user_id": "eq." + existing["id"], "select": "user_id"})
         if rows:
             fail("User already exists on this instance — edit them instead")
-        _, link = _sb_req("POST", "/auth/v1/admin/generate_link",
-                          body={"type": "magiclink", "email": email})
+        body = {"type": "magiclink", "email": email}
+        site = _site_url()
+        if site:
+            body["redirect_to"] = site + "/invite"
+        _, link = _sb_req("POST", "/auth/v1/admin/generate_link", body=body)
     else:
-        _, link = _sb_req("POST", "/auth/v1/admin/generate_link",
-                         body={"type": "invite", "email": email})
+        body = {"type": "invite", "email": email}
+        site = _site_url()
+        if site:
+            body["redirect_to"] = site + "/invite"
+        _, link = _sb_req("POST", "/auth/v1/admin/generate_link", body=body)
     user_id = ((link or {}).get("user") or {}).get("id") or (existing or {}).get("id")
     if not user_id:
         fail("could not resolve user id")

@@ -1194,6 +1194,60 @@ class TestUsersAdd(unittest.TestCase):
         self.assertEqual(role_calls[0][2]["tier"], "account_admin")
         self.assertTrue(role_calls[0][2]["governance_view"])
 
+    def test_users_add_new_user_sets_redirect_to_when_site_url_configured(self):
+        # Mirror the orchestrator's _generate_link: when SITE_URL is set,
+        # generate_link must include redirect_to={SITE_URL}/invite so the
+        # invite email lands on the dashboard's /invite acceptance route.
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            if path == "/rest/v1/user_tags":
+                return 200, None
+            return 200, None
+
+        with mock.patch.object(mod, "_site_url", lambda: "https://ollie.example"):
+            code, out = self._run(mod, {
+                "email": "n@b.com", "tier": "member", "tags": [],
+                "governanceView": False, "instanceId": "inst1",
+            }, fake_req)
+        self.assertEqual(code, 0)
+        link_calls = [c for c in calls if c[1] == "/auth/v1/admin/generate_link"]
+        self.assertEqual(link_calls[0][2]["type"], "invite")
+        self.assertEqual(link_calls[0][2]["redirect_to"], "https://ollie.example/invite")
+
+    def test_users_add_new_user_omits_redirect_to_when_site_url_unset(self):
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            if path == "/rest/v1/user_tags":
+                return 200, None
+            return 200, None
+
+        with mock.patch.object(mod, "_site_url", lambda: ""):
+            code, out = self._run(mod, {
+                "email": "n@b.com", "tier": "member", "tags": [],
+                "governanceView": False, "instanceId": "inst1",
+            }, fake_req)
+        self.assertEqual(code, 0)
+        link_calls = [c for c in calls if c[1] == "/auth/v1/admin/generate_link"]
+        self.assertNotIn("redirect_to", link_calls[0][2])
+
     def test_users_add_existing_configured_user_fails(self):
         mod = load_fleetctl()
 
