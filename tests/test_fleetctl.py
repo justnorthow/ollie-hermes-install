@@ -1165,8 +1165,8 @@ class TestUsersAdd(unittest.TestCase):
         mod = load_fleetctl()
         calls = []
 
-        def fake_req(method, path, body=None, params=None):
-            calls.append((method, path, body, params))
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
@@ -1217,8 +1217,8 @@ class TestUsersAdd(unittest.TestCase):
         mod = load_fleetctl()
         calls = []
 
-        def fake_req(method, path, body=None, params=None):
-            calls.append((method, path, body, params))
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
             if path == "/auth/v1/admin/users":
                 return 200, {"users": [{"id": "u-half", "email": "half@b.com"}]}
             if path == "/rest/v1/user_roles" and method == "GET":
@@ -1239,6 +1239,88 @@ class TestUsersAdd(unittest.TestCase):
         self.assertEqual(out[-1]["userId"], "u-half")
         link_calls = [c for c in calls if c[1] == "/auth/v1/admin/generate_link"]
         self.assertEqual(link_calls[0][2]["type"], "magiclink")
+
+    def test_users_add_user_roles_upsert_sends_merge_duplicates_prefer(self):
+        # Fix 1: without Prefer: resolution=merge-duplicates, PostgREST treats
+        # on_conflict as inert and the POST is a plain INSERT that 4xx's on any
+        # real conflict instead of merging.
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-new"}, "action_link": "https://site/invite#t=1"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            return 200, None
+
+        code, out = self._run(mod, {
+            "email": "merge@b.com", "tier": "member", "tags": [],
+            "governanceView": False, "instanceId": "inst1",
+        }, fake_req)
+        self.assertEqual(code, 0)
+        role_post_calls = [c for c in calls if c[1] == "/rest/v1/user_roles" and c[0] == "POST"]
+        self.assertEqual(len(role_post_calls), 1)
+        prefer = role_post_calls[0][4]
+        self.assertIsNotNone(prefer)
+        self.assertIn("resolution=merge-duplicates", prefer)
+
+    def test_users_add_emits_governance_event(self):
+        # Fix 2: a Fleet-minted privileged grant must still show up in the
+        # instance's own governance/audit trail.
+        mod = load_fleetctl()
+        calls = []
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, body, params, prefer))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-gov"}, "action_link": "https://site/invite#t=3"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            return 200, None
+
+        code, out = self._run(mod, {
+            "email": "gov@b.com", "tier": "account_admin", "tags": [],
+            "governanceView": True, "instanceId": "inst1", "operatorEmail": "op@b.com",
+        }, fake_req)
+        self.assertEqual(code, 0)
+        gov_calls = [c for c in calls if c[1] == "/rest/v1/governance_events" and c[0] == "POST"]
+        self.assertEqual(len(gov_calls), 1)
+        body = gov_calls[0][2]
+        self.assertEqual(body["event_type"], "user.invited")
+        self.assertEqual(body["app"], "fleet")
+        self.assertEqual(body["title"], "gov@b.com")
+        self.assertEqual(body["instance_id"], "inst1")
+        self.assertEqual(body["user_email"], "op@b.com")
+
+    def test_users_add_succeeds_when_governance_event_raises(self):
+        # Fix 2 must be best-effort: a governance-write hiccup can never break
+        # the actual user creation.
+        mod = load_fleetctl()
+
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            if path == "/rest/v1/governance_events":
+                raise RuntimeError("simulated governance write failure")
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": []}
+            if path == "/auth/v1/admin/generate_link":
+                return 200, {"user": {"id": "u-resilient"}, "action_link": "https://site/invite#t=4"}
+            if path == "/rest/v1/user_roles":
+                return 201, None
+            return 200, None
+
+        code, out = self._run(mod, {
+            "email": "resilient@b.com", "tier": "member", "tags": [],
+            "governanceView": False, "instanceId": "inst1",
+        }, fake_req)
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1], {"userId": "u-resilient", "email": "resilient@b.com",
+                                   "inviteLink": "https://site/invite#t=4"})
 
 
 class TestUsersList(unittest.TestCase):

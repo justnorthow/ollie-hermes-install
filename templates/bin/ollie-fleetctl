@@ -1390,7 +1390,9 @@ def _sb_conf():
     return url, key
 
 
-def _sb_req(method, path, body=None, params=None):
+def _sb_req(method, path, body=None, params=None, prefer=None):
+    """`prefer`, when set, sends a Prefer header (e.g. "resolution=merge-duplicates"
+    so PostgREST actually honors an on_conflict upsert instead of a plain INSERT)."""
     url, key = _sb_conf()
     full = url + path
     if params:
@@ -1398,6 +1400,8 @@ def _sb_req(method, path, body=None, params=None):
     data = json.dumps(body).encode() if body is not None else None
     headers = {"apikey": key, "Authorization": "Bearer " + key,
                "Content-Type": "application/json", "User-Agent": USER_AGENT}
+    if prefer:
+        headers["Prefer"] = prefer
     req = urllib.request.Request(full, method=method, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1426,11 +1430,15 @@ def _now_iso():
 
 
 def _write_roles(instance_id, user_id, tier, governance_view, tags):
-    # upsert user_roles (merge-duplicates on instance_id,user_id)
+    # upsert user_roles (merge-duplicates on instance_id,user_id) — the Prefer
+    # header is what actually makes PostgREST honor on_conflict as an upsert;
+    # without it, on_conflict is inert and this is a plain INSERT that 4xx's
+    # on any real conflict.
     st, _ = _sb_req("POST", "/rest/v1/user_roles",
                     params={"on_conflict": "instance_id,user_id"},
                     body={"instance_id": instance_id, "user_id": user_id, "tier": tier,
-                          "governance_view": bool(governance_view), "updated_at": _now_iso()})
+                          "governance_view": bool(governance_view), "updated_at": _now_iso()},
+                    prefer="resolution=merge-duplicates,return=minimal")
     if st >= 300:
         fail("user_roles write failed (%s)" % st)
     # replace user_tags: delete then insert
@@ -1438,7 +1446,27 @@ def _write_roles(instance_id, user_id, tier, governance_view, tags):
     clean = sorted({str(t).strip() for t in (tags or []) if str(t).strip()})
     if clean:
         _sb_req("POST", "/rest/v1/user_tags",
-                body=[{"user_id": user_id, "tag": t} for t in clean])
+                body=[{"user_id": user_id, "tag": t} for t in clean],
+                prefer="return=minimal")
+
+
+def _emit_governance_event(instance_id, event_type, target_email, detail, actor_email, actor_role):
+    """Best-effort box-side governance event, mirroring the orchestrator's
+    _emit_admin_event (src/api/admin.py). Fleet's users-add can mint privileged
+    accounts (account_admin/platform_operator) with no tier ceiling, so the
+    instance's OWN governance/audit trail must record it — otherwise a
+    privileged grant made via Fleet is invisible in the instance's in-app
+    governance view. Never raises: a governance-write hiccup must not break
+    the actual user creation."""
+    try:
+        _sb_req("POST", "/rest/v1/governance_events",
+                body={"user_email": actor_email or "", "user_role": actor_role or "platform_operator",
+                      "app": "fleet", "event_type": event_type, "status": "ok",
+                      "title": target_email, "findings": [], "content": detail,
+                      "run_id": None, "instance_id": instance_id},
+                prefer="return=minimal")
+    except Exception:
+        pass
 
 
 def cmd_users_add(args):
@@ -1469,6 +1497,11 @@ def cmd_users_add(args):
     if not user_id:
         fail("could not resolve user id")
     _write_roles(instance_id, user_id, tier, payload.get("governanceView"), payload.get("tags"))
+    # Best-effort box-side audit trail (see _emit_governance_event docstring).
+    # operatorEmail is an optional stdin field (Task B2 wires it up); if absent
+    # the event still writes with an empty actor rather than blocking creation.
+    _emit_governance_event(instance_id, "user.invited", email, tier,
+                           payload.get("operatorEmail"), "platform_operator")
     emit({"userId": user_id, "email": email, "inviteLink": (link or {}).get("action_link", "")})
 
 
