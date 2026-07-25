@@ -1531,6 +1531,50 @@ def cmd_users_add(args):
           "verificationType": (link or {}).get("verification_type") or "invite"})
 
 
+def _find_auth_user_by_id(user_id):
+    _, users = _sb_req("GET", "/auth/v1/admin/users", params={"per_page": 200})
+    lst = (users or {}).get("users", users if isinstance(users, list) else [])
+    for u in lst:
+        if u.get("id") == user_id:
+            return u
+    return None
+
+
+def cmd_users_delete(args):
+    payload = json.loads(sys.stdin.read() or "{}")
+    user_id = (payload.get("userId") or "").strip()
+    operator_email = (payload.get("operatorEmail") or "").strip()
+    if not user_id:
+        fail("userId is required")
+    instance_id = _instance_id()
+    target = _find_auth_user_by_id(user_id)
+    if target is None:
+        fail("user not found")
+    # Self-delete guard: the operator can't delete their own account.
+    target_email = (target.get("email") or "").strip()
+    if operator_email and target_email and operator_email.lower() == target_email.lower():
+        fail("You can't delete your own account")
+    # Last-admin guard: keep at least one account_admin+ on the instance.
+    _, roles_rows = _sb_req("GET", "/rest/v1/user_roles",
+                            params={"instance_id": "eq." + instance_id,
+                                    "select": "user_id,tier"})
+    admin_ranks = ("account_admin", "platform_operator")
+    target_row = next((r for r in (roles_rows or []) if r["user_id"] == user_id), None)
+    if target_row and target_row.get("tier") in admin_ranks:
+        others = [r for r in (roles_rows or [])
+                  if r["user_id"] != user_id and r.get("tier") in admin_ranks]
+        if not others:
+            fail("Can't delete the last admin on this instance")
+    # Delete order: instance role row, global tags, then the auth identity last.
+    _sb_req("DELETE", "/rest/v1/user_roles",
+            params={"instance_id": "eq." + instance_id, "user_id": "eq." + user_id})
+    _sb_req("DELETE", "/rest/v1/user_tags", params={"user_id": "eq." + user_id})
+    _sb_req("DELETE", "/auth/v1/admin/users/" + user_id)
+    _emit_governance_event(instance_id, "user.deleted", target_email, "",
+                           operator_email, "platform_operator")
+    emit({"userId": user_id, "deleted": True})
+
+
 def cmd_users_list(args):
     try:
         sys.stdin.read()  # drain the SSH stdin pipe; no payload needed (instance id
@@ -1611,6 +1655,8 @@ def main(argv=None):
                                      "instance id comes from the box's INSTANCE_ID)")
     sub.add_parser("users-list", help="list this instance's users (no stdin needed; "
                                       "instance id comes from the box's INSTANCE_ID)")
+    sub.add_parser("users-delete", help="delete a user (auth identity + role + tags) "
+                                        "({userId,operatorEmail} JSON on stdin; instance id from the box)")
 
     args = p.parse_args(argv)
 
@@ -1658,6 +1704,8 @@ def main(argv=None):
             cmd_users_add(args)
         elif args.verb == "users-list":
             cmd_users_list(args)
+        elif args.verb == "users-delete":
+            cmd_users_delete(args)
     except SystemExit:
         raise
     except Exception as e:

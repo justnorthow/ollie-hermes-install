@@ -1435,5 +1435,56 @@ class TestUsersList(unittest.TestCase):
         })
 
 
+class TestUsersDelete(unittest.TestCase):
+    def _run(self, mod, payload, fake_req):
+        with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
+            with mock.patch.object(mod, "_instance_id", lambda: "sandbox"):
+                with mock.patch.object(mod, "_sb_req", fake_req):
+                    with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+                        return run_main(mod, ["users-delete"])
+
+    def test_users_delete_happy(self):
+        mod = load_fleetctl()
+        calls = []
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, params))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u1", "email": "a@b.com"},
+                                       {"id": "u2", "email": "admin@b.com"}]}
+            if method == "GET" and path == "/rest/v1/user_roles":
+                return 200, [{"user_id": "u2", "tier": "account_admin"}]  # another admin remains
+            return 200, None
+        code, out = self._run(mod, {"userId": "u1", "operatorEmail": "admin@b.com"}, fake_req)
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1], {"userId": "u1", "deleted": True})
+        # deletes: user_roles (scoped to box instance), user_tags, then the auth user
+        dels = [(m, p) for (m, p, _params) in calls if m == "DELETE"]
+        self.assertIn(("DELETE", "/rest/v1/user_roles"), dels)
+        self.assertIn(("DELETE", "/rest/v1/user_tags"), dels)
+        self.assertIn(("DELETE", "/auth/v1/admin/users/u1"), dels)
+
+    def test_users_delete_self_refused(self):
+        mod = load_fleetctl()
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u1", "email": "me@b.com"}]}
+            return 200, None
+        code, out = self._run(mod, {"userId": "u1", "operatorEmail": "ME@b.com"}, fake_req)
+        self.assertNotEqual(code, 0)
+        self.assertIn("your own", out[-1]["error"].lower())
+
+    def test_users_delete_last_admin_refused(self):
+        mod = load_fleetctl()
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u1", "email": "a@b.com"}]}
+            if method == "GET" and path == "/rest/v1/user_roles":
+                return 200, [{"user_id": "u1", "tier": "account_admin"}]  # target is the ONLY admin
+            return 200, None
+        code, out = self._run(mod, {"userId": "u1", "operatorEmail": "op@b.com"}, fake_req)
+        self.assertNotEqual(code, 0)
+        self.assertIn("last admin", out[-1]["error"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()
