@@ -1546,6 +1546,8 @@ def cmd_users_delete(args):
     operator_email = (payload.get("operatorEmail") or "").strip()
     if not user_id:
         fail("userId is required")
+    if not operator_email:
+        fail("operatorEmail is required")
     instance_id = _instance_id()
     target = _find_auth_user_by_id(user_id)
     if target is None:

@@ -1485,6 +1485,29 @@ class TestUsersDelete(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("last admin", out[-1]["error"].lower())
 
+    def test_users_delete_admin_with_replacement_succeeds(self):
+        # Covers the success path through the last-admin branch: target IS an
+        # admin, but another admin remains -> deletion proceeds (the earlier
+        # happy-path fixture had no user_roles row for the target at all, so
+        # this branch was never actually exercised).
+        mod = load_fleetctl()
+        calls = []
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, params))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u1", "email": "a@b.com"}]}
+            if method == "GET" and path == "/rest/v1/user_roles":
+                return 200, [{"user_id": "u1", "tier": "account_admin"},
+                             {"user_id": "u2", "tier": "account_admin"}]  # replacement admin
+            return 200, None
+        code, out = self._run(mod, {"userId": "u1", "operatorEmail": "op@b.com"}, fake_req)
+        self.assertEqual(code, 0)
+        self.assertEqual(out[-1], {"userId": "u1", "deleted": True})
+        dels = [(m, p) for (m, p, _params) in calls if m == "DELETE"]
+        self.assertIn(("DELETE", "/rest/v1/user_roles"), dels)
+        self.assertIn(("DELETE", "/rest/v1/user_tags"), dels)
+        self.assertIn(("DELETE", "/auth/v1/admin/users/u1"), dels)
+
 
 if __name__ == "__main__":
     unittest.main()
