@@ -1175,7 +1175,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-new", "action_link": "L"}
+                return 200, {"id": "u-new", "hashed_token": "ht", "verification_type": "invite"}
             return 200, None
 
         with mock.patch.object(mod, "_sb_conf", lambda: ("https://sb.example", "svc")):
@@ -1198,7 +1198,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1211,7 +1211,7 @@ class TestUsersAdd(unittest.TestCase):
         }, fake_req)
         self.assertEqual(code, 0)
         self.assertEqual(out[-1], {"userId": "u-new", "email": "n@b.com",
-                                   "inviteLink": "https://site/invite#t=1"})
+                                   "tokenHash": "ht", "verificationType": "invite"})
         # invite (not magiclink) used for a brand-new user
         link_calls = [c for c in calls if c[1] == "/auth/v1/admin/generate_link"]
         self.assertEqual(link_calls[0][2]["type"], "invite")
@@ -1234,7 +1234,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1260,7 +1260,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1306,7 +1306,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/rest/v1/user_roles" and method == "GET":
                 return 200, []  # no row on this instance yet -> unconfigured
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-half", "action_link": "https://site/invite#t=2"}
+                return 200, {"id": "u-half", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             if path == "/rest/v1/user_tags":
@@ -1334,7 +1334,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-new", "action_link": "https://site/invite#t=1"}
+                return 200, {"id": "u-new", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             return 200, None
@@ -1361,7 +1361,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-gov", "action_link": "https://site/invite#t=3"}
+                return 200, {"id": "u-gov", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             return 200, None
@@ -1391,7 +1391,7 @@ class TestUsersAdd(unittest.TestCase):
             if path == "/auth/v1/admin/users":
                 return 200, {"users": []}
             if path == "/auth/v1/admin/generate_link":
-                return 200, {"id": "u-resilient", "action_link": "https://site/invite#t=4"}
+                return 200, {"id": "u-resilient", "hashed_token": "ht", "verification_type": "invite"}
             if path == "/rest/v1/user_roles":
                 return 201, None
             return 200, None
@@ -1402,7 +1402,7 @@ class TestUsersAdd(unittest.TestCase):
         }, fake_req)
         self.assertEqual(code, 0)
         self.assertEqual(out[-1], {"userId": "u-resilient", "email": "resilient@b.com",
-                                   "inviteLink": "https://site/invite#t=4"})
+                                   "tokenHash": "ht", "verificationType": "invite"})
 
 
 class TestUsersList(unittest.TestCase):

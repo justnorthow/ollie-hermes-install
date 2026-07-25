@@ -1523,7 +1523,12 @@ def cmd_users_add(args):
     # the event still writes with an empty actor rather than blocking creation.
     _emit_governance_event(instance_id, "user.invited", email, tier,
                            payload.get("operatorEmail"), "platform_operator")
-    emit({"userId": user_id, "email": email, "inviteLink": (link or {}).get("action_link", "")})
+    # Return the hashed_token + type (NOT GoTrue's action_link, which is unroutable
+    # on the self-hosted stack — missing /auth/v1). Fleet builds a link to the
+    # instance dashboard's /invite?token_hash=…&type=… route from these.
+    emit({"userId": user_id, "email": email,
+          "tokenHash": (link or {}).get("hashed_token", ""),
+          "verificationType": (link or {}).get("verification_type") or "invite"})
 
 
 def cmd_users_list(args):
