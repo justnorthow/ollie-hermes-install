@@ -1508,6 +1508,36 @@ class TestUsersDelete(unittest.TestCase):
         self.assertIn(("DELETE", "/rest/v1/user_tags"), dels)
         self.assertIn(("DELETE", "/auth/v1/admin/users/u1"), dels)
 
+    def test_users_delete_auth_delete_failure_fails(self):
+        # Parity with the orchestrator (ed54e42): a failed auth-user delete
+        # (rotated key -> 401, GoTrue 5xx, 429) must NOT be reported as success
+        # -- the row deletes may have already gone through, but the auth
+        # identity is still alive, so this must fail() rather than emit
+        # {"deleted": true} or record a user.deleted governance event.
+        mod = load_fleetctl()
+        calls = []
+        def fake_req(method, path, body=None, params=None, prefer=None):
+            calls.append((method, path, params))
+            if path == "/auth/v1/admin/users":
+                return 200, {"users": [{"id": "u1", "email": "a@b.com"},
+                                       {"id": "u2", "email": "admin@b.com"}]}
+            if method == "GET" and path == "/rest/v1/user_roles":
+                return 200, [{"user_id": "u2", "tier": "account_admin"}]  # another admin remains
+            if method == "DELETE" and path == "/rest/v1/user_roles":
+                return 200, None
+            if method == "DELETE" and path == "/rest/v1/user_tags":
+                return 200, None
+            if method == "DELETE" and path == "/auth/v1/admin/users/u1":
+                return 500, {"msg": "internal error"}
+            return 200, None
+        code, out = self._run(mod, {"userId": "u1", "operatorEmail": "admin@b.com"}, fake_req)
+        self.assertNotEqual(code, 0)
+        self.assertIn("auth user", out[-1]["error"].lower())
+        gov_calls = [(m, p) for (m, p, _params) in calls
+                    if m == "POST" and p == "/rest/v1/governance_events"]
+        self.assertEqual(gov_calls, [])
+        self.assertNotIn({"userId": "u1", "deleted": True}, out)
+
 
 if __name__ == "__main__":
     unittest.main()

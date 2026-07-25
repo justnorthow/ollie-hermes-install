@@ -1568,10 +1568,20 @@ def cmd_users_delete(args):
         if not others:
             fail("Can't delete the last admin on this instance")
     # Delete order: instance role row, global tags, then the auth identity last.
-    _sb_req("DELETE", "/rest/v1/user_roles",
-            params={"instance_id": "eq." + instance_id, "user_id": "eq." + user_id})
-    _sb_req("DELETE", "/rest/v1/user_tags", params={"user_id": "eq." + user_id})
-    _sb_req("DELETE", "/auth/v1/admin/users/" + user_id)
+    # Each step's status is checked — a silently-ignored failure (rotated key ->
+    # 401, GoTrue 5xx, 429) would otherwise still report {"deleted": true} and
+    # emit user.deleted while the auth identity (or role/tags) survives. Mirrors
+    # the orchestrator fix in ed54e42 and _write_roles's existing `if st >= 300`.
+    st, _ = _sb_req("DELETE", "/rest/v1/user_roles",
+                    params={"instance_id": "eq." + instance_id, "user_id": "eq." + user_id})
+    if st >= 300:
+        fail("failed to delete user_roles (status %s)" % st)
+    st, _ = _sb_req("DELETE", "/rest/v1/user_tags", params={"user_id": "eq." + user_id})
+    if st >= 300:
+        fail("failed to delete user_tags (status %s)" % st)
+    st, _ = _sb_req("DELETE", "/auth/v1/admin/users/" + user_id)
+    if st not in (200, 204):
+        fail("failed to delete auth user (status %s)" % st)
     _emit_governance_event(instance_id, "user.deleted", target_email, "",
                            operator_email, "platform_operator")
     emit({"userId": user_id, "deleted": True})
