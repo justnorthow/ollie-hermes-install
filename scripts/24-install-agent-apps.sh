@@ -240,6 +240,12 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     echo "HEALTH_PATH=${HEALTH_PATH}"
     [[ -n "${IMAGE_TARBALL}" ]] && echo "IMAGE_TARBALL=${IMAGE_TARBALL}"
     echo "APP_ENV_SUPABASE_URL=https://${SB_HOST}"
+    # Server-side callers must NOT use the public hostname: on a cloudflared
+    # box it resolves to Cloudflare's edge, which bot-challenges non-browser
+    # clients (HTTP 403) and breaks auth on every route. kong is loopback-only
+    # on the host, so reach it via the docker0 gateway bridge from 25.
+    # The BROWSER still gets the public URL (the app injects it separately).
+    echo "APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:${KONG_PORT}"
     echo "APP_ENV_SUPABASE_ANON_KEY=${ANON}"
     echo "APP_ENV_OLLIE_ENDPOINT=http://127.0.0.1:${ORCH_PORT}"
     echo "APP_ENV_OLLIE_AGENT=${PROFILE}"
@@ -325,6 +331,13 @@ print(json.dumps(payload))
     echo "    (no tile in manifest — skipping)"
   fi
 
+  # /api/health does not touch Supabase, so a missing kong bridge leaves the
+  # app "healthy" while every API call 403s. Announce it instead.
+  if ! curl -fsS --max-time 10 "http://172.17.0.1:${KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
+    echo "    WARNING: internal Supabase URL http://172.17.0.1:${KONG_PORT} is unreachable — the app will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}-sb:${KONG_PORT}" >&2
+    WARNINGS=$((WARNINGS+1))
+  fi
+
   echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
   echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
   echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
@@ -337,7 +350,7 @@ print(json.dumps(payload))
     # for a loopback-only (127.0.0.1) app server. 25 installs a static socat
     # bridge (same fix 06-install-stack.sh hand-builds for the native Hermes
     # dashboard on 9119) so the tile doesn't 502.
-    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}"
+    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT} ${NAME}-sb:${KONG_PORT}"
   fi
 done
 if [[ "${WARNINGS}" -eq 0 ]]; then

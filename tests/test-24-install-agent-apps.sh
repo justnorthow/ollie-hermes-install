@@ -750,4 +750,34 @@ grep -q "created from manifest defaults" "$T/out.log" \
   || ok "no install work ran before the undetected creation failure was caught"
 rm -f "$AGENT_NEVER_APPEARS_FILE"
 
+# 18. The app server must be told an INTERNAL Supabase URL (kong on the
+# docker0 gateway); the public hostname 403s from server-side callers on a
+# tunnel box. The PUBLIC APP_ENV_SUPABASE_URL must still be passed too (the
+# browser needs it), and 24 must print BOTH bridges (app + kong) in step 5/5.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+run real-estate "${STDIN[@]}"
+grep -q '^APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8030$' "$SUB23_LOG" \
+  && ok "24 passes APP_ENV_SUPABASE_INTERNAL_URL with the manifest kong port" \
+  || bad "APP_ENV_SUPABASE_INTERNAL_URL missing/wrong in the 23 stdin"
+
+grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" \
+  && ok "public APP_ENV_SUPABASE_URL still passed (browser needs it)" \
+  || bad "public APP_ENV_SUPABASE_URL was dropped"
+
+grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
+  && ok "24 prints BOTH bridges (app + kong)" \
+  || bad "24 did not print the kong bridge"
+
+# 19. Probe failure => loud warning naming the bridge, and the run ends on the
+# warning banner rather than a clean tick.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}"
+grep -qE "WARNING:.*(internal|bridge)" "$T/out.log" \
+  && ok "unreachable internal URL warns" || bad "no warning when the internal URL is unreachable"
+grep -q "popbys-sb:8030" "$T/out.log" \
+  && ok "the warning names the missing bridge" || bad "warning does not name the bridge"
+grep -q "⚠" "$T/out.log" \
+  && ok "run ends on the warning banner, not ✓" || bad "run still ended on the success banner"
+export CURL_FAIL_URL_PATTERN=""
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
