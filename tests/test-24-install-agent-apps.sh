@@ -177,48 +177,151 @@ chmod +x "$T/bin/docker"
 # narrower, URL-selective failure: only argv tokens matching the pattern fail
 # — everything else behaves normally. This lets a test fail just the tile
 # -registration POST without also tripping the preflight's GET/POST, which
-# now runs earlier in the same invocation. ----
+# now runs earlier in the same invocation.
+#
+# 24 now also verifies agent creation with GET /v1/agents/<profile> (polled,
+# since creation is async) and reads the http status via -o <file> -w
+# '%{http_code}'. The fake curl models this:
+#   - GET  .../v1/agents            -> writes AGENTS_JSON_FILE to -o (or
+#                                       stdout if no -o), status 200 (or
+#                                       AGENTS_LIST_STATUS_FILE's contents, for
+#                                       the broken-orchestrator tests).
+#   - POST .../v1/agents            -> "creates" the agent: records its name
+#                                       in CREATED_AGENTS_FILE (so the verify
+#                                       GET below finds it) UNLESS
+#                                       AGENT_NEVER_APPEARS_FILE exists, which
+#                                       simulates the real bug this branch
+#                                       exists to catch (202 ACCEPTED, SSE
+#                                       error body, agent never actually
+#                                       created). Status 202.
+#   - GET  .../v1/agents/<profile>  -> 200 if <profile> is in AGENTS_JSON_FILE
+#                                       or CREATED_AGENTS_FILE, else 404.
+#   - POST .../v1/agents/<id>/apps  -> tile registration, status 200. ----
 export CURL_LOG="$T/curl.log"
 export CURL_FAIL_FILE="$T/curl-fail"
 export CURL_FAIL_URL_PATTERN=""
-# ---- fixture agents list (drives the fake curl's GET /v1/agents response;
-# the preflight in 24 reads this to decide whether PROFILE already exists) ----
+# ---- fixture agents list (drives the fake curl's GET /v1/agents and GET
+# /v1/agents/<id> responses; the preflight in 24 reads this to decide whether
+# PROFILE already exists) ----
 export AGENTS_JSON_FILE="$T/agents.json"
 printf '{"agents":[{"id":"default","displayName":"Ollie"}]}' > "$AGENTS_JSON_FILE"
+export AGENTS_LIST_STATUS_FILE="$T/agents-list-status"
+rm -f "$AGENTS_LIST_STATUS_FILE"
+# ---- marker of agents "created" by a POST .../v1/agents in this test run
+# (the fake orchestrator doesn't persist state into AGENTS_JSON_FILE, so this
+# is what the verify GET checks after a create) ----
+export CREATED_AGENTS_FILE="$T/created-agents"
+: > "$CREATED_AGENTS_FILE"
+# ---- when present, a POST .../v1/agents is accepted (202) but the agent it
+# claims to create is NEVER recorded as created — models the orchestrator's
+# real failure mode (202 ACCEPTED + SSE `event: error`, agent never exists) ----
+export AGENT_NEVER_APPEARS_FILE="$T/agent-never-appears"
+rm -f "$AGENT_NEVER_APPEARS_FILE"
 cat > "$T/bin/curl" <<'SH'
 #!/usr/bin/env bash
 echo "curl $*" >> "${CURL_LOG}"
+
+METHOD="GET"
+URL=""
+OUTFILE=""
+WANT_CODE=""
+DATA=""
 prev=""
 for a in "$@"; do
   if [[ "${prev}" == "-d" ]]; then
+    DATA="$a"
     printf '%s' "$a" > "${CURL_LOG}.payload"
   fi
+  [[ "${prev}" == "-X" ]] && METHOD="$a"
+  [[ "${prev}" == "-o" ]] && OUTFILE="$a"
+  case "$a" in
+    http://*|https://*) URL="$a" ;;
+    *%{http_code}*) WANT_CODE=1 ;;
+  esac
   prev="$a"
 done
+
+write_out() { # BODY
+  if [[ -n "${OUTFILE}" ]]; then printf '%s' "$1" > "${OUTFILE}"; else printf '%s' "$1"; fi
+}
+emit_status() { # STATUS
+  [[ -n "${WANT_CODE}" ]] && printf '%s' "$1"
+}
+
 if [[ -f "${CURL_FAIL_FILE}" ]]; then
   echo "curl: fake failure" >&2
+  emit_status "000"
   exit 22
 fi
-if [[ -n "${CURL_FAIL_URL_PATTERN:-}" ]]; then
-  for a in "$@"; do
-    if [[ "$a" == *"${CURL_FAIL_URL_PATTERN}"* ]]; then
-      echo "curl: fake failure (matched ${CURL_FAIL_URL_PATTERN})" >&2
-      exit 22
-    fi
-  done
+if [[ -n "${CURL_FAIL_URL_PATTERN:-}" && "${URL}" == *"${CURL_FAIL_URL_PATTERN}"* ]]; then
+  echo "curl: fake failure (matched ${CURL_FAIL_URL_PATTERN})" >&2
+  emit_status "000"
+  exit 22
 fi
-# GET of the agents list -> emit the fixture body so 24's preflight can parse it.
-for a in "$@"; do
-  case "$a" in
-    */v1/agents)
-      cat "${AGENTS_JSON_FILE:-/dev/null}" 2>/dev/null || printf '{"agents":[]}'
-      exit 0 ;;
-  esac
-done
+
+case "${URL}" in
+  */v1/agents)
+    if [[ "${METHOD}" == "POST" ]]; then
+      if [[ ! -f "${AGENT_NEVER_APPEARS_FILE:-/nonexistent}" ]]; then
+        NAME_FROM_PAYLOAD="$(printf '%s' "${DATA}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))" 2>/dev/null || true)"
+        [[ -n "${NAME_FROM_PAYLOAD}" ]] && echo "${NAME_FROM_PAYLOAD}" >> "${CREATED_AGENTS_FILE:-/dev/null}"
+      fi
+      write_out ""
+      emit_status "202"
+    else
+      LIST_STATUS="200"
+      [[ -f "${AGENTS_LIST_STATUS_FILE:-/nonexistent}" ]] && LIST_STATUS="$(cat "${AGENTS_LIST_STATUS_FILE}")"
+      if [[ "${LIST_STATUS}" != "200" ]]; then
+        write_out ""
+        emit_status "${LIST_STATUS}"
+      else
+        write_out "$(cat "${AGENTS_JSON_FILE:-/dev/null}" 2>/dev/null || printf '{"agents":[]}')"
+        emit_status "200"
+      fi
+    fi
+    exit 0
+    ;;
+  */v1/agents/*/apps)
+    write_out ""
+    emit_status "200"
+    exit 0
+    ;;
+  */v1/agents/*)
+    LOOKUP="${URL##*/v1/agents/}"
+    FOUND="$(python3 -c "
+import json
+try:
+    d = json.load(open('${AGENTS_JSON_FILE}'))
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+print('1' if any(a.get('id') == '${LOOKUP}' for a in (d.get('agents') or [])) else '')
+" 2>/dev/null || true)"
+    if [[ -z "${FOUND}" ]] && grep -qxF "${LOOKUP}" "${CREATED_AGENTS_FILE:-/dev/null}" 2>/dev/null; then
+      FOUND=1
+    fi
+    if [[ -n "${FOUND}" ]]; then
+      write_out '{}'
+      emit_status "200"
+    else
+      write_out ""
+      emit_status "404"
+    fi
+    exit 0
+    ;;
+esac
+write_out ""
+emit_status "200"
 exit 0
 SH
 export CURL="$T/bin/curl"
 chmod +x "$T/bin/curl"
+
+# Keep the polling loop fast in tests: a few attempts, no sleep, instead of
+# the real 10 attempts / 2s apart.
+export AGENT_VERIFY_ATTEMPTS=3
+export AGENT_VERIFY_INTERVAL=0
 
 export PATH="$T/bin:$PATH"
 
@@ -436,14 +539,17 @@ grep -q "^error:.*SERVICE_ROLE_KEY" "$T/out.log" && ok "missing SERVICE_ROLE_KEY
 # 10. total orchestrator-API outage -> exit 1. Note: since the preflight
 # (added for the auto-create-agent feature) is now the FIRST curl call 24
 # makes, a total curl outage is now caught THERE — before any stack/app work
-# — rather than at the later tile-registration POST. That's the intended
-# improvement (see the new preflight tests below): a broken orchestrator API
-# fails the run immediately instead of after minutes of install work.
+# — rather than at the later tile-registration POST. IMPORTANT 2 tightened
+# this further: the preflight's GET /v1/agents no longer swallows a failed
+# call as "agent absent" (that used to defer the failure to the create POST's
+# "could not create agent" message) — it now checks the HTTP status itself
+# and fails immediately with a message that correctly blames the orchestrator
+# list call, not agent creation.
 : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
 rm -f "$CURL_LOG.payload"; : > "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && bad "registry POST failure refused" || ok "registry POST failure refused"
-grep -q "error: could not create agent" "$T/out.log" && ok "registry POST failure error message (caught by the preflight)" || bad "registry POST failure error message (caught by the preflight)"
+grep -q "error: could not list agents from the orchestrator" "$T/out.log" && ok "registry POST failure error message (caught by the preflight's own GET, before agent creation)" || bad "registry POST failure error message (caught by the preflight's own GET, before agent creation)"
 rm -f "$CURL_FAIL_FILE"
 
 # 11. preflight: the agent named after the profile must exist before any
@@ -516,7 +622,12 @@ ORCHESTRATOR_KEY=orch-key-1==
 HIA_SSO_SECRET=sso-secret-1
 EOF
 mkdir -p "$T/stack-env"
-: > "$T/stack-env/docker-compose.yml"
+cat > "$T/stack-env/docker-compose.yml" <<'EOF'
+services:
+  dashboard:
+    environment:
+      POPBYS_BASE_URL: ${POPBYS_BASE_URL}
+EOF
 cat > "$T/stack-env/.env" <<'EOF'
 POPBYS_BASE_URL=
 EOF
@@ -527,6 +638,9 @@ grep -q '^POPBYS_BASE_URL=http://host.docker.internal:8130$' "$T/stack-env/.env"
 grep -q '^POPBYS_BASE_URL=' "$T/hermes-stack/.env" \
   && bad "POPBYS_BASE_URL leaked into the ORCHESTRATOR env (STACK_ENV_FILE/ORCH_ENV_FILE must stay separate)" \
   || ok "POPBYS_BASE_URL absent from the ORCHESTRATOR env (STACK_ENV_FILE/ORCH_ENV_FILE stay separate)"
+grep -q "^✓ agent-apps for profile 'real-estate' installed" "$T/out.log" \
+  && ok "zero-warning run prints the ✓ banner" \
+  || bad "zero-warning run should print the ✓ banner"
 
 # 14. skip path: STACK_ENV_FILE points somewhere with no docker-compose.yml —
 # i.e. the Hermes stack was never installed there (06-install-stack.sh creates
@@ -546,5 +660,94 @@ grep -q "Skipping POPBYS_BASE_URL update" "$T/out.log" \
 [ -e "$NO_STACK_DIR" ] \
   && bad "fabricated the missing stack directory/.env instead of skipping" \
   || ok "did not fabricate the missing stack directory/.env"
+grep -q "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$T/out.log" \
+  && ok "warn-path run prints the ⚠ banner (not ✓)" \
+  || bad "warn-path run should print the ⚠ banner"
+grep -q "^✓ agent-apps" "$T/out.log" \
+  && bad "warn-path run must NOT also print the ✓ banner" \
+  || ok "warn-path run does not print the ✓ banner"
+
+# 15. CRITICAL: compose file exists but does NOT reference the app's
+# <NAME>_BASE_URL key at all — the box predates the 2026-07-23 passthrough
+# (or was never wired for it). 24 must NOT write the key or recreate the
+# dashboard (both would be no-ops / worse than doing nothing), must warn with
+# specific remediation, and must NOT print the ✓ banner.
+: > "$CURL_LOG"; : > "$DOCKER_LOG"
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+mkdir -p "$T/stack-env-nopassthrough"
+cat > "$T/stack-env-nopassthrough/docker-compose.yml" <<'EOF'
+services:
+  dashboard:
+    environment:
+      SOME_OTHER_VAR: fixed-value
+EOF
+cat > "$T/stack-env-nopassthrough/.env" <<'EOF'
+SOME_OTHER_VAR=fixed-value
+EOF
+run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env-nopassthrough/.env"
+grep -q "WARNING:.*stack-env-nopassthrough.*docker-compose\.yml does not pass POPBYS_BASE_URL to the dashboard" "$T/out.log" \
+  && ok "warns when compose file doesn't pass BASE_KEY to the dashboard" \
+  || bad "did not warn about the missing BASE_KEY passthrough in compose"
+grep -q "Re-run 06-install-stack.sh" "$T/out.log" \
+  && ok "warning gives specific remediation (re-run 06)" \
+  || bad "warning missing remediation guidance"
+grep -q '^POPBYS_BASE_URL=' "$T/stack-env-nopassthrough/.env" \
+  && bad "wrote POPBYS_BASE_URL even though compose doesn't reference it (silent no-op)" \
+  || ok "did not write POPBYS_BASE_URL when compose doesn't reference it"
+grep -q "up -d dashboard" "$DOCKER_LOG" \
+  && bad "attempted to recreate the dashboard despite skipping the BASE_URL write" \
+  || ok "did not attempt to recreate the dashboard when the write was skipped"
+grep -q "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$T/out.log" \
+  && ok "missing-passthrough run prints the ⚠ banner" \
+  || bad "missing-passthrough run should print the ⚠ banner"
+grep -q "^✓ agent-apps" "$T/out.log" \
+  && bad "missing-passthrough run must not print the ✓ banner" \
+  || ok "missing-passthrough run correctly suppresses the ✓ banner"
+
+# 16. MINOR: compose file DOES reference the BASE_KEY, but the stack .env
+# itself is missing (partial/broken install) — 24 must not create an orphan
+# one-line .env and must not attempt the recreate; must warn with the
+# specific cause.
+: > "$CURL_LOG"; : > "$DOCKER_LOG"
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+mkdir -p "$T/stack-env-noenv"
+cat > "$T/stack-env-noenv/docker-compose.yml" <<'EOF'
+services:
+  dashboard:
+    environment:
+      POPBYS_BASE_URL: ${POPBYS_BASE_URL}
+EOF
+rm -f "$T/stack-env-noenv/.env"
+run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env-noenv/.env"
+grep -q "WARNING: no .*stack-env-noenv/\.env" "$T/out.log" \
+  && ok "warns when docker-compose.yml exists but .env does not" \
+  || bad "did not warn about the missing stack .env"
+[ -e "$T/stack-env-noenv/.env" ] \
+  && bad "fabricated an orphan .env instead of warning and skipping" \
+  || ok "did not fabricate an orphan .env"
+grep -q "^⚠ agent-apps" "$T/out.log" \
+  && ok "missing-.env run prints the ⚠ banner" \
+  || bad "missing-.env run should print the ⚠ banner"
+
+# 17. CRITICAL: agent-create "succeeds" (the POST exits 0 / 202 ACCEPTED) but
+# the orchestrator never actually creates the agent — the SSE error-body
+# failure mode this branch exists to catch. The verify GET must keep 404ing,
+# the run must FAIL with the documented message, and the misleading
+# "created" success line must NEVER be printed.
+: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+printf '{"agents":[{"id":"default"}]}' > "$AGENTS_JSON_FILE"   # profile absent
+: > "$CREATED_AGENTS_FILE"                                      # clear any stale marker
+: > "$AGENT_NEVER_APPEARS_FILE"                                 # POST accepted, agent never appears
+run real-estate "${STDIN[@]}" && bad "undetected creation failure refused" || ok "undetected creation failure refused"
+grep -q "error: agent 'real-estate' was not created (the orchestrator accepted the request but the agent does not exist" "$T/out.log" \
+  && ok "undetected creation failure prints the documented message" \
+  || bad "missing the documented undetected-creation-failure message"
+grep -q "created from manifest defaults" "$T/out.log" \
+  && bad "printed the misleading 'created' success line despite the agent never existing" \
+  || ok "did not print the 'created' line when verification never passed"
+[ -s "$SUB20_LOG" ] \
+  && bad "install work (SUB20) ran despite the agent never being verified" \
+  || ok "no install work ran before the undetected creation failure was caught"
+rm -f "$AGENT_NEVER_APPEARS_FILE"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

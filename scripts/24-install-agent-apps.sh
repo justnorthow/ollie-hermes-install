@@ -66,24 +66,53 @@ if [[ "${APP_COUNT}" -gt 1 ]]; then
 fi
 
 ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
+[[ -n "${ORCH_KEY}" ]] || {
+  echo "error: no ORCHESTRATOR_KEY in ${ORCH_ENV_FILE} — pass ORCH_ENV_FILE=<path> (on many boxes the orchestrator reads ~/.config/ollie-orchestrator/.env, not ~/hermes-stack/.env)" >&2
+  exit 1
+}
+
+# WARNINGS counts every non-fatal WARNING emitted below (missing SSO secret,
+# a BASE_URL skip/no-op, a failed dashboard recreate, ...). A non-zero count
+# suppresses the final ✓ banner (see the end of this script) — the run still
+# exits 0, but the operator gets an unmissable ⚠ instead of a false-positive
+# success line.
+WARNINGS=0
 
 # Preflight: the orchestrator 404s the dashboard-tile POST (stage 4/5, below)
 # if no agent with id == PROFILE exists yet — on a real box that kills the
 # run after the Supabase stack and app server are already built. Confirm (or
 # create) the agent FIRST so a missing agent fails before any install work.
 echo "==> agent-apps: preflight — agent '${PROFILE}' must exist"
-AGENTS_JSON="$(curl -fsS -H "Authorization: Bearer ${ORCH_KEY}" \
-  "http://127.0.0.1:${ORCH_PORT}/v1/agents" 2>/dev/null || true)"
+AGENTS_BODY="$(mktemp)"
+AGENTS_STATUS="$(curl -sS -o "${AGENTS_BODY}" -w '%{http_code}' \
+  -H "Authorization: Bearer ${ORCH_KEY}" \
+  "http://127.0.0.1:${ORCH_PORT}/v1/agents")" || true
+if [[ "${AGENTS_STATUS}" != "200" ]]; then
+  # A 401/500/connection-refused must NOT collapse into "agent absent" — that
+  # would misreport a broken orchestrator as a missing-agent condition and
+  # send the operator chasing the wrong fix.
+  echo "error: could not list agents from the orchestrator (http ${AGENTS_STATUS:-000}) — check ORCH_PORT/ORCH_ENV_FILE and that the orchestrator is reachable" >&2
+  rm -f "${AGENTS_BODY}"
+  exit 1
+fi
+AGENTS_JSON="$(cat "${AGENTS_BODY}")"
+rm -f "${AGENTS_BODY}"
 AGENT_PRESENT="$(printf '%s' "${AGENTS_JSON}" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
-    print(''); raise SystemExit(0)
-print('1' if any(a.get('id') == '${PROFILE}' for a in d.get('agents', [])) else '')
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+print('1' if any(a.get('id') == '${PROFILE}' for a in (d.get('agents') or [])) else '')
 ")"
 if [[ -z "${AGENT_PRESENT}" ]]; then
-  HAS_AGENT_BLOCK="$(python3 -c "import json; d=json.load(open('${MANIFEST}')); print('1' if 'agent' in d else '')")"
+  HAS_AGENT_BLOCK="$(python3 -c "
+import json
+d = json.load(open('${MANIFEST}'))
+print('1' if (d.get('agent') or {}) else '')
+")"
   if [[ -z "${HAS_AGENT_BLOCK}" ]]; then
     echo "error: no agent '${PROFILE}' on this box and the manifest declares no agent defaults — create it in Fleet's Agents tab first" >&2
     exit 1
@@ -91,7 +120,7 @@ if [[ -z "${AGENT_PRESENT}" ]]; then
   AGENT_PAYLOAD="$(python3 -c "
 import json
 d = json.load(open('${MANIFEST}'))
-a = d['agent']
+a = d.get('agent') or {}
 payload = {'name': d['profile'], 'authMethod': 'inherit'}
 if a.get('display_name'): payload['displayName'] = a['display_name']
 if a.get('subtitle'):     payload['subtitle']    = a['subtitle']
@@ -103,6 +132,25 @@ print(json.dumps(payload))
     -H 'Content-Type: application/json' \
     -d "${AGENT_PAYLOAD}" >/dev/null \
     || { echo "error: could not create agent '${PROFILE}'" >&2; exit 1; }
+  # The create endpoint returns 202 ACCEPTED with a streaming (SSE) body —
+  # creation failures show up as an `event: error` INSIDE that stream, not as
+  # an HTTP error status, so the POST exiting 0 proves nothing. Creation is
+  # asynchronous, so poll GET /v1/agents/<profile> (404 until it really
+  # exists) with a short bounded retry before trusting it.
+  AGENT_VERIFY_ATTEMPTS="${AGENT_VERIFY_ATTEMPTS:-10}"
+  AGENT_VERIFY_INTERVAL="${AGENT_VERIFY_INTERVAL:-2}"
+  AGENT_VERIFIED=""
+  for _ in $(seq 1 "${AGENT_VERIFY_ATTEMPTS}"); do
+    VERIFY_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer ${ORCH_KEY}" \
+      "http://127.0.0.1:${ORCH_PORT}/v1/agents/${PROFILE}")" || true
+    if [[ "${VERIFY_STATUS}" == "200" ]]; then AGENT_VERIFIED=1; break; fi
+    sleep "${AGENT_VERIFY_INTERVAL}"
+  done
+  if [[ -z "${AGENT_VERIFIED}" ]]; then
+    echo "error: agent '${PROFILE}' was not created (the orchestrator accepted the request but the agent does not exist — check the orchestrator logs)" >&2
+    exit 1
+  fi
   echo "    agent '${PROFILE}' created from manifest defaults (authMethod=inherit)"
 else
   echo "    agent '${PROFILE}' already exists — leaving it untouched"
@@ -174,7 +222,10 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   # expected pre-rollout — SSO just 503s gracefully — so warn and continue
   # rather than fail the whole app install over it.
   HIA_SSO_SECRET="$(grep -E '^HIA_SSO_SECRET=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
-  [[ -n "${HIA_SSO_SECRET}" ]] || echo "WARN: HIA_SSO_SECRET missing from ${ORCH_ENV_FILE} — SSO will 503 until the rollout sets it" >&2
+  if [[ -z "${HIA_SSO_SECRET}" ]]; then
+    echo "WARN: HIA_SSO_SECRET missing from ${ORCH_ENV_FILE} — SSO will 503 until the rollout sets it" >&2
+    WARNINGS=$((WARNINGS+1))
+  fi
   # SERVICE_ROLE_KEY: the app stack's supabase-app-env.sh renders this as part
   # of the all-or-nothing 6-secret bundle every time (Step 1 above), so its
   # absence here means that render never happened — a real misconfiguration,
@@ -235,13 +286,30 @@ print(json.dumps(payload))
     BASE_KEY="$(printf '%s' "${NAME}" | tr '[:lower:]-' '[:upper:]_')_BASE_URL"
     BASE_VAL="http://host.docker.internal:${APP_PORT}"
     STACK_DIR="$(dirname "${STACK_ENV_FILE}")"
-    if [[ ! -f "${STACK_DIR}/docker-compose.yml" ]]; then
+    STACK_COMPOSE="${STACK_DIR}/docker-compose.yml"
+    if [[ ! -f "${STACK_COMPOSE}" ]]; then
       # A missing docker-compose.yml here means the Hermes stack itself was
       # never installed at STACK_DIR (06-install-stack.sh creates it) — not a
       # transient gap to paper over. Fabricating the directory/.env would
       # write an orphan key nothing reads, then fail two steps later with a
       # generic compose error. Warn with the specific cause and skip instead.
       echo "    WARNING: no docker-compose.yml at ${STACK_DIR} — is the Hermes stack installed there? (run 06-install-stack.sh). Skipping ${BASE_KEY} update." >&2
+      WARNINGS=$((WARNINGS+1))
+    elif ! grep -qF "${BASE_KEY}" "${STACK_COMPOSE}" 2>/dev/null; then
+      # The dashboard only receives <NAME>_BASE_URL if docker-compose.yml
+      # references it under the dashboard service's `environment:` block. That
+      # passthrough was added 2026-07-23 — boxes installed before that (and
+      # this branch deliberately does not backfill them) have a compose file
+      # that never reads this var, so writing it to .env would be a silent
+      # no-op: the tile renders blank with no error anywhere.
+      echo "    WARNING: ${STACK_COMPOSE} does not pass ${BASE_KEY} to the dashboard — the tile will render blank. Re-run 06-install-stack.sh to refresh the stack compose file." >&2
+      WARNINGS=$((WARNINGS+1))
+    elif [[ ! -f "${STACK_ENV_FILE}" ]]; then
+      # docker-compose.yml can exist without .env (partial/broken install) —
+      # writing an orphan one-line .env here would then fail the recreate
+      # below with a generic compose error. Warn with the specific cause.
+      echo "    WARNING: no ${STACK_ENV_FILE} — is the Hermes stack installed there? (run 06-install-stack.sh). Skipping ${BASE_KEY} update." >&2
+      WARNINGS=$((WARNINGS+1))
     else
       if grep -q "^${BASE_KEY}=" "${STACK_ENV_FILE}" 2>/dev/null; then
         sed -i "s|^${BASE_KEY}=.*|${BASE_KEY}=${BASE_VAL}|" "${STACK_ENV_FILE}"
@@ -249,9 +317,9 @@ print(json.dumps(payload))
         echo "${BASE_KEY}=${BASE_VAL}" >> "${STACK_ENV_FILE}"
       fi
       echo "    ${BASE_KEY}=${BASE_VAL} (recreate the dashboard to apply)"
-      docker compose -f "${STACK_DIR}/docker-compose.yml" \
+      docker compose -f "${STACK_COMPOSE}" \
         --env-file "${STACK_ENV_FILE}" up -d dashboard >/dev/null 2>&1 \
-        || echo "    WARNING: could not recreate the dashboard — run it yourself to apply ${BASE_KEY}" >&2
+        || { echo "    WARNING: could not recreate the dashboard — run it yourself to apply ${BASE_KEY}" >&2; WARNINGS=$((WARNINGS+1)); }
     fi
   else
     echo "    (no tile in manifest — skipping)"
@@ -272,4 +340,8 @@ print(json.dumps(payload))
     echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}"
   fi
 done
-echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"
+if [[ "${WARNINGS}" -eq 0 ]]; then
+  echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"
+else
+  echo "⚠ agent-apps for profile '${PROFILE}' installed with ${WARNINGS} warning(s) — see above; the dashboard tile will not render until they are resolved"
+fi
