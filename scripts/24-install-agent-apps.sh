@@ -10,7 +10,11 @@
 # operator secrets arrive on stdin and flow through, never argv.
 # Input (stdin): APP_HOST, SB_HOST (req first run), IMAGE_TARBALL (req first
 #   run), GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT,
-#   APP_ENV_<KEY>... passthrough.
+#   STACK_ENV_FILE, APP_ENV_<KEY>... passthrough.
+# STACK_ENV_FILE (default ${HOME}/hermes-stack/.env) is the dashboard's OWN
+# stack env — distinct from ORCH_ENV_FILE, which may point elsewhere (e.g.
+# ~/.config/ollie-orchestrator/.env). Tile apps get <NAME>_BASE_URL written
+# here so generate-nginx.sh proxies /apps/<name>/ instead of rendering blank.
 # ORCH_ENV_FILE also supplies HIA_SSO_SECRET (dashboard SSO signing secret,
 # passed through as APP_ENV_HIA_SSO_SECRET; absent = WARN + continue, the
 # rollout runbook creates it) and ORCHESTRATOR_KEY (used both as
@@ -33,7 +37,7 @@ SUB23="${SUB23:-${SCRIPT_DIR}/23-install-app-server.sh}"
 STACKS="${STACKS_DIR:-$HOME/stacks}"
 
 APP_HOST="" ; SB_HOST="" ; IMAGE_TARBALL="" ; GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET=""
-ORCH_ENV_FILE="" ; ORCH_PORT=""
+ORCH_ENV_FILE="" ; ORCH_PORT="" ; STACK_ENV_FILE=""
 declare -a PASSTHRU=()
 while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
   case "${k}" in
@@ -44,11 +48,13 @@ while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
     GOOGLE_CLIENT_SECRET) GOOGLE_CLIENT_SECRET="${v}" ;;
     ORCH_ENV_FILE) ORCH_ENV_FILE="${v}" ;;
     ORCH_PORT) ORCH_PORT="${v}" ;;
+    STACK_ENV_FILE) STACK_ENV_FILE="${v}" ;;
     APP_ENV_*) PASSTHRU+=("${k}=${v}") ;;
   esac
 done
 ORCH_ENV_FILE="${ORCH_ENV_FILE:-$HOME/hermes-stack/.env}"
 ORCH_PORT="${ORCH_PORT:-9123}"
+STACK_ENV_FILE="${STACK_ENV_FILE:-$HOME/hermes-stack/.env}"
 
 mf() { # JQPATH — read a manifest value
   python3 -c "import json,sys; d=json.load(open('${MANIFEST}')); print(eval('d'+sys.argv[1]))" "$1"
@@ -222,6 +228,22 @@ print(json.dumps(payload))
       -d "${PAYLOAD}" >/dev/null \
       || { echo "error: dashboard tile registration failed for ${NAME}" >&2; exit 1; }
     echo "    tile registered (id=${NAME})"
+    # The dashboard reaches a loopback-only app server through the docker0
+    # gateway (host.docker.internal). generate-nginx.sh only adds the
+    # /apps/<name>/ proxy when <NAME>_BASE_URL is set — without this the tile
+    # registers fine and then renders blank.
+    BASE_KEY="$(printf '%s' "${NAME}" | tr '[:lower:]-' '[:upper:]_')_BASE_URL"
+    BASE_VAL="http://host.docker.internal:${APP_PORT}"
+    mkdir -p "$(dirname "${STACK_ENV_FILE}")"
+    if grep -q "^${BASE_KEY}=" "${STACK_ENV_FILE}" 2>/dev/null; then
+      sed -i "s|^${BASE_KEY}=.*|${BASE_KEY}=${BASE_VAL}|" "${STACK_ENV_FILE}"
+    else
+      echo "${BASE_KEY}=${BASE_VAL}" >> "${STACK_ENV_FILE}"
+    fi
+    echo "    ${BASE_KEY}=${BASE_VAL} (recreate the dashboard to apply)"
+    docker compose -f "$(dirname "${STACK_ENV_FILE}")/docker-compose.yml" \
+      --env-file "${STACK_ENV_FILE}" up -d dashboard >/dev/null 2>&1 \
+      || echo "    WARNING: could not recreate the dashboard — run it yourself to apply ${BASE_KEY}" >&2
   else
     echo "    (no tile in manifest — skipping)"
   fi

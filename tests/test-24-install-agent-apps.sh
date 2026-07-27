@@ -503,4 +503,18 @@ grep -q "error: dashboard tile registration failed" "$T/out.log" \
   || bad "tile registration POST failure error message"
 export CURL_FAIL_URL_PATTERN=""
 
+# 13. A tile app must get <NAME>_BASE_URL written into the STACK env (not the
+# orchestrator env), pointing at host.docker.internal:<app_port>.
+: > "$CURL_LOG"
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+cat > "$T/hermes-stack/.env" <<'EOF'
+ORCHESTRATOR_KEY=orch-key-1==
+HIA_SSO_SECRET=sso-secret-1
+POPBYS_BASE_URL=
+EOF
+run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/hermes-stack/.env"
+grep -q '^POPBYS_BASE_URL=http://host.docker.internal:8130$' "$T/hermes-stack/.env" \
+  && ok "POPBYS_BASE_URL written for the tile app" \
+  || bad "POPBYS_BASE_URL not set for the tile app"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
