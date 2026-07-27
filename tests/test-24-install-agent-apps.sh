@@ -750,4 +750,42 @@ grep -q "created from manifest defaults" "$T/out.log" \
   || ok "no install work ran before the undetected creation failure was caught"
 rm -f "$AGENT_NEVER_APPEARS_FILE"
 
+# 18. The app server must be told an INTERNAL Supabase URL (kong on the
+# docker0 gateway); the public hostname 403s from server-side callers on a
+# tunnel box. The PUBLIC APP_ENV_SUPABASE_URL must still be passed too (the
+# browser needs it), and 24 must print BOTH bridges (app + kong) in step 5/5.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+run real-estate "${STDIN[@]}"
+grep -q '^APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8030$' "$SUB23_LOG" \
+  && ok "24 passes APP_ENV_SUPABASE_INTERNAL_URL with the manifest kong port" \
+  || bad "APP_ENV_SUPABASE_INTERNAL_URL missing/wrong in the 23 stdin"
+
+grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" \
+  && ok "public APP_ENV_SUPABASE_URL still passed (browser needs it)" \
+  || bad "public APP_ENV_SUPABASE_URL was dropped"
+
+grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
+  && ok "24 prints BOTH bridges (app + kong)" \
+  || bad "24 did not print the kong bridge"
+
+# 19. Probe failure => loud warning naming the bridge, non-fatal to the run,
+# and the run ends on the warning banner with an EXACT count. Uses the
+# zero-warning STACK_ENV_FILE fixture test 13 already built ($T/stack-env/.env,
+# with its own docker-compose.yml that passes POPBYS_BASE_URL through) so the
+# probe's WARNINGS increment is the ONLY warning in play. Without this, the
+# default STACK_ENV_FILE (no docker-compose.yml there) already emits its own
+# "no docker-compose.yml" warning, so ⚠ would appear regardless of whether the
+# probe's own `WARNINGS=$((WARNINGS+1))` actually ran (e.g. if it were
+# silently swallowed by a stray subshell) — asserting the exact count pins that.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env" \
+  && ok "probe failure is non-fatal (run still exits 0)" || bad "probe failure aborted the run"
+grep -qE "WARNING:.*25-install-app-bridge.sh popbys-sb:8030" "$T/out.log" \
+  && ok "the warning names the missing bridge (anchored to the warning line itself, not the step-5/5 bridge print)" \
+  || bad "warning does not name the bridge"
+grep -qE "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$T/out.log" \
+  && ok "run ends on the warning banner with the exact count (probe's WARNINGS increment pinned)" \
+  || bad "banner missing or warning count wrong — the probe's WARNINGS increment may have been lost"
+export CURL_FAIL_URL_PATTERN=""
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
