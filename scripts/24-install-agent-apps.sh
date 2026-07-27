@@ -356,5 +356,5 @@ done
 if [[ "${WARNINGS}" -eq 0 ]]; then
   echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"
 else
-  echo "⚠ agent-apps for profile '${PROFILE}' installed with ${WARNINGS} warning(s) — see above; the dashboard tile will not render until they are resolved"
+  echo "⚠ agent-apps for profile '${PROFILE}' installed with ${WARNINGS} warning(s) — see above; the app is not fully functional until they are resolved"
 fi

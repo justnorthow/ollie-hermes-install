@@ -768,16 +768,24 @@ grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
   && ok "24 prints BOTH bridges (app + kong)" \
   || bad "24 did not print the kong bridge"
 
-# 19. Probe failure => loud warning naming the bridge, and the run ends on the
-# warning banner rather than a clean tick.
+# 19. Probe failure => loud warning naming the bridge, non-fatal to the run,
+# and the run ends on the warning banner with an EXACT count. Uses the
+# zero-warning STACK_ENV_FILE fixture test 13 already built ($T/stack-env/.env,
+# with its own docker-compose.yml that passes POPBYS_BASE_URL through) so the
+# probe's WARNINGS increment is the ONLY warning in play. Without this, the
+# default STACK_ENV_FILE (no docker-compose.yml there) already emits its own
+# "no docker-compose.yml" warning, so ⚠ would appear regardless of whether the
+# probe's own `WARNINGS=$((WARNINGS+1))` actually ran (e.g. if it were
+# silently swallowed by a stray subshell) — asserting the exact count pins that.
 : > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
-CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}"
-grep -qE "WARNING:.*(internal|bridge)" "$T/out.log" \
-  && ok "unreachable internal URL warns" || bad "no warning when the internal URL is unreachable"
-grep -q "popbys-sb:8030" "$T/out.log" \
-  && ok "the warning names the missing bridge" || bad "warning does not name the bridge"
-grep -q "⚠" "$T/out.log" \
-  && ok "run ends on the warning banner, not ✓" || bad "run still ended on the success banner"
+CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env" \
+  && ok "probe failure is non-fatal (run still exits 0)" || bad "probe failure aborted the run"
+grep -qE "WARNING:.*25-install-app-bridge.sh popbys-sb:8030" "$T/out.log" \
+  && ok "the warning names the missing bridge (anchored to the warning line itself, not the step-5/5 bridge print)" \
+  || bad "warning does not name the bridge"
+grep -qE "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$T/out.log" \
+  && ok "run ends on the warning banner with the exact count (probe's WARNINGS increment pinned)" \
+  || bad "banner missing or warning count wrong — the probe's WARNINGS increment may have been lost"
 export CURL_FAIL_URL_PATTERN=""
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
