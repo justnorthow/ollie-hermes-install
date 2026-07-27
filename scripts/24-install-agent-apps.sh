@@ -234,16 +234,25 @@ print(json.dumps(payload))
     # registers fine and then renders blank.
     BASE_KEY="$(printf '%s' "${NAME}" | tr '[:lower:]-' '[:upper:]_')_BASE_URL"
     BASE_VAL="http://host.docker.internal:${APP_PORT}"
-    mkdir -p "$(dirname "${STACK_ENV_FILE}")"
-    if grep -q "^${BASE_KEY}=" "${STACK_ENV_FILE}" 2>/dev/null; then
-      sed -i "s|^${BASE_KEY}=.*|${BASE_KEY}=${BASE_VAL}|" "${STACK_ENV_FILE}"
+    STACK_DIR="$(dirname "${STACK_ENV_FILE}")"
+    if [[ ! -f "${STACK_DIR}/docker-compose.yml" ]]; then
+      # A missing docker-compose.yml here means the Hermes stack itself was
+      # never installed at STACK_DIR (06-install-stack.sh creates it) — not a
+      # transient gap to paper over. Fabricating the directory/.env would
+      # write an orphan key nothing reads, then fail two steps later with a
+      # generic compose error. Warn with the specific cause and skip instead.
+      echo "    WARNING: no docker-compose.yml at ${STACK_DIR} — is the Hermes stack installed there? (run 06-install-stack.sh). Skipping ${BASE_KEY} update." >&2
     else
-      echo "${BASE_KEY}=${BASE_VAL}" >> "${STACK_ENV_FILE}"
+      if grep -q "^${BASE_KEY}=" "${STACK_ENV_FILE}" 2>/dev/null; then
+        sed -i "s|^${BASE_KEY}=.*|${BASE_KEY}=${BASE_VAL}|" "${STACK_ENV_FILE}"
+      else
+        echo "${BASE_KEY}=${BASE_VAL}" >> "${STACK_ENV_FILE}"
+      fi
+      echo "    ${BASE_KEY}=${BASE_VAL} (recreate the dashboard to apply)"
+      docker compose -f "${STACK_DIR}/docker-compose.yml" \
+        --env-file "${STACK_ENV_FILE}" up -d dashboard >/dev/null 2>&1 \
+        || echo "    WARNING: could not recreate the dashboard — run it yourself to apply ${BASE_KEY}" >&2
     fi
-    echo "    ${BASE_KEY}=${BASE_VAL} (recreate the dashboard to apply)"
-    docker compose -f "$(dirname "${STACK_ENV_FILE}")/docker-compose.yml" \
-      --env-file "${STACK_ENV_FILE}" up -d dashboard >/dev/null 2>&1 \
-      || echo "    WARNING: could not recreate the dashboard — run it yourself to apply ${BASE_KEY}" >&2
   else
     echo "    (no tile in manifest — skipping)"
   fi

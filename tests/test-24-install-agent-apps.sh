@@ -504,17 +504,47 @@ grep -q "error: dashboard tile registration failed" "$T/out.log" \
 export CURL_FAIL_URL_PATTERN=""
 
 # 13. A tile app must get <NAME>_BASE_URL written into the STACK env (not the
-# orchestrator env), pointing at host.docker.internal:<app_port>.
+# orchestrator env), pointing at host.docker.internal:<app_port>. STACK_ENV_FILE
+# and ORCH_ENV_FILE are DELIBERATELY DIFFERENT paths in this test — a
+# regression that swapped the two variables would be invisible if both pointed
+# at the same file. The stack dir needs its own docker-compose.yml fixture
+# (24's pre-check skips the whole block otherwise — see test 14).
 : > "$CURL_LOG"
 printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
 cat > "$T/hermes-stack/.env" <<'EOF'
 ORCHESTRATOR_KEY=orch-key-1==
 HIA_SSO_SECRET=sso-secret-1
+EOF
+mkdir -p "$T/stack-env"
+: > "$T/stack-env/docker-compose.yml"
+cat > "$T/stack-env/.env" <<'EOF'
 POPBYS_BASE_URL=
 EOF
-run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/hermes-stack/.env"
-grep -q '^POPBYS_BASE_URL=http://host.docker.internal:8130$' "$T/hermes-stack/.env" \
-  && ok "POPBYS_BASE_URL written for the tile app" \
-  || bad "POPBYS_BASE_URL not set for the tile app"
+run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env"
+grep -q '^POPBYS_BASE_URL=http://host.docker.internal:8130$' "$T/stack-env/.env" \
+  && ok "POPBYS_BASE_URL written to the STACK env" \
+  || bad "POPBYS_BASE_URL not set in the STACK env"
+grep -q '^POPBYS_BASE_URL=' "$T/hermes-stack/.env" \
+  && bad "POPBYS_BASE_URL leaked into the ORCHESTRATOR env (STACK_ENV_FILE/ORCH_ENV_FILE must stay separate)" \
+  || ok "POPBYS_BASE_URL absent from the ORCHESTRATOR env (STACK_ENV_FILE/ORCH_ENV_FILE stay separate)"
+
+# 14. skip path: STACK_ENV_FILE points somewhere with no docker-compose.yml —
+# i.e. the Hermes stack was never installed there (06-install-stack.sh creates
+# it). 24 must warn with the SPECIFIC cause and skip, never fabricating the
+# directory or writing an orphan .env that nothing reads.
+: > "$CURL_LOG"
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+NO_STACK_DIR="$T/no-such-stack"
+rm -rf "$NO_STACK_DIR"
+run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$NO_STACK_DIR/.env"
+grep -q "WARNING: no docker-compose.yml at .*no-such-stack" "$T/out.log" \
+  && ok "warns with the specific missing-stack cause" \
+  || bad "did not warn about the missing docker-compose.yml"
+grep -q "Skipping POPBYS_BASE_URL update" "$T/out.log" \
+  && ok "warning names the skipped key" \
+  || bad "warning does not name the skipped key"
+[ -e "$NO_STACK_DIR" ] \
+  && bad "fabricated the missing stack directory/.env instead of skipping" \
+  || ok "did not fabricate the missing stack directory/.env"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
