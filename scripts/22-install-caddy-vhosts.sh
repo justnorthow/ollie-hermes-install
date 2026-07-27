@@ -6,6 +6,14 @@
 #
 # Usage: 22-install-caddy-vhosts.sh sb-hia.jnow.io:8010 [sb-ns.jnow.io:8020 …]
 # Test hook: CADDY_RENDER_ONLY=1 OUT=<file> renders the Caddyfile and exits.
+#
+# CADDY-FRONTED BOXES ONLY. This script terminates TLS on the box: it installs
+# caddy, needs :80 AND :443 open, and relies on Let's Encrypt HTTP-01, which
+# requires the hostnames to resolve DIRECTLY to this box (Cloudflare DNS-only /
+# grey-cloud). On a cloudflared-tunnel box (orange-cloud, ":22 only") SKIP this
+# script entirely — it would open a firewall hole and stand up a second,
+# competing ingress. There, publish each host as a tunnel public hostname
+# instead:  <host> -> http://localhost:<port>.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

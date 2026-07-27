@@ -79,6 +79,15 @@ if [[ -z "$(app_server_env_val "${APP_DIR}/.env" APP_IMAGE)" ]]; then
   echo "error: no image (pass IMAGE_TARBALL or IMAGE_REF on first run)" >&2; exit 1
 fi
 
+# Re-export the RESOLVED image. render_app_server_env carries the previous
+# APP_IMAGE forward into .env on a re-run, but the unconditional `export`
+# above may have exported an empty value — and docker compose gives the shell
+# environment precedence over --env-file, so an empty export would win and
+# compose would report "service app has neither an image nor a build context".
+# Reading it back from .env keeps both sources in agreement.
+APP_IMAGE="$(app_server_env_val "${APP_DIR}/.env" APP_IMAGE)"
+export APP_IMAGE
+
 COMPOSE=(docker compose -p "${APP_NAME}-app" -f "${APP_DIR}/docker-compose.yml" --env-file "${APP_DIR}/.env")
 echo "==> app 3: docker compose up -d (project ${APP_NAME}-app)"
 "${COMPOSE[@]}" up -d
