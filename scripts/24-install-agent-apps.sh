@@ -260,6 +260,9 @@ print(json.dumps(payload))
   echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
   echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
   echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
+  echo "    NOTE: caddy-fronted boxes only. On a cloudflared box SKIP 22 and add tunnel"
+  echo "          public hostnames instead (${APP_HOST} -> http://localhost:${APP_PORT},"
+  echo "          ${SB_HOST} -> http://localhost:${KONG_PORT}). Do NOT open :80/:443."
   if [[ -n "${HAS_TILE}" ]]; then
     # Tile apps are embedded in the dashboard, which reaches the host via
     # host.docker.internal = 172.17.0.1 (the docker0 gateway) — unreachable
