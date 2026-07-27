@@ -25,6 +25,11 @@ export MANIFEST_DIR="$TW/apps"; mkdir -p "$MANIFEST_DIR"
 cat > "$MANIFEST_DIR/real-estate.json" <<'JSON'
 {
   "profile": "real-estate",
+  "agent": {
+    "display_name": "Emma Ellis",
+    "subtitle": "Real Estate Assistant",
+    "color": "#0e7c86"
+  },
   "apps": [
     {
       "name": "popbys",
@@ -171,6 +176,10 @@ chmod +x "$T/bin/docker"
 # on a non-2xx response) ----
 export CURL_LOG="$T/curl.log"
 export CURL_FAIL_FILE="$T/curl-fail"
+# ---- fixture agents list (drives the fake curl's GET /v1/agents response;
+# the preflight in 24 reads this to decide whether PROFILE already exists) ----
+export AGENTS_JSON_FILE="$T/agents.json"
+printf '{"agents":[{"id":"default","displayName":"Ollie"}]}' > "$AGENTS_JSON_FILE"
 cat > "$T/bin/curl" <<'SH'
 #!/usr/bin/env bash
 echo "curl $*" >> "${CURL_LOG}"
@@ -185,6 +194,14 @@ if [[ -f "${CURL_FAIL_FILE}" ]]; then
   echo "curl: fake failure" >&2
   exit 22
 fi
+# GET of the agents list -> emit the fixture body so 24's preflight can parse it.
+for a in "$@"; do
+  case "$a" in
+    */v1/agents)
+      cat "${AGENTS_JSON_FILE:-/dev/null}" 2>/dev/null || printf '{"agents":[]}'
+      exit 0 ;;
+  esac
+done
 exit 0
 SH
 export CURL="$T/bin/curl"
@@ -403,12 +420,56 @@ SUB20="$T/bin/sub20-nosrk.sh" run "real-estate" "${STDIN[@]}" && bad "missing SE
 grep -q "^error:.*SERVICE_ROLE_KEY" "$T/out.log" && ok "missing SERVICE_ROLE_KEY error message" || bad "missing SERVICE_ROLE_KEY error message"
 [ -s "$SUB23_LOG" ] && bad "no SUB23 invocation when SERVICE_ROLE_KEY missing" || ok "no SUB23 invocation when SERVICE_ROLE_KEY missing"
 
-# 10. registry POST failure (tile present in manifest, curl fails) -> exit 1
+# 10. total orchestrator-API outage -> exit 1. Note: since the preflight
+# (added for the auto-create-agent feature) is now the FIRST curl call 24
+# makes, a total curl outage is now caught THERE — before any stack/app work
+# — rather than at the later tile-registration POST. That's the intended
+# improvement (see the new preflight tests below): a broken orchestrator API
+# fails the run immediately instead of after minutes of install work.
 : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
 rm -f "$CURL_LOG.payload"; : > "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && bad "registry POST failure refused" || ok "registry POST failure refused"
-grep -q "tile registration failed" "$T/out.log" && ok "registry POST failure error message" || bad "registry POST failure error message"
+grep -q "error: could not create agent" "$T/out.log" && ok "registry POST failure error message (caught by the preflight)" || bad "registry POST failure error message (caught by the preflight)"
 rm -f "$CURL_FAIL_FILE"
+
+# 11. preflight: the agent named after the profile must exist before any
+# install work runs, else the tile-registration POST 404s at the very end of
+# a multi-minute install. 24 now GETs /v1/agents first and auto-creates from
+# the manifest's "agent" block (authMethod=inherit — no secrets invented).
+
+# Agent absent -> 24 creates it from the manifest block, with authMethod=inherit.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"default","displayName":"Ollie"}]}' > "$AGENTS_JSON_FILE"
+run real-estate "${STDIN[@]}"
+grep -q "curl .*-X POST http://127.0.0.1:9123/v1/agents " "$CURL_LOG" \
+  && ok "preflight POSTs /v1/agents when the agent is missing" \
+  || bad "preflight did not create the missing agent"
+grep -q '"authMethod": *"inherit"' "$CURL_LOG" \
+  && ok "agent created with authMethod=inherit" \
+  || bad "agent payload missing authMethod=inherit"
+grep -q '"name": *"real-estate"' "$CURL_LOG" \
+  && ok "agent id == profile" || bad "agent name is not the profile id"
+
+# Agent already present -> never touched.
+: > "$CURL_LOG"
+printf '{"agents":[{"id":"real-estate","displayName":"Renamed By Customer"}]}' > "$AGENTS_JSON_FILE"
+run real-estate "${STDIN[@]}"
+grep -q "curl .*-X POST http://127.0.0.1:9123/v1/agents " "$CURL_LOG" \
+  && bad "existing agent was modified (must be idempotent)" \
+  || ok "existing agent left untouched"
+
+# Manifest with no agent block + agent absent -> fatal, with the documented message.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"default"}]}' > "$AGENTS_JSON_FILE"
+python3 - "$MANIFEST_DIR/no-agent.json" <<'PY'
+import json, sys
+json.dump({"profile": "no-agent", "apps": [{"name": "x",
+  "stack": {"kong_port": 8031, "email_enabled": "false"},
+  "server": {"app_port": 8131, "container_port": 8080, "health_path": "/api/health"}}]},
+  open(sys.argv[1], "w"))
+PY
+run no-agent "${STDIN[@]}"
+grep -q "create it in Fleet's Agents tab first" "$T/out.log" \
+  && ok "missing agent + no manifest defaults fails with guidance" \
+  || bad "expected the documented no-agent error message"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

@@ -59,6 +59,49 @@ if [[ "${APP_COUNT}" -gt 1 ]]; then
   exit 1
 fi
 
+ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
+
+# Preflight: the orchestrator 404s the dashboard-tile POST (stage 4/5, below)
+# if no agent with id == PROFILE exists yet — on a real box that kills the
+# run after the Supabase stack and app server are already built. Confirm (or
+# create) the agent FIRST so a missing agent fails before any install work.
+echo "==> agent-apps: preflight — agent '${PROFILE}' must exist"
+AGENTS_JSON="$(curl -fsS -H "Authorization: Bearer ${ORCH_KEY}" \
+  "http://127.0.0.1:${ORCH_PORT}/v1/agents" 2>/dev/null || true)"
+AGENT_PRESENT="$(printf '%s' "${AGENTS_JSON}" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(''); raise SystemExit(0)
+print('1' if any(a.get('id') == '${PROFILE}' for a in d.get('agents', [])) else '')
+")"
+if [[ -z "${AGENT_PRESENT}" ]]; then
+  HAS_AGENT_BLOCK="$(python3 -c "import json; d=json.load(open('${MANIFEST}')); print('1' if 'agent' in d else '')")"
+  if [[ -z "${HAS_AGENT_BLOCK}" ]]; then
+    echo "error: no agent '${PROFILE}' on this box and the manifest declares no agent defaults — create it in Fleet's Agents tab first" >&2
+    exit 1
+  fi
+  AGENT_PAYLOAD="$(python3 -c "
+import json
+d = json.load(open('${MANIFEST}'))
+a = d['agent']
+payload = {'name': d['profile'], 'authMethod': 'inherit'}
+if a.get('display_name'): payload['displayName'] = a['display_name']
+if a.get('subtitle'):     payload['subtitle']    = a['subtitle']
+if a.get('color'):        payload['color']       = a['color']
+print(json.dumps(payload))
+")"
+  curl -fsS -X POST "http://127.0.0.1:${ORCH_PORT}/v1/agents" \
+    -H "Authorization: Bearer ${ORCH_KEY}" \
+    -H 'Content-Type: application/json' \
+    -d "${AGENT_PAYLOAD}" >/dev/null \
+    || { echo "error: could not create agent '${PROFILE}'" >&2; exit 1; }
+  echo "    agent '${PROFILE}' created from manifest defaults (authMethod=inherit)"
+else
+  echo "    agent '${PROFILE}' already exists — leaving it untouched"
+fi
+
 for i in $(seq 0 $((APP_COUNT-1))); do
   NAME="$(mf "['apps'][${i}]['name']")"
   KONG_PORT="$(mf "['apps'][${i}]['stack']['kong_port']")"
@@ -119,7 +162,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
 
   echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
   ANON="$(supabase_app_env_val "${SB_ENV}" ANON_KEY)"
-  ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
+  # ORCH_KEY was already resolved above (before the preflight).
   # Dashboard SSO: HIA_SSO_SECRET signs/validates the orchestrator's app-token
   # (verified by the app's own /sso endpoint). Absent on a fresh box is
   # expected pre-rollout — SSO just 503s gracefully — so warn and continue

@@ -1,5 +1,10 @@
 {
   "profile": "real-estate",
+  "agent": {
+    "display_name": "Emma Ellis",
+    "subtitle": "Real Estate Assistant",
+    "color": "#0e7c86"
+  },
   "apps": [
     {
       "name": "popbys",
