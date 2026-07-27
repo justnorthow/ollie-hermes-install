@@ -172,10 +172,15 @@ SH
 chmod +x "$T/bin/docker"
 
 # ---- fake curl: logs full argv + the -d payload; CURL_FAIL_FILE (if present)
-# simulates a registry POST failure (fake curl exits nonzero, like real curl -f
-# on a non-2xx response) ----
+# simulates a total curl outage (fake curl exits nonzero on EVERY call, like a
+# down/unreachable orchestrator). CURL_FAIL_URL_PATTERN (if present) is a
+# narrower, URL-selective failure: only argv tokens matching the pattern fail
+# — everything else behaves normally. This lets a test fail just the tile
+# -registration POST without also tripping the preflight's GET/POST, which
+# now runs earlier in the same invocation. ----
 export CURL_LOG="$T/curl.log"
 export CURL_FAIL_FILE="$T/curl-fail"
+export CURL_FAIL_URL_PATTERN=""
 # ---- fixture agents list (drives the fake curl's GET /v1/agents response;
 # the preflight in 24 reads this to decide whether PROFILE already exists) ----
 export AGENTS_JSON_FILE="$T/agents.json"
@@ -193,6 +198,14 @@ done
 if [[ -f "${CURL_FAIL_FILE}" ]]; then
   echo "curl: fake failure" >&2
   exit 22
+fi
+if [[ -n "${CURL_FAIL_URL_PATTERN:-}" ]]; then
+  for a in "$@"; do
+    if [[ "$a" == *"${CURL_FAIL_URL_PATTERN}"* ]]; then
+      echo "curl: fake failure (matched ${CURL_FAIL_URL_PATTERN})" >&2
+      exit 22
+    fi
+  done
 fi
 # GET of the agents list -> emit the fixture body so 24's preflight can parse it.
 for a in "$@"; do
@@ -471,5 +484,23 @@ run no-agent "${STDIN[@]}"
 grep -q "create it in Fleet's Agents tab first" "$T/out.log" \
   && ok "missing agent + no manifest defaults fails with guidance" \
   || bad "expected the documented no-agent error message"
+
+# 12. tile-registration POST failure, in isolation from the preflight: the
+# agent already exists (preflight no-ops, no POST at all -> nothing for a
+# blanket CURL_FAIL_FILE to catch early), and CURL_FAIL_URL_PATTERN fails
+# only the tile endpoint. This restores coverage for
+# scripts/24-install-agent-apps.sh's "dashboard tile registration failed"
+# error path, which a blanket curl outage can no longer reach now that the
+# preflight's own GET/POST runs first (see test 10 above).
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+rm -f "$CURL_LOG.payload"
+printf '{"agents":[{"id":"real-estate","displayName":"Emma Ellis"}]}' > "$AGENTS_JSON_FILE"
+rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
+export CURL_FAIL_URL_PATTERN="/v1/agents/real-estate/apps"
+run "real-estate" "${STDIN[@]}" && bad "tile registration POST failure refused" || ok "tile registration POST failure refused"
+grep -q "error: dashboard tile registration failed" "$T/out.log" \
+  && ok "tile registration POST failure error message" \
+  || bad "tile registration POST failure error message"
+export CURL_FAIL_URL_PATTERN=""
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
