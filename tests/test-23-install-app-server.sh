@@ -11,6 +11,30 @@ mkdir -p "$T/bin"
 
 cat > "$T/bin/docker" <<'SH'
 #!/usr/bin/env bash
+if [[ "$1" == "compose" ]]; then
+  # Mirror real docker compose: it gives the shell environment precedence
+  # over --env-file when interpolating ${APP_IMAGE} in the compose file, so
+  # simulate that here rather than blindly succeeding.
+  envfile=""; is_up=""; prev=""
+  for a in "$@"; do
+    [[ "${prev}" == "--env-file" ]] && envfile="${a}"
+    [[ "${a}" == "up" ]] && is_up=1
+    prev="${a}"
+  done
+  if [[ -n "${is_up}" ]]; then
+    if [[ -v APP_IMAGE ]]; then
+      img="${APP_IMAGE}"
+    else
+      img="$(grep -E '^APP_IMAGE=' "${envfile}" 2>/dev/null | tail -n1 | cut -d= -f2-)"
+    fi
+    if [[ -z "${img}" ]]; then
+      echo "docker compose: service \"app\" has neither an image nor a build context specified" >&2
+      exit 1
+    fi
+  fi
+  echo "docker $*" >> "${DOCKER_LOG}"
+  exit 0
+fi
 echo "docker $*" >> "${DOCKER_LOG}"
 case "$1" in
   load)
@@ -29,9 +53,6 @@ case "$1" in
   inspect)
     n="$(cat "${DOCKER_STATE}" 2>/dev/null || echo 1)"
     if [[ "$n" -ge 2 ]]; then echo "sha256:fake2"; else echo "sha256:fake1"; fi
-    ;;
-  compose)
-    : # logged above; nothing else to do
     ;;
 esac
 exit 0
@@ -106,5 +127,27 @@ echo "fail" > "$CURL_MODE"
 HEALTH_TRIES=2 HEALTH_SLEEP=0 run "APP_NAME=popbys" \
   >/dev/null 2>&1 && bad "failing health check exits 1" || ok "failing health check exits 1"
 rm -f "$CURL_MODE"
+
+# 8. re-run WITHOUT IMAGE_TARBALL must still resolve APP_IMAGE from .env.
+# Regression: an unconditional `export APP_IMAGE` (empty on re-run) used to
+# beat --env-file in compose interpolation -> "no image nor build context".
+test_rerun_without_tarball_keeps_image() {
+  : > "$DOCKER_LOG"
+  run "APP_NAME=popbys" "APP_PORT=8130" "IMAGE_TARBALL=$T/img.tar" \
+      "APP_ENV_SUPABASE_URL=https://sb.test" "APP_ENV_SUPABASE_ANON_KEY=anon" \
+      >/dev/null 2>&1
+  : > "$DOCKER_LOG"
+  run "APP_NAME=popbys" "APP_PORT=8130" \
+      "APP_ENV_SUPABASE_URL=https://sb.test" "APP_ENV_SUPABASE_ANON_KEY=anon" \
+      >/dev/null 2>&1
+  grep -q "docker compose .* up -d" "$DOCKER_LOG" \
+    && ok "re-run without tarball reaches compose up" \
+    || bad "re-run without tarball never reached compose up"
+  # The resolved image must be exported so shell env and --env-file agree.
+  grep -q '^APP_IMAGE=sha256:' "$HOME/apps/popbys/.env" \
+    && ok "APP_IMAGE preserved in .env across re-run" \
+    || bad "APP_IMAGE lost from .env on re-run"
+}
+test_rerun_without_tarball_keeps_image
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
