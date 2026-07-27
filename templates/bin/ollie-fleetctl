@@ -724,6 +724,38 @@ def _create_gateway_unit(profile):
     return port
 
 
+def _write_session_token_dropin(unit_name):
+    """Pin a dashboard unit's Hermes session token via a session-token.conf drop-in.
+
+    Mirrors scripts/lib/ensure-dashboard-token.sh, which only sweeps units that
+    already exist — a dashboard created later (here, or by the orchestrator's
+    install_dashboard_service) never got one. Hermes then randomizes its session
+    token on every start while the orchestrator keeps sending the single
+    HERMES_DASHBOARD_TOKEN, so every management call for that agent 401s
+    (/env, /model/options, config, skills, cron). Live-hit on Towns 2026-07-27.
+
+    Content must stay byte-identical to ensure-dashboard-token.sh — that script
+    and check-box-config.sh's done-done gate both compare it exactly.
+    """
+    token = (read_env_file(ORCH_ENV).get("HERMES_DASHBOARD_TOKEN") or "").strip()
+    if not token:
+        return False  # no token provisioned — leave behaviour unchanged
+    if any(ch.isspace() for ch in token):
+        # systemd splits Environment= at whitespace; a truncated token would
+        # reproduce the very 401 this exists to prevent.
+        raise RuntimeError("HERMES_DASHBOARD_TOKEN must not contain whitespace")
+    dropdir = os.path.join(SYSTEMD_USER_DIR, unit_name + ".d")
+    os.makedirs(dropdir, exist_ok=True)
+    conf = os.path.join(dropdir, "session-token.conf")
+    with open(conf, "w", newline="\n") as f:
+        f.write("[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=%s" % token)
+    try:
+        os.chmod(conf, 0o600)
+    except OSError:
+        pass
+    return True
+
+
 def _create_dashboard_unit(profile):
     """Create, enable and start a hermes-dashboard-{profile}.service. Returns port or None."""
     unit_name = "hermes-dashboard-%s.service" % profile
@@ -759,6 +791,10 @@ def _create_dashboard_unit(profile):
     os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
     with open(unit_path, "w") as f:
         f.write(unit)
+
+    # Pin the session token BEFORE daemon-reload, or this dashboard mints a
+    # random one each start and every management call against it 401s.
+    _write_session_token_dropin(unit_name)
 
     run_cmd(["systemctl", "--user", "daemon-reload"])
     rc, _, _ = run_cmd(["systemctl", "--user", "enable", "--now", unit_name], timeout=60)

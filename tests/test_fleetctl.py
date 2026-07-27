@@ -1539,5 +1539,55 @@ class TestUsersDelete(unittest.TestCase):
         self.assertNotIn({"userId": "u1", "deleted": True}, out)
 
 
+class TestSessionTokenDropin(unittest.TestCase):
+    """ensure-dashboard-token.sh only sweeps units that already exist, so a
+    dashboard unit created later got no drop-in, randomized its session token on
+    every start, and 401'd every management call the orchestrator proxied to it
+    (/env, /model/options, config, skills, cron). Live-hit on Towns 2026-07-27."""
+
+    def _setup(self, mod, d, token="tok123"):
+        orch = os.path.join(d, "orch.env")
+        with open(orch, "w") as f:
+            if token is not None:
+                f.write("HERMES_DASHBOARD_TOKEN=%s\n" % token)
+        units = os.path.join(d, "units")
+        os.makedirs(units)
+        mod.ORCH_ENV = orch
+        mod.SYSTEMD_USER_DIR = units
+        return units
+
+    def test_writes_byte_exact_dropin(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            units = self._setup(mod, d)
+            self.assertTrue(
+                mod._write_session_token_dropin("hermes-dashboard-emma.service"))
+            conf = (pathlib.Path(units) / "hermes-dashboard-emma.service.d"
+                    / "session-token.conf")
+            # Byte-exact against ensure-dashboard-token.sh and the
+            # check-box-config gate: no trailing newline, LF only.
+            self.assertEqual(
+                conf.read_bytes(),
+                b"[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=tok123")
+
+    def test_missing_token_is_noop(self):
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            units = self._setup(mod, d, token=None)
+            self.assertFalse(
+                mod._write_session_token_dropin("hermes-dashboard-emma.service"))
+            self.assertFalse(
+                os.path.exists(os.path.join(units, "hermes-dashboard-emma.service.d")))
+
+    def test_whitespace_token_raises(self):
+        # systemd splits Environment= at whitespace — a truncated token would
+        # reproduce the exact 401 this drop-in prevents.
+        mod = load_fleetctl()
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(mod, d, token="tok with space")
+            with self.assertRaises(RuntimeError):
+                mod._write_session_token_dropin("hermes-dashboard-emma.service")
+
+
 if __name__ == "__main__":
     unittest.main()
