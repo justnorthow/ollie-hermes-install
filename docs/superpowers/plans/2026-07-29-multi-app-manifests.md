@@ -298,14 +298,16 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Per-app `server.env`
+### Task 2: Per-app `server.env`, and a `NODE_OPTIONS` install default
 
 **Files:**
-- Modify: `scripts/24-install-agent-apps.sh` (the 23 call), `tests/test-24-install-agent-apps.sh`
+- Modify: `scripts/24-install-agent-apps.sh` (the 23 call), `scripts/23-install-app-server.sh` (the default), `tests/test-24-install-agent-apps.sh`, `tests/test-23-install-app-server.sh`
 
 **Interfaces:**
 - Consumes: Task 1's `TARGETS` loop.
-- Produces: manifest `apps[i].server.env` reaching the rendered app `.env` as `APP_ENV_<KEY>`.
+- Produces: manifest `apps[i].server.env` reaching the rendered app `.env` as `APP_ENV_<KEY>`; a `NODE_OPTIONS` default in 23 that both can override.
+
+**Precedence, lowest to highest: 23's default → manifest `server.env` → operator stdin `APP_ENV_<KEY>`.**
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -358,16 +360,53 @@ for k,v in (d['apps'][${i}]['server'].get('env') or {}).items(): print(f'{k}={v}
 
 Confirm by reading `lib/app-server-env.sh` that a later duplicate key wins in the rendered `.env`. **If it does not, the operator-override test M9 will fail — say so and stop rather than reordering silently**, because the fix would then be a change to 23's rendering, which is out of scope here.
 
+- [ ] **Step 3b: Add the install default in script 23**
+
+In `scripts/23-install-app-server.sh`, after the stdin parsing has collected the
+`APP_ENV_*` passthrough and before the `.env` is rendered, add the default:
+
+```bash
+# Every Node-based tile app needs a raised header ceiling or its SSO handoff
+# fails with HTTP 431 and the tile renders blank with no useful client-side
+# error. Node's default is 16KB; a real browser on these boxes sends more,
+# because SUPABASE_COOKIE_DOMAIN=.jnow.io sends every box's chunked session
+# cookie to every *.jnow.io host, and the SSO handoff adds a long JWT in the
+# query string. Pop Bys and HIA both broke at exactly this threshold on
+# 2026-07-29. A DEFAULT rather than a per-app setting, so a new app gets it
+# without anyone having to know it exists. Harmless on a non-Node image, which
+# simply ignores the variable. The manifest's server.env and operator stdin
+# both override it.
+if ! printf '%s\n' "${PASSTHRU[@]:-}" | grep -q '^APP_ENV_NODE_OPTIONS='; then
+  PASSTHRU=("APP_ENV_NODE_OPTIONS=--max-http-header-size=65536" "${PASSTHRU[@]:-}")
+fi
+```
+
+Read the surrounding code first and match how it names its passthrough array — the variable
+may not be called `PASSTHRU` in 23. Place the default FIRST in the array so a later
+duplicate (manifest or operator) wins, consistent with Step 3's ordering.
+
+Add to `tests/test-23-install-app-server.sh`:
+
+```bash
+# a Node app gets the raised header ceiling by default
+grep -q '^NODE_OPTIONS=--max-http-header-size=65536$' "$APPS_DIR/demo/.env" \
+  && ok "NODE_OPTIONS defaulted" || bad "NODE_OPTIONS defaulted"
+```
+
+and a second case passing `APP_ENV_NODE_OPTIONS=--max-http-header-size=99999` that asserts
+the override wins and the default is NOT also present. Read that file's existing fixture
+names and helpers before writing — reuse them rather than inventing new ones.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `bash tests/test-24-install-agent-apps.sh`
+Run: `bash tests/test-24-install-agent-apps.sh && bash tests/test-23-install-app-server.sh`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/24-install-agent-apps.sh tests/test-24-install-agent-apps.sh
-git commit -m "feat(agent-apps): per-app server.env in the manifest
+git add scripts/24-install-agent-apps.sh scripts/23-install-app-server.sh tests/test-24-install-agent-apps.sh tests/test-23-install-app-server.sh
+git commit -m "feat(agent-apps): per-app server.env, and default NODE_OPTIONS in 23
 
 Unlike hosts, static app env is app-specific rather than instance-specific,
 so it belongs in the manifest. Operator APP_ENV_<KEY> still wins.

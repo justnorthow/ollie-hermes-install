@@ -40,7 +40,7 @@ host and site URL. Removing the guard without fixing this is the trap in this wo
 
 - Automating script 24 during provisioning. Nothing calls it today — it is operator-run,
   and this change does not alter that.
-- Changing scripts 20, 23 or 25. This is 24 plus the manifest schema.
+- Changing scripts 20 or 25. This is 24, the manifest schema, and one default in 23.
 - Moving hosts into the manifest, for the reason above.
 
 ## Design
@@ -86,12 +86,37 @@ Per-app static environment, merged into the existing `APP_ENV_*` passthrough:
 
 Operator stdin `APP_ENV_<KEY>` wins on conflict. Absent `env` behaves exactly as today.
 
-This is where `NODE_OPTIONS` belongs: unlike hosts it is genuinely app-specific. Every
-Node-based tile app needs `--max-http-header-size=65536` or SSO fails with HTTP 431 and the
-tile renders blank — Node's default 16KB header limit is smaller than the dashboard's
-Supabase cookie jar plus the SSO token. Pop Bys has carried this value by hand since its
-install; `grep -rn NODE_OPTIONS scripts/ templates/` currently returns nothing, so the
-knowledge lives nowhere in the repo. It cost two debugging rounds on 2026-07-29.
+Operator stdin `APP_ENV_<KEY>` wins; a manifest `server.env` key overrides the install
+default below.
+
+### 3b. `NODE_OPTIONS` is an install DEFAULT, not a per-app field
+
+An earlier draft put `NODE_OPTIONS=--max-http-header-size=65536` only in each app's
+`server.env`. That is wrong, and a parallel session working on the cookie-domain problem
+made the better argument: it reproduces today's failure mode in a new location. Today the
+value is folklore applied by hand on the box; a per-app manifest field would make it
+folklore that every future manifest author has to remember. A default is correct-by-
+construction — a new Node app gets it without anyone knowing it exists.
+
+So `scripts/23-install-app-server.sh` sets `NODE_OPTIONS=--max-http-header-size=65536`
+when nothing else supplies one. Manifest `server.env` and operator stdin both still
+override it.
+
+Why it is needed at all: Node's default 16KB header limit is smaller than what a real
+browser sends to these boxes. Every box sets `SUPABASE_COOKIE_DOMAIN=.jnow.io`, so each
+box's chunked Supabase session cookie goes to every `*.jnow.io` host and the request grows
+with each box an operator has signed into. Pop Bys' SSO handoff broke at exactly that
+threshold on 2026-07-29, as did HIA's. Any ported app with an SSO handoff — a long JWT in
+the query string plus every cookie — hits it on first use.
+
+Setting it on a non-Node container is harmless (the variable is simply ignored), so the
+default costs nothing for a future app that is not Node.
+
+**This default is defensive, not a fix for the underlying cause.** The parallel session's
+cookie-isolation work would make session cookies host-only, which removes the pressure at
+source. If that lands, this default becomes belt-and-braces rather than load-bearing —
+still worth having, because it is free and because the failure it prevents (HTTP 431,
+blank tile, no useful client-side error) is expensive to diagnose.
 
 ### 4. App-bridge reachability check
 
