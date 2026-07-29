@@ -137,5 +137,21 @@ run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE3" >/dev/null 2>&1
 grep -q "^PGRST_DB_SCHEMAS=public,popbys$" "$CORE3/.env" \
   && ok "absent key is created with public first" || bad "absent key is created with public first"
 
+# regression: sed-special characters in PGRST_DB_SCHEMAS must not corrupt the file
+# (ampersand is a sed replacement metachar; backslash and pipe are also special)
+CORE4="$HOME/core4"; mkdir -p "$CORE4"
+cat > "$CORE4/.env" <<'ENVEOF'
+JWT_SECRET=ec3ca9f92d1de0f79e03897b324c9ec100ec647e
+ANON_KEY=stub-anon
+SERVICE_ROLE_KEY=stub-service
+POSTGRES_PASSWORD=pw
+PGRST_DB_SCHEMAS=public,weird&name
+ENVEOF
+touch "$CORE4/docker-compose.yml"
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE4" >/dev/null 2>&1
+grep -q "^PGRST_DB_SCHEMAS=public,weird&name,popbys$" "$CORE4/.env" \
+  && ok "sed-special chars in PGRST_DB_SCHEMAS do not corrupt the file" || bad "sed-special chars in PGRST_DB_SCHEMAS do not corrupt the file"
+
 echo; echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

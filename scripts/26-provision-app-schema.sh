@@ -95,7 +95,9 @@ if [[ ",${CUR}," == *",${APP_NAME},"* ]]; then
 else
   NEW="${CUR},${APP_NAME}"
   if grep -qE '^PGRST_DB_SCHEMAS=' "${CORE_DIR}/.env"; then
-    sed -i "s|^PGRST_DB_SCHEMAS=.*|PGRST_DB_SCHEMAS=${NEW}|" "${CORE_DIR}/.env"
+    # Escape sed special chars in the replacement value (backslash, ampersand, delimiter)
+    NEW_esc="$(printf '%s' "${NEW}" | sed -e 's/[\\&|]/\\&/g')"
+    sed -i "s|^PGRST_DB_SCHEMAS=.*|PGRST_DB_SCHEMAS=${NEW_esc}|" "${CORE_DIR}/.env"
   else
     echo "PGRST_DB_SCHEMAS=${NEW}" >> "${CORE_DIR}/.env"
   fi
