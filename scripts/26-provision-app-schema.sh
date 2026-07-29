@@ -112,7 +112,7 @@ echo "    rest recreated"
 # core JWT secret. PostgREST switches into that role, so the app has full rights
 # inside its own schema and none outside it. This REPLACES service_role for the
 # app — core's service_role key must never reach an app container.
-JWT_SECRET="$(grep -E '^JWT_SECRET=' "${CORE_DIR}/.env" | tail -1 | cut -d= -f2-)"
+JWT_SECRET="$(grep -E '^JWT_SECRET=' "${CORE_DIR}/.env" | tail -1 | cut -d= -f2- || true)"
 if [[ -z "${JWT_SECRET}" ]]; then
   echo "error: JWT_SECRET not found in ${CORE_DIR}/.env" >&2; exit 1
 fi

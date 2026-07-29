@@ -78,11 +78,16 @@ def build_bundle() -> dict:
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) == 3 and sys.argv[1] == "--mint-role":
+    if len(sys.argv) == 1:
+        print(json.dumps(build_bundle()))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--mint-role":
         # Secret on stdin, never argv — argv is world-readable via ps.
         secret = sys.stdin.read().strip()
         if not secret:
             sys.exit("error: JWT secret required on stdin")
         print(mint_hs256_jwt(secret, sys.argv[2]))
     else:
-        print(json.dumps(build_bundle()))
+        # Fail closed: anything that doesn't match a known shape must error,
+        # never silently fall through to build_bundle() — that would print a
+        # fresh service_role_key to a caller that asked for a scoped role.
+        sys.exit(f"error: unrecognised arguments: {sys.argv[1:]}")

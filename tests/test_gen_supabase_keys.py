@@ -89,3 +89,27 @@ def test_mint_role_mode_refuses_empty_secret():
         input="", capture_output=True, text=True,
     )
     assert r.returncode != 0
+
+
+def test_malformed_mint_role_fails_closed_without_leaking_bundle():
+    """Wrong argument count for --mint-role must error, not fall through to
+    build_bundle() and print a fresh service_role_key."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "gen-supabase-keys.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--mint-role"],
+        input="some-secret", capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "service_role_key" not in r.stdout
+
+
+def test_unknown_flag_fails_closed_without_leaking_bundle():
+    """An unrecognised first argument (e.g. a typo'd flag) must error, not
+    fall through to build_bundle() and print a fresh service_role_key."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "gen-supabase-keys.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--mint_role", "popbys_owner"],
+        input="some-secret", capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "service_role_key" not in r.stdout

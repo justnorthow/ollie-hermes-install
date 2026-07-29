@@ -166,6 +166,29 @@ tok = open(sys.argv[1]).read().strip().split(".")[1]
 tok += "=" * (-len(tok) % 4)
 sys.exit(0 if json.loads(base64.urlsafe_b64decode(tok))["role"] == "popbys_owner" else 1)
 PY
+# Exercises script 26's grep/cut extraction of JWT_SECRET and the stdin pipe
+# into gen-supabase-keys.py — not just mint_hs256_jwt() in isolation — against
+# the known secret already in $CORE/.env (JWT_SECRET=ec3ca9f92d1de0f79e03897b324c9ec100ec647e).
+python3 - "$KEYFILE" <<'PY' && ok "JWT signature verifies against the core secret" || bad "JWT signature verifies against the core secret"
+import base64, hashlib, hmac, sys
+secret = "ec3ca9f92d1de0f79e03897b324c9ec100ec647e"
+header, payload, sig = open(sys.argv[1]).read().strip().split(".")
+sig += "=" * (-len(sig) % 4)
+expected = hmac.new(secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+sys.exit(0 if base64.urlsafe_b64decode(sig) == expected else 1)
+PY
+
+# a missing JWT_SECRET fails with a message naming it, instead of aborting
+# silently under `set -euo pipefail` when the grep in the extraction finds
+# nothing (regression: line 90's PGRST_DB_SCHEMAS extraction already guards
+# with `|| true` for exactly this; the JWT_SECRET extraction must match it)
+CORE5="$HOME/core5"; mkdir -p "$CORE5"
+grep -v '^JWT_SECRET=' "$CORE/.env" > "$CORE5/.env"; touch "$CORE5/docker-compose.yml"
+reset_logs
+out="$(run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE5" 2>&1)"
+rc=$?
+[[ $rc -ne 0 ]] && ok "missing JWT_SECRET fails" || bad "missing JWT_SECRET fails"
+grep -qi "JWT_SECRET" <<<"$out" && ok "error names JWT_SECRET" || bad "error names JWT_SECRET"
 
 echo; echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]
