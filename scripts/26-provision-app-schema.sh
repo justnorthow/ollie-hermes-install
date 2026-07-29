@@ -37,6 +37,23 @@ if [[ ! -f "${CORE_DIR}/.env" || ! -f "${CORE_DIR}/docker-compose.yml" ]]; then
   exit 1
 fi
 
+# The stack's compose file must actually CONSUME PGRST_DB_SCHEMAS from .env.
+# `rest` has no env_file:, and `docker compose --env-file` only expands ${VAR}
+# references — it does not inject arbitrary .env keys into containers. So if
+# this compose file still carries the old hardcoded literal
+# `PGRST_DB_SCHEMAS=public`, everything below "succeeds" while PostgREST keeps
+# serving only `public` and the app's schema 404s. Fail closed instead, before
+# touching the database or the .env. 11-install-supabase.sh re-copies the
+# template on every deploy, so redeploying is what fixes it.
+if ! grep -qF 'PGRST_DB_SCHEMAS=${PGRST_DB_SCHEMAS' "${CORE_DIR}/docker-compose.yml"; then
+  echo "error: ${CORE_DIR}/docker-compose.yml does not reference \${PGRST_DB_SCHEMAS} —" \
+    "this stack's compose file predates the PGRST_DB_SCHEMAS parameterisation, so the" \
+    "rest container hardcodes its schema list and writing PGRST_DB_SCHEMAS to .env would" \
+    "be a silent no-op (the new schema would 404). Redeploy the stack first so the" \
+    "current template is staged: 11-install-supabase.sh --deploy" >&2
+  exit 1
+fi
+
 OWNER_ROLE="${APP_NAME}_owner"
 
 echo "==> provisioning schema '${APP_NAME}' (owner role '${OWNER_ROLE}') in ${CORE_DIR}"

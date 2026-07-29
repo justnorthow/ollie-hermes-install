@@ -19,6 +19,19 @@ SH
 chmod +x "$T/bin/docker"
 export PATH="$T/bin:$PATH" DOCKER_LOG="$T/docker.log" PSQL_SQL_LOG="$T/psql.sql"
 
+# A compose file that consumes PGRST_DB_SCHEMAS from .env, as the current
+# template does. The script REFUSES a compose file without that reference
+# (an empty `touch`ed file included) — a hardcoded literal there makes the
+# whole .env registration a silent no-op. Quoted heredoc: ${...} stays literal.
+write_compose() { # DIR
+  cat > "$1/docker-compose.yml" <<'YMLEOF'
+services:
+  rest:
+    environment:
+      - PGRST_DB_SCHEMAS=${PGRST_DB_SCHEMAS:-public}
+YMLEOF
+}
+
 # a core stack dir that looks real
 CORE="$HOME/supabase-stack"; mkdir -p "$CORE"
 cat > "$CORE/.env" <<'ENVEOF'
@@ -28,7 +41,7 @@ SERVICE_ROLE_KEY=stub-service
 POSTGRES_PASSWORD=pw
 PGRST_DB_SCHEMAS=public
 ENVEOF
-touch "$CORE/docker-compose.yml"
+write_compose "$CORE"
 
 run() { printf '%s\n' "$@" | bash "${DIR}/scripts/26-provision-app-schema.sh"; }
 reset_logs() { : > "$DOCKER_LOG"; : > "$PSQL_SQL_LOG"; }
@@ -108,7 +121,7 @@ SERVICE_ROLE_KEY=stub-service
 POSTGRES_PASSWORD=pw
 PGRST_DB_SCHEMAS=public
 ENVEOF
-touch "$CORE2/docker-compose.yml"
+write_compose "$CORE2"
 
 reset_logs
 run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE2" >/dev/null 2>&1
@@ -131,7 +144,7 @@ grep -q "^PGRST_DB_SCHEMAS=public,popbys,hia$" "$CORE2/.env" \
 
 # a missing key is created rather than silently skipped
 CORE3="$HOME/core3"; mkdir -p "$CORE3"
-grep -v '^PGRST_DB_SCHEMAS=' "$CORE/.env" > "$CORE3/.env"; touch "$CORE3/docker-compose.yml"
+grep -v '^PGRST_DB_SCHEMAS=' "$CORE/.env" > "$CORE3/.env"; write_compose "$CORE3"
 reset_logs
 run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE3" >/dev/null 2>&1
 grep -q "^PGRST_DB_SCHEMAS=public,popbys$" "$CORE3/.env" \
@@ -147,11 +160,40 @@ SERVICE_ROLE_KEY=stub-service
 POSTGRES_PASSWORD=pw
 PGRST_DB_SCHEMAS=public,weird&name
 ENVEOF
-touch "$CORE4/docker-compose.yml"
+write_compose "$CORE4"
 reset_logs
 run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE4" >/dev/null 2>&1
 grep -q "^PGRST_DB_SCHEMAS=public,weird&name,popbys$" "$CORE4/.env" \
   && ok "sed-special chars in PGRST_DB_SCHEMAS do not corrupt the file" || bad "sed-special chars in PGRST_DB_SCHEMAS do not corrupt the file"
+
+# a compose file that hardcodes the schema list must be REFUSED, not "succeeded"
+# past. `rest` has no env_file:, and --env-file only expands ${VAR} references,
+# so with the old literal the .env write reaches nothing and the schema 404s.
+CORE6="$HOME/core6"; mkdir -p "$CORE6"
+cat > "$CORE6/.env" <<'ENVEOF'
+JWT_SECRET=ec3ca9f92d1de0f79e03897b324c9ec100ec647e
+ANON_KEY=stub-anon
+SERVICE_ROLE_KEY=stub-service
+POSTGRES_PASSWORD=pw
+PGRST_DB_SCHEMAS=public
+ENVEOF
+cat > "$CORE6/docker-compose.yml" <<'YMLEOF'
+services:
+  rest:
+    environment:
+      - PGRST_DB_SCHEMAS=public
+YMLEOF
+reset_logs
+out="$(run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE6" 2>&1)" \
+  && bad "unparameterised compose file refused" || ok "unparameterised compose file refused"
+# `error.*` and not a bare PGRST_DB_SCHEMAS match: the happy-path progress line
+# also prints the key name, so a bare grep would pass with the guard removed.
+grep -qE "error.*PGRST_DB_SCHEMAS" <<<"$out" \
+  && ok "error names PGRST_DB_SCHEMAS" || bad "error names PGRST_DB_SCHEMAS"
+grep -q "^PGRST_DB_SCHEMAS=public$" "$CORE6/.env" \
+  && ok "refusal leaves .env unmodified" || bad "refusal leaves .env unmodified"
+[[ ! -s "$PSQL_SQL_LOG" ]] \
+  && ok "refusal happens before any SQL is issued" || bad "refusal happens before any SQL is issued"
 
 # ---- owner JWT ----
 reset_logs
@@ -183,7 +225,7 @@ PY
 # nothing (regression: line 90's PGRST_DB_SCHEMAS extraction already guards
 # with `|| true` for exactly this; the JWT_SECRET extraction must match it)
 CORE5="$HOME/core5"; mkdir -p "$CORE5"
-grep -v '^JWT_SECRET=' "$CORE/.env" > "$CORE5/.env"; touch "$CORE5/docker-compose.yml"
+grep -v '^JWT_SECRET=' "$CORE/.env" > "$CORE5/.env"; write_compose "$CORE5"
 reset_logs
 out="$(run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE5" 2>&1)"
 rc=$?

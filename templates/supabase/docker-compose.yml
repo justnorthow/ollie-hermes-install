@@ -72,7 +72,12 @@ services:
         condition: service_healthy
     environment:
       - PGRST_DB_URI=postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
-      - PGRST_DB_SCHEMAS=public
+      # Substituted from .env so 26-provision-app-schema.sh can register an
+      # app schema. MUST keep the `:-public` default: an existing stack whose
+      # .env predates the key has to keep serving `public`, not an empty list.
+      # `rest` has no env_file, so a bare literal here would make the .env
+      # write a no-op and every consolidated app's schema would 404.
+      - PGRST_DB_SCHEMAS=${PGRST_DB_SCHEMAS:-public}
       - PGRST_DB_ANON_ROLE=anon
       - PGRST_JWT_SECRET=${JWT_JWKS}
       - PGRST_DB_USE_LEGACY_GUCS=false
