@@ -49,6 +49,26 @@ One Supabase. Each app owns a schema (`popbys`, `hia`, `newsletter`), one shared
 - **PostgREST** exposes schemas via `PGRST_DB_SCHEMAS=public,popbys,hia,…`; clients
   select with `createClient(url, key, { db: { schema: '<name>' } })`. Adding an app
   appends a schema and restarts `rest` — a brief blip.
+
+  ⚠️ **`PGRST_DB_SCHEMAS` is a compose-level variable, not merely an `.env` key**, and
+  stage 1 shipped two Criticals by assuming otherwise. Both are now fixed; recorded so
+  the assumption is not made again:
+  1. `templates/supabase/docker-compose.yml` originally hardcoded
+     `- PGRST_DB_SCHEMAS=public` as a **literal**, the `rest` service has no
+     `env_file:`, and `docker compose --env-file` only expands `${VAR}` references — it
+     does not inject arbitrary `.env` keys into containers. Writing the key to `.env`
+     therefore did nothing. The template must read `${PGRST_DB_SCHEMAS:-public}` (the
+     `:-` form, so an unset *or empty* value still yields `public`), and
+     `26-provision-app-schema.sh` refuses to run against a compose file lacking that
+     reference.
+  2. `lib/supabase-stack-env.sh` rewrites `.env` wholesale on every deploy and omitted
+     the key from its carry-forward list, so a routine image-pin bump would have reset
+     every registered schema and killed all apps' REST APIs at once, silently. It is
+     now carried forward — deliberately **outside** that function's all-or-nothing
+     secret integrity count, since a stack may legitimately not have it yet.
+
+  The lesson generalises: `docker inspect <container>` shows the *effective* environment,
+  which may come from a compose literal rather than `.env`. Confirm which.
 - **Migrations** move into the app's schema, tracked in `<name>._migrations`
   (replacing the per-stack `public._app_migrations`), run as `<name>_owner`.
 - **Storage** — one storage service, per-app buckets.
@@ -66,8 +86,18 @@ One Supabase. Each app owns a schema (`popbys`, `hia`, `newsletter`), one shared
   consolidation improves
 - its own storage buckets only
 
-and explicitly **not**: anything on `public`, anything on another app's schema,
-`storage.objects` beyond its own buckets, or `TRIGGER` on `auth.users`.
+and explicitly **not**: any *table* privilege in `public`, anything on another app's
+schema, `storage.objects` beyond its own buckets, or `TRIGGER` on `auth.users`.
+
+One precision, because the earlier "nothing on `public`" wording was wrong: every role
+inherits ambient `USAGE` on schema `public` from the `PUBLIC` pseudo-role, and
+`REVOKE ... FROM <role>` cannot remove it — that only strips ACL entries naming the role.
+Verified on PG 15.8: `pg_namespace.nspacl` for `public` carries `=U/pg_database_owner`
+(empty grantee = `PUBLIC`), and a grantless role reports `has_schema_privilege(…,'public','USAGE') = true`.
+That ambient `USAGE` is **name resolution only** — the same grantless role reports
+`false` for `SELECT` on `public.user_roles`, `false` for `SELECT` on `auth.users`, and
+`false` for `CREATE` on `public`. So the isolation holds; it comes from never granting
+table privileges, not from a revoke.
 
 `GRANT <name>_owner TO authenticator` lets PostgREST switch into it.
 
@@ -86,11 +116,42 @@ bypasses RLS by construction and reaches every schema plus `auth`. Scoping only 
 *migration* role while the app still runs as `service_role` would take each app's
 blast radius from "its own stack" to "the whole box" — strictly worse than today.
 Routing the app through `<name>_owner` makes cross-schema access structurally
-impossible rather than policy-dependent, and preserves "bypass RLS within my own
-schema".
+impossible **for that role**, and preserves "bypass RLS within my own schema".
 
 It also ends up better than today: after the SSO collapse no app holds a credential
 that can reach `auth.users` at all.
+
+#### The isolation claim does NOT extend to the shared anon key
+
+An earlier draft of this section claimed consolidation makes cross-schema access
+"structurally impossible rather than policy-dependent" without qualification. Stage 1's
+final review disproved the general form, and the correction matters:
+
+Provisioning grants `anon`, `authenticated` and `service_role` `USAGE` on every app
+schema plus DML on its future tables — they have to, because those are the roles that
+serve user-context requests. But **every app is handed the same core `ANON_KEY`.** So
+app A's browser bundle carries a key that can reach app B's schema.
+
+Under per-app stacks that was structurally impossible. After consolidation it is
+policy-dependent, and the policy is RLS. Two roles, two different guarantees:
+
+| Role | Cross-schema reach | Enforced by |
+|---|---|---|
+| `<name>_owner` (the app's server key) | none | grants — structural |
+| `anon` / `authenticated` (shared key) | every app schema | **RLS — policy** |
+
+**Therefore RLS is mandatory, not advisory, on every table in every app schema.** This
+gate must pass per app before its data moves, and again whenever a migration adds a
+table:
+
+```sql
+SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = '<name>' AND c.relkind = 'r' AND NOT c.relrowsecurity;
+```
+
+Any row returned is a table readable by every app on the box via the shared anon key.
+An empty result is the gate. A future hardening option, out of scope here, is a
+per-app anon key carrying a schema-scoped role — that would make this structural too.
 
 ### Runtime grant surface
 
