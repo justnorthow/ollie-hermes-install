@@ -97,8 +97,26 @@ grep -q "ALTER DEFAULT PRIVILEGES FOR ROLE popbys_owner IN SCHEMA popbys" "$PSQL
 # NEGATIVE — these are the isolation guarantees the design rests on.
 grep -qiE "GRANT .* ON SCHEMA public TO popbys_owner" "$PSQL_SQL_LOG" \
   && bad "must NOT grant on public" || ok "must NOT grant on public"
-grep -qi "TRIGGER" "$PSQL_SQL_LOG" \
-  && bad "must NOT grant TRIGGER on auth.users" || ok "must NOT grant TRIGGER on auth.users"
+# Closed whitelist over every statement that names the `auth` schema. A
+# case-insensitive grep for "TRIGGER" was wrong in both directions: it would
+# PASS on `GRANT ALL ON auth.users` (which implies TRIGGER), and it would
+# false-fail the moment a legitimate CREATE TRIGGER appears in an app's own
+# schema. Asserting the exact set instead catches GRANT ALL, catches any added
+# privilege, and stops depending on the word "trigger" appearing anywhere.
+# \bauth\b matches `auth.users` / `SCHEMA auth` but not authenticator/authenticated;
+# -- comment lines are stripped first.
+AUTH_STMTS="$(grep -vE '^[[:space:]]*--' "$PSQL_SQL_LOG" | grep -E '\bauth\b' \
+  | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sort -u)"
+# sorted, since AUTH_STMTS is `sort -u`d
+AUTH_STMTS_EXPECTED='GRANT REFERENCES ON TABLE auth.users TO popbys_owner;
+GRANT USAGE ON SCHEMA auth TO popbys_owner;'
+if [[ "$AUTH_STMTS" == "$AUTH_STMTS_EXPECTED" ]]; then
+  ok "auth statements are exactly USAGE ON SCHEMA auth + REFERENCES ON auth.users"
+else
+  bad "auth statements are exactly USAGE ON SCHEMA auth + REFERENCES ON auth.users"
+  echo "     got:      ${AUTH_STMTS//$'\n'/ | }"
+  echo "     expected: ${AUTH_STMTS_EXPECTED//$'\n'/ | }"
+fi
 grep -q "REVOKE ALL ON SCHEMA public FROM popbys_owner" "$PSQL_SQL_LOG" \
   && ok "explicitly revokes public" || bad "explicitly revokes public"
 
