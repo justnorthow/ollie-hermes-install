@@ -59,5 +59,42 @@ reset_logs
 run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE" >/dev/null 2>&1 \
   && ok "happy path exits 0" || bad "happy path exits 0"
 
+# ---- SQL provisioning ----
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE" >/dev/null 2>&1
+
+# positive: the things that must exist
+grep -q "CREATE SCHEMA IF NOT EXISTS popbys" "$PSQL_SQL_LOG" \
+  && ok "creates the schema" || bad "creates the schema"
+grep -q "CREATE ROLE popbys_owner" "$PSQL_SQL_LOG" \
+  && ok "creates the owner role" || bad "creates the owner role"
+grep -q "ALTER SCHEMA popbys OWNER TO popbys_owner" "$PSQL_SQL_LOG" \
+  && ok "role owns the schema" || bad "role owns the schema"
+grep -qE "GRANT USAGE ON SCHEMA popbys TO anon, authenticated, service_role" "$PSQL_SQL_LOG" \
+  && ok "PostgREST roles can reach the schema" || bad "PostgREST roles can reach the schema"
+grep -q "GRANT popbys_owner TO authenticator" "$PSQL_SQL_LOG" \
+  && ok "authenticator can switch into the owner role" || bad "authenticator can switch into the owner role"
+grep -q "GRANT USAGE ON SCHEMA auth TO popbys_owner" "$PSQL_SQL_LOG" \
+  && ok "owner may reference the auth schema" || bad "owner may reference the auth schema"
+grep -q "GRANT REFERENCES ON TABLE auth.users TO popbys_owner" "$PSQL_SQL_LOG" \
+  && ok "owner may FK to auth.users" || bad "owner may FK to auth.users"
+grep -q "ALTER DEFAULT PRIVILEGES FOR ROLE popbys_owner IN SCHEMA popbys" "$PSQL_SQL_LOG" \
+  && ok "future tables are reachable by PostgREST roles" || bad "future tables are reachable by PostgREST roles"
+
+# NEGATIVE — these are the isolation guarantees the design rests on.
+grep -qiE "GRANT .* ON SCHEMA public TO popbys_owner" "$PSQL_SQL_LOG" \
+  && bad "must NOT grant on public" || ok "must NOT grant on public"
+grep -qi "TRIGGER" "$PSQL_SQL_LOG" \
+  && bad "must NOT grant TRIGGER on auth.users" || ok "must NOT grant TRIGGER on auth.users"
+grep -q "REVOKE ALL ON SCHEMA public FROM popbys_owner" "$PSQL_SQL_LOG" \
+  && ok "explicitly revokes public" || bad "explicitly revokes public"
+
+# idempotency: a second run must not error and must not double-create
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE" >/dev/null 2>&1 \
+  && ok "re-run exits 0" || bad "re-run exits 0"
+[[ "$(grep -c 'CREATE SCHEMA IF NOT EXISTS popbys' "$PSQL_SQL_LOG")" == "1" ]] \
+  && ok "re-run issues the schema create once" || bad "re-run issues the schema create once"
+
 echo; echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

@@ -40,3 +40,43 @@ fi
 OWNER_ROLE="${APP_NAME}_owner"
 
 echo "==> provisioning schema '${APP_NAME}' (owner role '${OWNER_ROLE}') in ${CORE_DIR}"
+
+core_psql() {  # SQL on stdin
+  docker compose -f "${CORE_DIR}/docker-compose.yml" --env-file "${CORE_DIR}/.env" \
+    exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d postgres
+}
+
+core_psql <<SQL
+-- Owner role. CREATE ROLE has no IF NOT EXISTS, so guard it.
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${OWNER_ROLE}') THEN
+    CREATE ROLE ${OWNER_ROLE} NOLOGIN;
+  END IF;
+END
+\$\$;
+
+CREATE SCHEMA IF NOT EXISTS ${APP_NAME} AUTHORIZATION ${OWNER_ROLE};
+ALTER SCHEMA ${APP_NAME} OWNER TO ${OWNER_ROLE};
+
+-- PostgREST's roles must reach the schema; the owner is switched into by
+-- authenticator when the app presents its <name>_owner JWT.
+GRANT USAGE ON SCHEMA ${APP_NAME} TO anon, authenticated, service_role;
+GRANT ${OWNER_ROLE} TO authenticator;
+
+-- Narrow, unavoidable cross-schema need: app rows FK to identity.
+-- USAGE + REFERENCES only. No other privilege grants.
+GRANT USAGE ON SCHEMA auth TO ${OWNER_ROLE};
+GRANT REFERENCES ON TABLE auth.users TO ${OWNER_ROLE};
+
+-- Tables the owner creates later must be reachable by the PostgREST roles.
+ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER_ROLE} IN SCHEMA ${APP_NAME}
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER_ROLE} IN SCHEMA ${APP_NAME}
+  GRANT USAGE, SELECT ON SEQUENCES TO anon, authenticated, service_role;
+
+-- Isolation guarantee: the owner has no business in public.
+REVOKE ALL ON SCHEMA public FROM ${OWNER_ROLE};
+SQL
+
+echo "    schema + owner role provisioned"
