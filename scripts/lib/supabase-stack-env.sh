@@ -60,6 +60,16 @@ render_supabase_stack_env() { # OUT OLD
   jwks="$(_sb_keep JWT_JWKS "$old" jwt_jwks "$bundle")"
   anon="$(_sb_keep ANON_KEY "$old" anon_key "$bundle")"
   srk="$(_sb_keep SERVICE_ROLE_KEY "$old" service_role_key "$bundle")"
+  # Registered PostgREST schemas. Carried forward INDEPENDENTLY of the 6-secret
+  # all-or-nothing check above: this is not a secret, nothing is cryptographically
+  # linked to it, and a stack legitimately may not have it yet (26-provision-app-schema.sh
+  # adds it later), so it must never join that integrity count. It MUST be carried
+  # forward, though — without it a routine image-pin bump would drop every app
+  # schema registered by script 26 and every consolidated app's REST API would
+  # 404 at once, with no error at deploy time. Absent => the shipped default.
+  local pgrst_schemas
+  pgrst_schemas="$(supabase_stack_env_val "$old" PGRST_DB_SCHEMAS)"
+  [ -n "$pgrst_schemas" ] || pgrst_schemas="public"
   # Operator-supplied: exported value wins, else carried forward.
   local url site_url gid gsec
   url="${SUPABASE_PUBLIC_URL:-$(supabase_stack_env_val "$old" SUPABASE_PUBLIC_URL)}"
@@ -75,6 +85,10 @@ GOTRUE_JWT_KEYS=${gkeys}
 JWT_JWKS=${jwks}
 ANON_KEY=${anon}
 SERVICE_ROLE_KEY=${srk}
+# Schemas PostgREST serves — consumed by the rest service as
+# \${PGRST_DB_SCHEMAS:-public}. Appended to by 26-provision-app-schema.sh;
+# never edit by hand, and never drop entries: each one is a live app's API.
+PGRST_DB_SCHEMAS=${pgrst_schemas}
 SUPABASE_PUBLIC_URL=${url}
 # Browser-facing dashboard origin — GoTrue Site URL + redirect allow-list scope.
 SITE_URL=${site_url}
