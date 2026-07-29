@@ -75,7 +75,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER_ROLE} IN SCHEMA ${APP_NAME}
 ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER_ROLE} IN SCHEMA ${APP_NAME}
   GRANT USAGE, SELECT ON SEQUENCES TO anon, authenticated, service_role;
 
--- Isolation guarantee: the owner has no business in public.
+-- Defence in depth: strip any explicit grant this role may have received on public.
+-- NOTE: This does NOT remove the ambient USAGE every role inherits from the PUBLIC
+-- pseudo-role (verified on PG15.8). That ambient USAGE provides name resolution only,
+-- not table access. Real isolation is enforced by never granting this role table
+-- privileges in public.
 REVOKE ALL ON SCHEMA public FROM ${OWNER_ROLE};
 SQL
 
