@@ -96,5 +96,46 @@ run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE" >/dev/null 2>&1 \
 [[ "$(grep -c 'CREATE SCHEMA IF NOT EXISTS popbys' "$PSQL_SQL_LOG")" == "1" ]] \
   && ok "re-run issues the schema create once" || bad "re-run issues the schema create once"
 
+# ---- PostgREST registration ----
+# Write CORE2 fresh rather than copying $CORE/.env — earlier happy-path runs
+# already appended popbys to $CORE's PGRST_DB_SCHEMAS, so a copy would start
+# from "public,popbys" and these assertions would be testing the wrong thing.
+CORE2="$HOME/core2"; mkdir -p "$CORE2"
+cat > "$CORE2/.env" <<'ENVEOF'
+JWT_SECRET=ec3ca9f92d1de0f79e03897b324c9ec100ec647e
+ANON_KEY=stub-anon
+SERVICE_ROLE_KEY=stub-service
+POSTGRES_PASSWORD=pw
+PGRST_DB_SCHEMAS=public
+ENVEOF
+touch "$CORE2/docker-compose.yml"
+
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE2" >/dev/null 2>&1
+grep -q "^PGRST_DB_SCHEMAS=public,popbys$" "$CORE2/.env" \
+  && ok "schema appended to PGRST_DB_SCHEMAS" || bad "schema appended to PGRST_DB_SCHEMAS"
+grep -q "force-recreate rest" "$DOCKER_LOG" \
+  && ok "rest recreated so the schema is served" || bad "rest recreated so the schema is served"
+
+# idempotent: re-run must not append twice
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE2" >/dev/null 2>&1
+grep -q "^PGRST_DB_SCHEMAS=public,popbys$" "$CORE2/.env" \
+  && ok "re-run leaves PGRST_DB_SCHEMAS unchanged" || bad "re-run leaves PGRST_DB_SCHEMAS unchanged"
+
+# a second app appends rather than replaces
+reset_logs
+run "APP_NAME=hia" "CORE_STACK_DIR=$CORE2" >/dev/null 2>&1
+grep -q "^PGRST_DB_SCHEMAS=public,popbys,hia$" "$CORE2/.env" \
+  && ok "second app appends" || bad "second app appends"
+
+# a missing key is created rather than silently skipped
+CORE3="$HOME/core3"; mkdir -p "$CORE3"
+grep -v '^PGRST_DB_SCHEMAS=' "$CORE/.env" > "$CORE3/.env"; touch "$CORE3/docker-compose.yml"
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE3" >/dev/null 2>&1
+grep -q "^PGRST_DB_SCHEMAS=public,popbys$" "$CORE3/.env" \
+  && ok "absent key is created with public first" || bad "absent key is created with public first"
+
 echo; echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

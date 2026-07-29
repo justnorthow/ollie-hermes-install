@@ -84,3 +84,24 @@ REVOKE ALL ON SCHEMA public FROM ${OWNER_ROLE};
 SQL
 
 echo "    schema + owner role provisioned"
+
+# Register the schema with PostgREST. Absent key => start from "public", which
+# is the shipped default (verified on the sandbox: PGRST_DB_SCHEMAS=public).
+CUR="$(grep -E '^PGRST_DB_SCHEMAS=' "${CORE_DIR}/.env" | tail -1 | cut -d= -f2- || true)"
+[[ -z "${CUR}" ]] && CUR="public"
+
+if [[ ",${CUR}," == *",${APP_NAME},"* ]]; then
+  echo "    PGRST_DB_SCHEMAS already lists ${APP_NAME}"
+else
+  NEW="${CUR},${APP_NAME}"
+  if grep -qE '^PGRST_DB_SCHEMAS=' "${CORE_DIR}/.env"; then
+    sed -i "s|^PGRST_DB_SCHEMAS=.*|PGRST_DB_SCHEMAS=${NEW}|" "${CORE_DIR}/.env"
+  else
+    echo "PGRST_DB_SCHEMAS=${NEW}" >> "${CORE_DIR}/.env"
+  fi
+  echo "    PGRST_DB_SCHEMAS -> ${NEW}"
+fi
+
+docker compose -f "${CORE_DIR}/docker-compose.yml" --env-file "${CORE_DIR}/.env" \
+  up -d --force-recreate rest
+echo "    rest recreated"
