@@ -153,5 +153,19 @@ run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE4" >/dev/null 2>&1
 grep -q "^PGRST_DB_SCHEMAS=public,weird&name,popbys$" "$CORE4/.env" \
   && ok "sed-special chars in PGRST_DB_SCHEMAS do not corrupt the file" || bad "sed-special chars in PGRST_DB_SCHEMAS do not corrupt the file"
 
+# ---- owner JWT ----
+reset_logs
+run "APP_NAME=popbys" "CORE_STACK_DIR=$CORE" >/dev/null 2>&1
+KEYFILE="$CORE/app-keys/popbys.jwt"
+[[ -f "$KEYFILE" ]] && ok "owner JWT written" || bad "owner JWT written"
+[[ "$(cat "$KEYFILE" 2>/dev/null | tr -cd '.' | wc -c)" == "2" ]] \
+  && ok "JWT has three segments" || bad "JWT has three segments"
+python3 - "$KEYFILE" <<'PY' && ok "JWT role claim is popbys_owner" || bad "JWT role claim is popbys_owner"
+import base64, json, sys
+tok = open(sys.argv[1]).read().strip().split(".")[1]
+tok += "=" * (-len(tok) % 4)
+sys.exit(0 if json.loads(base64.urlsafe_b64decode(tok))["role"] == "popbys_owner" else 1)
+PY
+
 echo; echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

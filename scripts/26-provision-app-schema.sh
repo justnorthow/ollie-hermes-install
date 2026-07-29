@@ -107,3 +107,28 @@ fi
 docker compose -f "${CORE_DIR}/docker-compose.yml" --env-file "${CORE_DIR}/.env" \
   up -d --force-recreate rest
 echo "    rest recreated"
+
+# Mint the app's runtime key: a JWT claiming role=<name>_owner, signed with the
+# core JWT secret. PostgREST switches into that role, so the app has full rights
+# inside its own schema and none outside it. This REPLACES service_role for the
+# app — core's service_role key must never reach an app container.
+JWT_SECRET="$(grep -E '^JWT_SECRET=' "${CORE_DIR}/.env" | tail -1 | cut -d= -f2-)"
+if [[ -z "${JWT_SECRET}" ]]; then
+  echo "error: JWT_SECRET not found in ${CORE_DIR}/.env" >&2; exit 1
+fi
+
+mkdir -p "${CORE_DIR}/app-keys"
+chmod 700 "${CORE_DIR}/app-keys"
+KEYFILE="${CORE_DIR}/app-keys/${APP_NAME}.jwt"
+printf '%s' "${JWT_SECRET}" \
+  | python3 "${SCRIPT_DIR}/lib/gen-supabase-keys.py" --mint-role "${OWNER_ROLE}" \
+  > "${KEYFILE}"
+chmod 600 "${KEYFILE}"
+
+echo "    owner JWT -> ${KEYFILE}"
+echo
+echo "✓ schema '${APP_NAME}' ready. Give the app:"
+echo "    SUPABASE_URL       = core stack's public URL"
+echo "    SUPABASE_ANON_KEY  = ANON_KEY from ${CORE_DIR}/.env"
+echo "    SUPABASE_APP_KEY   = contents of ${KEYFILE}"
+echo "    schema             = ${APP_NAME}   (supabase-js: db: { schema: '${APP_NAME}' })"

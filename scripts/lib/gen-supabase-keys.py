@@ -77,4 +77,12 @@ def build_bundle() -> dict:
 
 
 if __name__ == "__main__":
-    print(json.dumps(build_bundle()))
+    import sys
+    if len(sys.argv) == 3 and sys.argv[1] == "--mint-role":
+        # Secret on stdin, never argv — argv is world-readable via ps.
+        secret = sys.stdin.read().strip()
+        if not secret:
+            sys.exit("error: JWT secret required on stdin")
+        print(mint_hs256_jwt(secret, sys.argv[2]))
+    else:
+        print(json.dumps(build_bundle()))
