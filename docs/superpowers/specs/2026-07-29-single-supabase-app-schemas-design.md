@@ -186,13 +186,22 @@ must land in this order. Stage 3 repeats per app.
 Role switch first and the apps lose `auth` access they still need. Role switch later
 and there is a window where they hold `service_role` for no reason.
 
-1. SSO collapse (removes the only `auth.admin` usage in all three apps)
-2. Schema + role provisioning in the install path
-3. Per app: migrations retargeted to the schema, clients gain `db.schema`, role JWT
-   replaces `service_role`
-4. Data migration (below)
-5. Retire per-app stacks, hostnames, tunnel routes
-6. Onboard Joseph
+1. **Schema + role provisioning** in the install path. Infrastructure only — no app
+   touched, nothing user-visible, independently verifiable.
+2. **Per app, per box: consolidate the data.** Create the schema, run that app's
+   migrations into it, migrate its rows and remap owner UUIDs to core's `auth.users`.
+   The app is still running on its old stack at this point.
+3. **Per app: the cutover, in one cut.** Point the client at core's URL + anon key +
+   `db.schema`, delete the SSO handoff, and switch the runtime key from `service_role`
+   to the `<name>_owner` JWT. These three are interdependent and must land together.
+4. Retire that app's stack, hostname, and tunnel route.
+5. Onboard Joseph.
+
+**An earlier draft of this spec had the SSO collapse as stage 1. That was wrong** — SSO
+exists *because* the app and dashboard are separate Supabase projects, so deleting it
+before consolidation leaves the app unable to authenticate anyone. The constraint it was
+trying to honour ("SSO collapse before or with the role switch, never after") is
+satisfied by stage 3, where both happen in the same cut.
 
 ## Data migration
 
