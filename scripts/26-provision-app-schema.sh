@@ -134,6 +134,11 @@ if [[ -z "${JWT_SECRET}" ]]; then
   echo "error: JWT_SECRET not found in ${CORE_DIR}/.env" >&2; exit 1
 fi
 
+# umask 077 closes two windows the trailing chmods cannot: `mkdir -p` would
+# create app-keys/ at the default umask, and `>` would create the key file 0644
+# — both readable by every local user for the instant before chmod runs. The
+# chmods stay for a directory or file that already exists from an earlier run.
+umask 077
 mkdir -p "${CORE_DIR}/app-keys"
 chmod 700 "${CORE_DIR}/app-keys"
 KEYFILE="${CORE_DIR}/app-keys/${APP_NAME}.jwt"
