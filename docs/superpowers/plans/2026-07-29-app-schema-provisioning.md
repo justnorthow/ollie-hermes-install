@@ -605,17 +605,170 @@ also the file the held multi-app branch rewrites.
 
 ## Acceptance
 
-Run on the **sandbox** first, against a throwaway name:
+Run on the **sandbox** first, against throwaway names. The unit tests are
+shim-based — the fake `docker` logs stdin and always exits 0, so they can only
+prove what SQL and what `.env` edits the script *emits*. Everything that matters
+about the security boundary (does the minted JWT verify, does it land in the
+right role, is the schema genuinely served, can the owner leave its schema) is
+only observable against a real database. That is what this section is for.
 
-1. `printf 'APP_NAME=scratch\n' | bash scripts/26-provision-app-schema.sh` — exits 0.
-2. Re-run it — exits 0, `PGRST_DB_SCHEMAS` unchanged, no duplicate schema entry.
-3. The negative check in the runbook returns `permission denied` for
-   `auth.users`. **This is the acceptance test that matters** — if it passes
-   silently instead, stop and fix the grants before any app data moves.
-4. `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/rest/v1/` still
-   returns its normal status — existing apps are unaffected.
-5. `DROP SCHEMA scratch CASCADE; DROP ROLE scratch_owner;` to clean up, and
-   remove `scratch` from `PGRST_DB_SCHEMAS`.
+Two schemas are provisioned, because cross-app isolation cannot be tested with
+one.
+
+```bash
+SB=~/supabase-stack
+printf 'APP_NAME=scratch\n'  | bash scripts/26-provision-app-schema.sh   # step 1
+printf 'APP_NAME=scratch2\n' | bash scripts/26-provision-app-schema.sh
+ANON="$(grep -E '^ANON_KEY=' "$SB/.env" | cut -d= -f2-)"
+APPJWT="$(cat "$SB/app-keys/scratch.jwt")"
+```
+
+1. **Both provision runs exit 0.**
+
+2. **Re-run `scratch` — exits 0, `PGRST_DB_SCHEMAS` unchanged, no duplicate
+   entry, no duplicate schema.**
+
+3. **PostgREST actually received the schema list.** The `.env` value proves
+   nothing on its own — `rest` has no `env_file:`, so it sees the key only
+   because the compose file substitutes `${PGRST_DB_SCHEMAS:-public}`:
+
+   ```bash
+   grep '^PGRST_DB_SCHEMAS=' "$SB/.env"                   # lists scratch,scratch2
+   docker exec supabase-rest env | grep PGRST_DB_SCHEMAS   # must list them too
+   ```
+
+   If the container still shows only `public`, the stack's compose file predates
+   the parameterisation and must be redeployed via `11-install-supabase.sh
+   --deploy`. Script 26 refuses such a stack, so this should be impossible.
+
+4. **The owner can CREATE TABLE in its own schema** — the default privileges the
+   script sets are useless if it cannot. This also exercises the `REFERENCES`
+   grant on `auth.users` (the FK) and sequence creation:
+
+   ```bash
+   docker exec -i supabase-db psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+   SET ROLE scratch_owner;
+   CREATE TABLE scratch.probe (
+     id bigserial PRIMARY KEY,
+     user_id uuid REFERENCES auth.users(id),
+     note text);
+   INSERT INTO scratch.probe (note) VALUES ('hello');
+   CREATE FUNCTION scratch.whoami() RETURNS text LANGUAGE sql AS 'SELECT current_user::text';
+   RESET ROLE;
+   SET ROLE scratch2_owner;
+   CREATE TABLE scratch2.probe (id bigserial PRIMARY KEY, note text);
+   INSERT INTO scratch2.probe (note) VALUES ('other app');
+   SQL
+   docker exec supabase-db psql -U postgres -d postgres -c "NOTIFY pgrst, 'reload schema';"
+   ```
+
+   Expected: no error. `permission denied for schema scratch` here means the
+   `AUTHORIZATION` / `ALTER SCHEMA OWNER` step did not take.
+
+5. **The schema is genuinely served** — this is the request that 404'd before the
+   compose file was parameterised:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -H "apikey: $ANON" \
+     -H 'Accept-Profile: scratch' http://127.0.0.1:8000/rest/v1/probe
+   ```
+
+   Expected `200`. A `404` whose body is `{"message":"The schema must be one of
+   the following: public"}` is the exact silent failure this stage exists to
+   prevent.
+
+6. **The minted JWT is accepted and lands in the right role.** The failure mode
+   without this check is silent, not loud: if PostgREST cannot verify the token
+   it does **not** error — it falls back to `PGRST_DB_ANON_ROLE=anon` and serves
+   the request, so the app runs with the *wrong role* (broad anon DML across
+   every app schema) while looking healthy.
+
+   ```bash
+   curl -s -H "apikey: $ANON" -H "Authorization: Bearer $APPJWT" \
+     -H 'Accept-Profile: scratch' -H 'Content-Profile: scratch' \
+     -X POST http://127.0.0.1:8000/rest/v1/rpc/whoami
+   ```
+
+   Expected exactly `"scratch_owner"`. **`"anon"` is a failure** — the token was
+   rejected and silently downgraded; check `docker logs supabase-rest` for a JWT
+   error and confirm `JWT_SECRET` in `.env` is the secret the token was signed
+   with. (The token is HS256 with no `kid`, verified against the legacy `oct`
+   entry in `JWT_JWKS` — the same path `ANON_KEY` and `SERVICE_ROLE_KEY` already
+   take, so a failure here means the secret, not the mechanism.)
+
+7. **The owner cannot read another app's schema:**
+
+   ```bash
+   docker exec supabase-db psql -U postgres -d postgres \
+     -c "SET ROLE scratch_owner; SELECT count(*) FROM scratch2.probe;"
+   ```
+
+   Expected: `ERROR: permission denied for schema scratch2`. A count means the
+   consolidation's core guarantee is not holding — stop.
+
+8. **The owner cannot read `auth.users`:**
+
+   ```bash
+   docker exec supabase-db psql -U postgres -d postgres \
+     -c "SET ROLE scratch_owner; SELECT count(*) FROM auth.users;"
+   ```
+
+   Expected: `ERROR: permission denied for table users`. **This is the sharpest
+   check in the list** — if it returns a count instead, stop and fix the grants
+   before any app data moves. Pair it with the privilege read in the runbook
+   (`has_table_privilege(...,'auth.users','SELECT'|'TRIGGER')` must both be `f`),
+   which reads the privileges directly rather than inferring them.
+
+9. **Mandatory RLS coverage.** Every app is handed the *same* core `ANON_KEY`,
+   and `anon`/`authenticated` hold `USAGE` on every app schema plus DML on its
+   tables — they must, for user-context requests. So app A's browser bundle
+   carries a key that reaches app B's schema, and the only control is RLS:
+
+   ```bash
+   docker exec supabase-db psql -U postgres -d postgres -c "
+     SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'scratch' AND c.relkind = 'r' AND NOT c.relrowsecurity;"
+   ```
+
+   **Every row returned is a table that every app on the box can read — and
+   write — with the shared anon key.** An empty result is the gate.
+
+   At this stage `scratch.probe` (created in step 4 without RLS) *will* be
+   returned — which is what proves the query works, and the hazard is real.
+   Demonstrate it, using the same anon key against the *other* app's schema:
+
+   ```bash
+   curl -s -H "apikey: $ANON" -H 'Accept-Profile: scratch2' \
+     http://127.0.0.1:8000/rest/v1/probe
+   ```
+
+   That returns `[{"id":1,"note":"other app"}]` — one app's key reading another
+   app's data, because RLS is off. Then enable RLS on `scratch2.probe`
+   (`ALTER TABLE scratch2.probe ENABLE ROW LEVEL SECURITY;`) and re-run both: the
+   query returns nothing and the curl returns `[]`. Stage 3 migrations must
+   enable RLS on every table they create, and this query is the gate on each.
+
+10. `curl -s -o /dev/null -w '%{http_code}' -H "apikey: $ANON"
+    http://127.0.0.1:8000/rest/v1/` still returns its normal status — existing
+    apps are unaffected. Note this one proves only that nothing *broke*: it
+    passed unchanged while registration was a no-op, so it can never stand in
+    for steps 5 and 6.
+
+11. **Clean up:**
+
+    ```bash
+    docker exec -i supabase-db psql -U postgres -d postgres <<'SQL'
+    DROP SCHEMA scratch CASCADE;
+    DROP SCHEMA scratch2 CASCADE;
+    DROP OWNED BY scratch_owner;    -- default-privilege entries survive DROP SCHEMA
+    DROP OWNED BY scratch2_owner;
+    DROP ROLE scratch_owner;
+    DROP ROLE scratch2_owner;
+    SQL
+    # remove scratch,scratch2 from PGRST_DB_SCHEMAS, then:
+    docker compose -f "$SB/docker-compose.yml" --env-file "$SB/.env" up -d --force-recreate rest
+    rm -f "$SB"/app-keys/scratch.jwt "$SB"/app-keys/scratch2.jwt
+    ```
 
 Nothing in this stage touches a running app. If acceptance fails, nothing needs
-rolling back beyond the cleanup in step 5.
+rolling back beyond the cleanup in step 11.
