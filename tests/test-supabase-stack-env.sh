@@ -63,6 +63,40 @@ test_rerun_preserves_secrets_and_restamps_pins() {
   assert_eq "pin restamped from renderer" "$?" "0"
 }
 
+test_pgrst_db_schemas_carried_forward() {
+  # A registered app schema must survive a re-render. Without carry-forward a
+  # routine image-pin bump drops the key, PostgREST falls back to `public`, and
+  # every consolidated app's REST API 404s at once with no deploy-time error.
+  local d; d="$(mktemp -d)"
+  export SUPABASE_PUBLIC_URL="https://sb.example.jnow.io"
+  export SITE_URL="https://example.jnow.io"
+  export GOOGLE_CLIENT_ID="" GOOGLE_CLIENT_SECRET=""
+  render_supabase_stack_env "$d/.env" ""
+  # Simulate script 26 having registered an app schema.
+  sed -i 's|^PGRST_DB_SCHEMAS=.*|PGRST_DB_SCHEMAS=public,popbys|' "$d/.env"
+  cp "$d/.env" "$d/.env.old"
+  render_supabase_stack_env "$d/.env" "$d/.env.old"
+  assert_eq "PGRST_DB_SCHEMAS carried forward across a re-render" \
+    "$(supabase_stack_env_val "$d/.env" PGRST_DB_SCHEMAS)" "public,popbys"
+}
+
+test_pgrst_db_schemas_defaults_to_public_when_absent() {
+  # A stack whose .env predates the key still has all 6 secrets, so it must
+  # render cleanly (PGRST_DB_SCHEMAS is NOT part of the all-or-nothing secret
+  # integrity check) and fall back to the shipped default.
+  local d; d="$(mktemp -d)"
+  export SUPABASE_PUBLIC_URL="https://sb.example.jnow.io"
+  export SITE_URL="https://example.jnow.io"
+  export GOOGLE_CLIENT_ID="" GOOGLE_CLIENT_SECRET=""
+  render_supabase_stack_env "$d/.env" ""
+  grep -v '^PGRST_DB_SCHEMAS=' "$d/.env" > "$d/.env.old"
+  render_supabase_stack_env "$d/.env" "$d/.env.old"
+  assert_eq "absent PGRST_DB_SCHEMAS renders as public" \
+    "$(supabase_stack_env_val "$d/.env" PGRST_DB_SCHEMAS)" "public"
+  assert_nonempty "secrets still preserved when the key was absent" \
+    "$(supabase_stack_env_val "$d/.env" JWT_SECRET)"
+}
+
 test_partial_secrets_rejected() {
   local d; d="$(mktemp -d)"
   # Old env has only 2 of the 6 secret keys (simulates manual edit / interrupted write).
@@ -93,5 +127,7 @@ EOF
 test_fresh_render_generates_secrets_and_pins
 test_site_url_carried_forward_when_unset
 test_rerun_preserves_secrets_and_restamps_pins
+test_pgrst_db_schemas_carried_forward
+test_pgrst_db_schemas_defaults_to_public_when_absent
 test_partial_secrets_rejected
 finish

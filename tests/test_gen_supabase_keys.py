@@ -60,3 +60,56 @@ def test_cli_prints_json():
     ).stdout
     assert set(json.loads(out)) == {"jwt_secret", "anon_key", "service_role_key",
                                     "gotrue_jwt_keys", "jwt_jwks", "postgres_password"}
+
+
+def test_mint_role_mode_reads_secret_from_stdin():
+    """The secret must never be an argv value — it is visible in ps."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "gen-supabase-keys.py"
+    secret = "ec3ca9f92d1de0f79e03897b324c9ec100ec647e"
+    out = subprocess.run(
+        [sys.executable, str(script), "--mint-role", "popbys_owner"],
+        input=secret, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    header_b64, payload_b64, sig_b64 = out.split(".")
+
+    def _unb64(s):
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+    assert json.loads(_unb64(payload_b64))["role"] == "popbys_owner"
+    expected = hmac.new(secret.encode(), f"{header_b64}.{payload_b64}".encode(),
+                        hashlib.sha256).digest()
+    assert sig_b64 == base64.urlsafe_b64encode(expected).rstrip(b"=").decode()
+
+
+def test_mint_role_mode_refuses_empty_secret():
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "gen-supabase-keys.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--mint-role", "popbys_owner"],
+        input="", capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+
+
+def test_malformed_mint_role_fails_closed_without_leaking_bundle():
+    """Wrong argument count for --mint-role must error, not fall through to
+    build_bundle() and print a fresh service_role_key."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "gen-supabase-keys.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--mint-role"],
+        input="some-secret", capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "service_role_key" not in r.stdout
+
+
+def test_unknown_flag_fails_closed_without_leaking_bundle():
+    """An unrecognised first argument (e.g. a typo'd flag) must error, not
+    fall through to build_bundle() and print a fresh service_role_key."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "gen-supabase-keys.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--mint_role", "popbys_owner"],
+        input="some-secret", capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "service_role_key" not in r.stdout
