@@ -430,6 +430,15 @@ Append to `tests/test-app-migrations.sh`, before the final tally:
 
 ```bash
 # ---- 4. RLS gate: FAILING direction first
+#
+# The existence check below is NOT redundant. Without it, this block passes
+# before the feature is written: an undefined function makes the subshell exit
+# non-zero, and the `||` branch reads that as "the gate correctly refused".
+# That is the same class of lying probe this gate exists to prevent, so the
+# absence of the function has to be its own assertion.
+declare -F app_migrations_rls_gate >/dev/null \
+  && ok "app_migrations_rls_gate is defined" || bad "app_migrations_rls_gate is NOT defined"
+
 gate_psql_bad() {  # one table without RLS
   [[ "$*" == *"relrowsecurity"* ]] && { echo "reports"; return 0; }
   return 0
@@ -459,7 +468,9 @@ tail -1 "$CALLS" | grep -q 'relrowsecurity' \
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `bash tests/test-app-migrations.sh`
-Expected: FAIL on `RLS gate FAILS on a table without RLS` — `app_migrations_rls_gate` does not exist yet, so the subshell errors and the test's `||` branch reports `ok`… **check the log text assertions too**: `gate names the offending table` must FAIL. That pair is the real signal.
+Expected: FAIL on `app_migrations_rls_gate is NOT defined`, `gate names the offending table`, `gate explains the shared-anon-key consequence`, `RLS gate passes when every table has RLS`, `apply runs the RLS gate`, and `the gate runs AFTER the migrations`.
+
+Note that `RLS gate FAILS on a table without RLS` will report **PASS** at this point, for the wrong reason — the function does not exist, so the subshell exits non-zero and the `||` branch fires. That is why the existence assertion above it is there. Do not read that single PASS as evidence the gate works.
 
 - [ ] **Step 3: Implement the gate and call it from the apply**
 
