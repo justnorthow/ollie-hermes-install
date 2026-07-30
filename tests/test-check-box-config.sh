@@ -6,7 +6,7 @@ GATE="$HERE/../scripts/check-box-config.sh"
 
 setup_healthy() {
   local d; d="$(mktemp -d)"
-  mkdir -p "$d/units/hermes-dashboard.service.d" "$d/profiles"
+  mkdir -p "$d/units/hermes-dashboard.service.d" "$d/profiles" "$d/nginx"
   printf 'API_SERVER_PORT=8642\n' > "$d/hermes.env"
   printf '[Service]\nExecStart=hermes dashboard --host 127.0.0.1 --port 9119\n' > "$d/units/hermes-dashboard.service"
   cat > "$d/orch.env" <<'EOF'
@@ -19,14 +19,47 @@ HERMES_DASHBOARD_URLS={"default": "http://127.0.0.1:9119"}
 EOF
   printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=tok123' > "$d/units/hermes-dashboard.service.d/session-token.conf"
   printf 'SUPABASE_URL=https://abc.supabase.co\nSUPABASE_ANON_KEY=anon\n' > "$d/stack.env"
+  # Proxy artifacts a healthy box would have (Task 6): one nginx conf per
+  # hermes-dashboard unit plus the auth drop-in matching
+  # HERMES_DASHBOARD_TOKEN. Derived from current fixture state (not
+  # hardcoded) so tests that mutate the token or the unit set can re-sync.
+  sync_ui_fixtures "$d"
   echo "$d"
 }
 
+# Regenerate the proxy artifacts (nginx auth file + one hermes-ui-proxy-<agent>.conf
+# per hermes-dashboard*.service unit) from the CURRENT state of the fixture
+# dir. Call this after any mutation that changes HERMES_DASHBOARD_TOKEN or
+# the set of dashboard units, so the fixtures stay self-consistent instead
+# of drifting from a hardcoded token/agent pair.
+sync_ui_fixtures() {
+  local d="$1" token unit name agent
+  mkdir -p "$d/nginx"
+  token="$(grep '^HERMES_DASHBOARD_TOKEN=' "$d/orch.env" | tail -1 | cut -d= -f2-)"
+  printf 'proxy_set_header Authorization "Bearer %s";' "$token" > "$d/nginx/hermes-ui-auth.conf"
+  rm -f "$d"/nginx/hermes-ui-proxy-*.conf
+  shopt -s nullglob
+  for unit in "$d"/units/hermes-dashboard*.service; do
+    name="$(basename "$unit")"
+    agent="${name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
+    [[ -z "${agent}" ]] && agent="default"
+    printf 'server { listen 127.0.0.1:9219; }\n' > "$d/nginx/hermes-ui-proxy-${agent}.conf"
+  done
+  shopt -u nullglob
+}
+
+# run_gate DIR [EXTRA_ENV_ASSIGNMENT...] — invokes the gate against fixture
+# DIR with the common env, plus any extra NAME=VALUE overrides/additions
+# (e.g. MANIFEST_DIR=..., ALLOW_PUBLIC_BIND=1, HERMES_ENV_FILE=...) layered
+# on top via `env`, so call sites needing test-specific env don't have to
+# duplicate the whole common list.
 run_gate() {
-  local d="$1"
-  ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
+  local d="$1"; shift
+  env ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
     HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE"
+    NGINX_CONF_DIR="$d/nginx" NGINX_AUTH_FILE="$d/nginx/hermes-ui-auth.conf" \
+    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 \
+    "$@" bash "$GATE"
 }
 
 test_healthy_box_passes() {
@@ -65,9 +98,7 @@ test_detection_failure_fails_loudly() {
   local d rc out
   d="$(setup_healthy)"
   # Point HERMES_ENV_FILE at nonexistent path to trigger detection failure
-  out="$(ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="/nonexistent/path/.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" HERMES_ENV_FILE=/nonexistent/path/.env)"; rc=$?
   assert_eq "detection failure exit 1" "$rc" "1"
   assert_eq "detection error mentioned" "$(echo "$out" | grep -c 'could not detect agents')" "1"
   # Both map keys should emit coverage-unverifiable FAILs
@@ -87,9 +118,7 @@ test_dashboard_bind_gate() {
 
   # 0.0.0.0 with ALLOW_PUBLIC_BIND=1 -> passes
   d="$(setup_healthy)"; printf 'DASHBOARD_BIND=0.0.0.0\n' >> "$d/stack.env"
-  out="$(ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 ALLOW_PUBLIC_BIND=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" ALLOW_PUBLIC_BIND=1)"; rc=$?
   assert_eq "DASHBOARD_BIND=0.0.0.0 + ALLOW_PUBLIC_BIND=1 exit 0" "$rc" "0"
 
   # 127.0.0.1 -> passes
@@ -111,6 +140,9 @@ test_token_dot_exact_match() {
   sed -i 's/HERMES_DASHBOARD_TOKEN=.*/HERMES_DASHBOARD_TOKEN='"$TOKEN"'/' "$d/orch.env"
   # Update drop-in to match
   printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=%s' "$TOKEN" > "$d/units/hermes-dashboard.service.d/session-token.conf"
+  # Re-sync the ui-proxy auth fixture to the new token so this remains a
+  # healthy box (the mutation above only targets the session-token drop-in).
+  sync_ui_fixtures "$d"
   # Should pass with exact token match
   out="$(run_gate "$d")"; rc=$?
   assert_eq "token with dot match exit 0" "$rc" "0"
@@ -118,6 +150,7 @@ test_token_dot_exact_match() {
   # Now make drop-in differ by one char at dot position
   d="$(setup_healthy)"
   sed -i 's/HERMES_DASHBOARD_TOKEN=.*/HERMES_DASHBOARD_TOKEN='"$TOKEN"'/' "$d/orch.env"
+  sync_ui_fixtures "$d"
   printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=tokX123' > "$d/units/hermes-dashboard.service.d/session-token.conf"
   # Should fail (old regex match would have false-passed)
   out="$(run_gate "$d")"; rc=$?
@@ -154,20 +187,14 @@ JSON
 
   # (a) profile installed, manifest present, app .env missing -> FAIL + GAPS>=1
   mkdir -p "$d/profiles/real-estate"
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "missing app .env exit 1" "$rc" "1"
   assert_eq "missing app .env named FAIL" \
     "$(echo "$out" | grep -c 'FAIL: agent app popbys')" "1"
 
   # (b) app .env present + CHECK_SKIP_LIVE=1 -> PASS, healthy overall
   mkdir -p "$d/apps/popbys"; : > "$d/apps/popbys/.env"
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "app .env present + skip-live exit 0" "$rc" "0"
   assert_eq "app .env present named PASS" \
     "$(echo "$out" | grep -c 'PASS: agent app popbys: .env present')" "1"
@@ -190,10 +217,7 @@ JSON
   ]
 }
 JSON
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "uninstalled profile exit 0" "$rc" "0"
   assert_eq "uninstalled profile emits no agent-apps lines" \
     "$(echo "$out" | grep -c 'agent app')" "0"
@@ -228,30 +252,21 @@ JSON
 
   # (a) tile app missing from the profile's apps.json (never registered, or
   # apps.json absent entirely) -> FAIL + gap
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "tile missing from apps.json exit 1" "$rc" "1"
   assert_eq "tile missing from apps.json named FAIL" \
     "$(echo "$out" | grep -c 'FAIL: agent app popbys: tile missing')" "1"
 
   # (b) apps.json exists but doesn't include this app's id -> still FAIL
   printf '[{"id":"someother-app","label":"Other"}]' > "$d/profiles/real-estate/apps.json"
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "tile id absent from apps.json exit 1" "$rc" "1"
   assert_eq "tile id absent from apps.json named FAIL" \
     "$(echo "$out" | grep -c 'FAIL: agent app popbys: tile missing')" "1"
 
   # (c) apps.json includes this app's id -> PASS, healthy overall
   printf '[{"id":"popbys","label":"Pop Bys"}]' > "$d/profiles/real-estate/apps.json"
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "tile registered exit 0" "$rc" "0"
   assert_eq "tile registered named PASS" \
     "$(echo "$out" | grep -c 'PASS: agent app popbys: tile registered')" "1"
@@ -275,10 +290,7 @@ JSON
 }
 JSON
   mkdir -p "$d/apps/popbys"; : > "$d/apps/popbys/.env"
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "no-tile app exit 0" "$rc" "0"
   assert_eq "no-tile app emits no tile check" \
     "$(echo "$out" | grep -c 'tile')" "0"
@@ -303,10 +315,7 @@ test_agent_apps_malformed_manifest() {
   "apps": [
 JSON
 
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "malformed manifest exit 1" "$rc" "1"
   assert_eq "malformed manifest named FAIL" \
     "$(echo "$out" | grep -c 'FAIL: agent apps: unreadable manifest')" "1"
@@ -332,14 +341,38 @@ test_agent_apps_wrong_shape_manifest() {
 }
 JSON
 
-  out="$(MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps" \
-    ORCH_ENV="$d/orch.env" STACK_ENV_FILE="$d/stack.env" SYSTEMD_USER_DIR="$d/units" \
-    HERMES_ENV_FILE="$d/hermes.env" PROFILES_DIR="$d/profiles" \
-    OPERATOR_EMAIL=jb@example.com CHECK_SKIP_LIVE=1 bash "$GATE")"; rc=$?
+  out="$(run_gate "$d" MANIFEST_DIR="$manifest_dir" APPS_DIR="$d/apps")"; rc=$?
   assert_eq "wrong-shape manifest exit 1" "$rc" "1"
   assert_eq "wrong-shape manifest named FAIL" \
     "$(echo "$out" | grep -c 'FAIL: agent apps: unreadable manifest')" "1"
   assert_eq "wrong-shape manifest GAPS>=1" "$(echo "$out" | grep -qE '^GAPS: [1-9]' && echo yes || echo no)" "yes"
+}
+
+test_ui_proxy_gate_passes_when_healthy() {
+  local d rc out
+  d="$(setup_healthy)"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "ui-proxy healthy exit 0" "$rc" "0"
+  assert_eq "ui-proxy conf PASS" "$(echo "$out" | grep -c 'PASS: hermes-ui-proxy conf present (default)')" "1"
+  assert_eq "ui-auth PASS" "$(echo "$out" | grep -c 'PASS: hermes-ui-auth matches orchestrator token')" "1"
+}
+
+test_ui_proxy_gate_fails_on_stale_token() {
+  local d rc out
+  d="$(setup_healthy)"
+  printf 'proxy_set_header Authorization "Bearer STALE-TOKEN";' > "$d/nginx/hermes-ui-auth.conf"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "stale token exit 1" "$rc" "1"
+  assert_eq "stale token FAILs named" "$(echo "$out" | grep -c 'FAIL: hermes-ui-auth stale')" "1"
+}
+
+test_ui_proxy_gate_fails_on_missing_conf() {
+  local d rc out
+  d="$(setup_healthy)"
+  rm -f "$d/nginx/hermes-ui-proxy-default.conf"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "missing conf exit 1" "$rc" "1"
+  assert_eq "missing conf FAIL named" "$(echo "$out" | grep -c 'FAIL: hermes-ui-proxy conf missing (default)')" "1"
 }
 
 test_healthy_box_passes
@@ -351,4 +384,7 @@ test_agent_apps_gate
 test_agent_apps_tile_gate
 test_agent_apps_malformed_manifest
 test_agent_apps_wrong_shape_manifest
+test_ui_proxy_gate_passes_when_healthy
+test_ui_proxy_gate_fails_on_stale_token
+test_ui_proxy_gate_fails_on_missing_conf
 finish

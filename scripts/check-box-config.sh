@@ -20,6 +20,8 @@ SKIP_LIVE="${CHECK_SKIP_LIVE:-0}"
 PROFILES_DIR="${PROFILES_DIR:-$HOME/.hermes/profiles}"
 MANIFEST_DIR="${MANIFEST_DIR:-${SCRIPT_DIR}/../apps}"
 APPS_DIR="${APPS_DIR:-$HOME/apps}"
+NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+NGINX_AUTH_FILE="${NGINX_AUTH_FILE:-/etc/nginx/hermes-ui-auth.conf}"
 
 gaps=0
 pass() { echo "PASS: $1"; }
@@ -85,6 +87,28 @@ for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
     pass "loopback bind (${name})"
   fi
 done
+
+# 3b. Hermes UI proxy — one conf per dashboard unit, auth file matching the token.
+for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
+  name="$(basename "${unit}")"
+  agent="${name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
+  [[ -z "${agent}" ]] && agent="default"
+  if [[ -f "${NGINX_CONF_DIR}/hermes-ui-proxy-${agent}.conf" ]]; then
+    pass "hermes-ui-proxy conf present (${agent})"
+  else
+    fail "hermes-ui-proxy conf missing (${agent})"
+  fi
+done
+
+if [[ -f "${NGINX_AUTH_FILE}" ]]; then
+  if [[ "$(cat "${NGINX_AUTH_FILE}" 2>/dev/null)" == "$(printf 'proxy_set_header Authorization "Bearer %s";' "${TOKEN}")" ]]; then
+    pass "hermes-ui-auth matches orchestrator token"
+  else
+    fail "hermes-ui-auth stale (does not match HERMES_DASHBOARD_TOKEN — rerun ensure-dashboard-token.sh)"
+  fi
+else
+  fail "hermes-ui-auth missing (${NGINX_AUTH_FILE})"
+fi
 
 # 4. stack .env login-gate keys
 for k in SUPABASE_URL SUPABASE_ANON_KEY; do
