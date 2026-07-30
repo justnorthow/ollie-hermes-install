@@ -29,6 +29,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/lib/supabase-app-env.sh"
 . "${SCRIPT_DIR}/lib/app-server-env.sh"
+. "${SCRIPT_DIR}/lib/app-migrations.sh"
 PROFILE="${1:-}"
 MANIFEST="${MANIFEST_DIR:-${SCRIPT_DIR}/../apps}/${PROFILE}.json"
 [[ -n "${PROFILE}" && -f "${MANIFEST}" ]] || { echo "error: no manifest for profile '${PROFILE}'" >&2; exit 1; }
@@ -207,27 +208,13 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   else
     IMG="$(app_image_from_env "${NAME}")"   # helper: APP_IMAGE from ~/apps/<name>/.env
   fi
-  MIG_DIR="$(mktemp -d)"
-  CTR="$(docker create "${IMG}")"
-  docker cp "${CTR}:/app/supabase/migrations/." "${MIG_DIR}/"
-  docker rm "${CTR}" >/dev/null
   PGPASS="$(supabase_app_env_val "${SB_ENV}" POSTGRES_PASSWORD)"
-  PSQL=(docker compose -p "${NAME}" -f "${STACKS}/${NAME}/docker-compose.yml" --env-file "${SB_ENV}" \
-        exec -T -e PGPASSWORD="${PGPASS}" db psql -h 127.0.0.1 -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -qtA)
-  "${PSQL[@]}" -c "create table if not exists public._app_migrations (name text primary key, applied_at timestamptz not null default now());"
-  for f in $(ls "${MIG_DIR}"/*.sql | sort); do
-    base="$(basename "$f")"
-    applied="$("${PSQL[@]}" -c "select 1 from public._app_migrations where name='${base}';")"
-    if [[ "${applied}" == "1" ]]; then echo "    skip ${base} (applied)"; continue; fi
-    echo "    apply ${base}"
-    # Single-transaction apply (-1 = --single-transaction): the migration
-    # file and its tracker INSERT travel in ONE psql invocation, so a
-    # mid-file failure rolls back everything — including the insert — and
-    # re-runs stay clean (no partially-applied file left recorded as done,
-    # and no successfully-applied file left unrecorded).
-    { cat "$f"; printf "\ninsert into public._app_migrations (name) values ('%s');\n" "${base}"; } | "${PSQL[@]}" -1 -f -
-  done
-  rm -rf "${MIG_DIR}"
+  app_psql() {
+    docker compose -p "${NAME}" -f "${STACKS}/${NAME}/docker-compose.yml" --env-file "${SB_ENV}" \
+      exec -T -e PGPASSWORD="${PGPASS}" db \
+      psql -h 127.0.0.1 -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -qtA "$@"
+  }
+  app_migrations_apply "${IMG}" app_psql public._app_migrations
 
   echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
   ANON="$(supabase_app_env_val "${SB_ENV}" ANON_KEY)"
