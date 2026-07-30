@@ -121,12 +121,17 @@ CONF
 )"
 done
 
-if [[ "${ENSURE_UI_PROXY_NO_RELOAD:-0}" == "1" ]]; then
-  exit 0
-fi
-if [[ "${changed}" == "1" ]]; then
+if [[ "${changed}" == "1" && "${ENSURE_UI_PROXY_NO_RELOAD:-0}" != "1" ]]; then
   if ${SUDO} nginx -t 2>/dev/null; then
-    ${SUDO} systemctl reload nginx || echo "ensure-hermes-ui-proxy: warning: nginx reload failed" >&2
+    # A failed reload is FATAL, not a warning. The new bearer token is already
+    # on disk but the running nginx still holds the PREVIOUS one in memory, so
+    # every proxied dashboard request 401s until someone reloads — the exact
+    # permanent-401 failure this script exists to prevent — while an exit 0
+    # here would let check-box-config.sh PASS the box.
+    if ! ${SUDO} systemctl reload nginx; then
+      echo "ensure-hermes-ui-proxy: FATAL — nginx reload failed; nginx is still serving the PREVIOUS token, so the UI proxy will 401 on every request until it reloads. Fix with: sudo systemctl reload nginx" >&2
+      exit 1
+    fi
   else
     echo "ensure-hermes-ui-proxy: FATAL — nginx -t rejected the rendered config; not reloading" >&2
     exit 1
