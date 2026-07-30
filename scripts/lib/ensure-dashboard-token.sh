@@ -39,25 +39,32 @@ for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   echo "drop-in written: ${unit_name}"
 done
 
-# The Hermes UI proxy embeds this token in an nginx include file. Re-render it
-# here so a rotation can never leave the two out of step. No-op when the proxy
-# script is absent (older boxes) — never fail the token path because of it.
-# Placed before the ENSURE_TOKEN_NO_RESTART early exit below (deliberately —
-# see task-2-report.md): 05-install-orchestrator.sh always calls this script
-# with ENSURE_TOKEN_NO_RESTART=1, so a block placed after that exit would
-# never run in the real install path either, not just in tests.
-UI_PROXY="$(dirname "${BASH_SOURCE[0]}")/ensure-hermes-ui-proxy.sh"
-if [[ -f "${UI_PROXY}" ]]; then
-  ORCH_ENV="${ORCH_ENV}" SYSTEMD_USER_DIR="${UNIT_DIR}" bash "${UI_PROXY}" \
-    || echo "ensure-dashboard-token: warning: ui-proxy refresh failed" >&2
-fi
-
-if [[ "${ENSURE_TOKEN_NO_RESTART:-0}" == "1" ]]; then
-  exit 0
-fi
-if [[ ${#changed_units[@]} -gt 0 ]]; then
+# Apply the drop-ins FIRST. `changed_units` is computed per-run, so a restart
+# skipped now is skipped forever: the next run finds the drop-ins already
+# matching, restarts nothing, and the dashboards keep serving with the OLD
+# session token while nginx injects the new one. Anything below that can abort
+# must therefore come after this. (Sandbox 2026-07-30: making the render fatal
+# without this reordering left all four listeners permanently at 401.)
+if [[ "${ENSURE_TOKEN_NO_RESTART:-0}" != "1" && ${#changed_units[@]} -gt 0 ]]; then
   systemctl --user daemon-reload
   for u in "${changed_units[@]}"; do
     systemctl --user restart "${u}" || echo "warning: restart ${u} failed" >&2
   done
+fi
+
+# The Hermes UI proxy embeds this token in an nginx include file. Re-render it
+# so a rotation can never leave the two out of step. A MISSING proxy script
+# (older boxes) is fine and must never fail the token path — but a proxy script
+# that is present and FAILS is exactly the rotation drift this design exists to
+# prevent, so it is fatal. Downgrading it to a warning lets the caller believe
+# the rotation landed while nginx still serves the PREVIOUS token.
+# Runs on BOTH paths, including ENSURE_TOKEN_NO_RESTART=1 — which is how
+# 05-install-orchestrator.sh always calls this script, so a block skipped in
+# that mode would never run in the real install path either (task-2-report.md).
+UI_PROXY="$(dirname "${BASH_SOURCE[0]}")/ensure-hermes-ui-proxy.sh"
+if [[ -f "${UI_PROXY}" ]]; then
+  if ! ORCH_ENV="${ORCH_ENV}" SYSTEMD_USER_DIR="${UNIT_DIR}" bash "${UI_PROXY}"; then
+    echo "ensure-dashboard-token: FATAL — ui-proxy refresh failed (see the error above). The token in ${ORCH_ENV} and the dashboard drop-ins are applied, but nginx is NOT serving it, so every hermes-ui-proxy request will 401 until this is resolved. Fix the nginx config, then re-run this script." >&2
+    exit 1
+  fi
 fi

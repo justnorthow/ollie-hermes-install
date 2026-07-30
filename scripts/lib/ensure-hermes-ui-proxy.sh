@@ -10,13 +10,16 @@
 # so the two can never drift.
 #
 # Env: ORCH_ENV, SYSTEMD_USER_DIR, NGINX_CONF_DIR, NGINX_AUTH_FILE,
-#      ENSURE_UI_PROXY_NO_RELOAD=1 (skip nginx reload — tests).
+#      HERMES_UI_RELOAD_MARKER, ENSURE_UI_PROXY_NO_RELOAD=1 (skip reload — tests).
 set -uo pipefail
 
 ORCH_ENV="${ORCH_ENV:-$HOME/.config/ollie-orchestrator/.env}"
 UNIT_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
 NGINX_AUTH_FILE="${NGINX_AUTH_FILE:-/etc/nginx/hermes-ui-auth.conf}"
+# Stamped only after a reload nginx actually accepted. Deliberately NOT under
+# conf.d — nginx includes conf.d/*.conf, and this is a marker, not config.
+RELOAD_MARKER="${HERMES_UI_RELOAD_MARKER:-$(dirname "${NGINX_AUTH_FILE}")/.hermes-ui-last-reload}"
 PORT_OFFSET=100
 
 # Use sudo only when we cannot write the target ourselves. Fail LOUDLY rather
@@ -73,10 +76,12 @@ MAP
 )"
 
 shopt -s nullglob
+declare -A rendered_agents=()
 for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   unit_name="$(basename "${unit}")"
   agent="${unit_name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
   [[ -z "${agent}" ]] && agent="default"
+  rendered_agents["${agent}"]=1
 
   upstream="$(grep -oE '^ExecStart=.*--port[= ]+[0-9]+' "${unit}" | grep -oE '[0-9]+$' | tail -1)"
   if [[ -z "${upstream}" ]]; then
@@ -121,7 +126,48 @@ CONF
 )"
 done
 
-if [[ "${changed}" == "1" && "${ENSURE_UI_PROXY_NO_RELOAD:-0}" != "1" ]]; then
+# Converge to the unit set: drop listeners whose dashboard unit is gone. Without
+# this a deleted agent leaves nginx bound to a port with no upstream (502
+# forever), and check-box-config.sh never notices because section 3b iterates
+# UNITS, not confs. Matching the render loop's naming exactly — only files this
+# script generates are eligible, and the shared map/auth file are never touched.
+for stale_conf in "${NGINX_CONF_DIR}"/hermes-ui-proxy-*.conf; do
+  [[ -e "${stale_conf}" ]] || continue
+  stale_agent="$(basename "${stale_conf}")"
+  stale_agent="${stale_agent#hermes-ui-proxy-}"; stale_agent="${stale_agent%.conf}"
+  [[ -n "${rendered_agents[${stale_agent}]:-}" ]] && continue
+  ${SUDO} rm -f "${stale_conf}"
+  changed=1
+  echo "ensure-hermes-ui-proxy: pruned ${stale_conf} (no hermes-dashboard unit)"
+done
+
+# Reload when the rendered content changed, and ALSO when a previous run left
+# content that nginx never successfully loaded. That second condition is what
+# makes this converge: a failed reload writes the NEW token to disk, so every
+# later run compares equal and reports changed=0. Gated on `changed` alone the
+# reload would never be retried — nginx would serve the PREVIOUS token forever
+# while check-box-config.sh reported FAIL forever and the documented fix
+# (re-run this script) did nothing. Measured on the sandbox 2026-07-30.
+# Only a SUCCESSFUL reload advances the marker, so a failure stays retryable.
+# mtime, not ctime: chmod alone must not trigger a reload (see write_if_changed).
+newest_render=0
+for rendered in "${NGINX_AUTH_FILE}" "${NGINX_CONF_DIR}"/hermes-ui-map.conf \
+                "${NGINX_CONF_DIR}"/hermes-ui-proxy-*.conf; do
+  [[ -e "${rendered}" ]] || continue
+  mtime="$(stat -c %Y "${rendered}" 2>/dev/null || echo 0)"
+  [[ -z "${mtime}" ]] && mtime=0
+  (( mtime > newest_render )) && newest_render="${mtime}"
+done
+last_reload=0
+if [[ -f "${RELOAD_MARKER}" ]]; then
+  last_reload="$(stat -c %Y "${RELOAD_MARKER}" 2>/dev/null || echo 0)"
+  [[ -z "${last_reload}" ]] && last_reload=0
+fi
+needs_reload=0
+[[ "${changed}" == "1" ]] && needs_reload=1
+(( last_reload < newest_render )) && needs_reload=1
+
+if [[ "${needs_reload}" == "1" && "${ENSURE_UI_PROXY_NO_RELOAD:-0}" != "1" ]]; then
   if ${SUDO} nginx -t 2>/dev/null; then
     # A failed reload is FATAL, not a warning. The new bearer token is already
     # on disk but the running nginx still holds the PREVIOUS one in memory, so
@@ -132,6 +178,7 @@ if [[ "${changed}" == "1" && "${ENSURE_UI_PROXY_NO_RELOAD:-0}" != "1" ]]; then
       echo "ensure-hermes-ui-proxy: FATAL — nginx reload failed; nginx is still serving the PREVIOUS token, so the UI proxy will 401 on every request until it reloads. Fix with: sudo systemctl reload nginx" >&2
       exit 1
     fi
+    ${SUDO} touch "${RELOAD_MARKER}"
   else
     echo "ensure-hermes-ui-proxy: FATAL — nginx -t rejected the rendered config; not reloading" >&2
     exit 1
