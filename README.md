@@ -129,6 +129,12 @@ brain-tools patch (`07-patch-cron-brain.sh`), the agent personas
 on a stale `--host 0.0.0.0` (`scripts/lib/heal-dashboard-units.sh`), rewriting it to
 `127.0.0.1` and restarting it if it isn't running.
 
+Finally it makes sure the browser-access proxy is present and current: `27-install-nginx.sh`
+(idempotent — installs nginx on boxes provisioned before that proxy existed, and
+`reload-or-restart`s it rather than dropping your `ssh -L` session) followed by
+`scripts/lib/ensure-hermes-ui-proxy.sh`, which re-renders each agent's loopback listener
+and its bearer-token include file. See `docs/runbooks/hermes-ui-proxy.md`.
+
 `ollie-fleetctl update orchestrator` (also covered by `update all`) re-runs
 `05-install-orchestrator.sh` and then re-verifies the Supabase dashboard-auth config
 via `scripts/11-install-supabase.sh --verify-only` — a no-op SKIP on boxes that

@@ -430,6 +430,13 @@ def build_update_steps(component):
             # Heal stale per-profile dashboard units still on --host 0.0.0.0 (crash-loop
             # under current Hermes). Idempotent; a correct unit is left byte-identical.
             ("heal-dashboard-units", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "heal-dashboard-units.sh")], 60),
+            # nginx must exist before the UI proxy step: ensure-hermes-ui-proxy.sh
+            # sudo-writes /etc/nginx/** and then runs `nginx -t`, so on a box that
+            # predates this feature (nginx never installed — update calls neither
+            # 03 nor 05) that step would orphan a bearer-token file and then exit 1
+            # on command-not-found, aborting the whole update. 27 is idempotent and
+            # only reloads nginx when its own config test passes.
+            ("install-nginx", ["bash", os.path.join(INSTALL_DIR, "scripts", "27-install-nginx.sh")], 300),
             # Re-render the Hermes UI proxy's nginx config and its token include file.
             # Idempotent; reloads nginx only when something actually changed.
             ("ensure-hermes-ui-proxy", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "ensure-hermes-ui-proxy.sh")], 60),
@@ -807,6 +814,14 @@ def _create_dashboard_unit(profile):
         except OSError:
             pass
         return None
+
+    # Render this agent's nginx listener. ensure-hermes-ui-proxy.sh discovers
+    # dashboards by globbing hermes-dashboard*.service, so it must run AFTER the
+    # unit exists — otherwise an agent created here has no proxy until some
+    # unrelated command (update hermes, a token rotation) happens to re-render
+    # one, and the operator's ssh -L port simply refuses to connect.
+    run_cmd(["bash", os.path.join(INSTALL_DIR, "scripts", "lib",
+                                  "ensure-hermes-ui-proxy.sh")], timeout=60)
     return port
 
 

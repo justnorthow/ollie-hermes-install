@@ -24,10 +24,16 @@ fi
 
 sudo systemctl enable nginx >/dev/null 2>&1 || true
 
+# reload-or-restart, NOT restart: this script is on the routine `ollie-fleetctl
+# update hermes|all` path, and a hard restart drops every in-flight connection —
+# including an operator's SSH-forwarded Hermes dashboard session. reload-or-restart
+# reloads a running nginx in place and starts it when it isn't running, so the
+# fresh-install case still works. Still gated on `nginx -t`: never (re)load a
+# config nginx has rejected.
 if sudo nginx -t; then
-  sudo systemctl restart nginx
+  sudo systemctl reload-or-restart nginx
   echo "==> nginx active: $(systemctl is-active nginx)"
 else
-  echo "27-install-nginx: FATAL — config test failed; not restarting nginx" >&2
+  echo "27-install-nginx: FATAL — config test failed; not reloading nginx" >&2
   exit 1
 fi

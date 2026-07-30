@@ -19,6 +19,10 @@ test_hermes_reapply() {
   assert_eq "hermes has reinstall-souls"       "$(has_step hermes reinstall-souls && echo y)" "y"
   assert_eq "hermes re-applies identity-sync (09)" "$(has_step hermes reinstall-identity-sync && echo y)" "y"
   assert_eq "hermes heals dashboard units"     "$(has_step hermes heal-dashboard-units && echo y)" "y"
+  # nginx first: ensure-hermes-ui-proxy.sh needs it to exist, and pre-branch
+  # boxes never ran 03/05 with it.
+  assert_eq "hermes installs nginx"            "$(has_step hermes install-nginx && echo y)" "y"
+  assert_eq "hermes refreshes the UI proxy"    "$(has_step hermes ensure-hermes-ui-proxy && echo y)" "y"
 }
 # Stack update must re-run 06 (restages compose + refreshes pins), not a bare compose pull/up.
 test_stack_reinstalls_06() {
@@ -36,7 +40,7 @@ test_orch_reinstalls_05() {
 test_readme_matches_code() {
   local readme="$HERE/../README.md"
   local section; section="$(awk '/^## After a .hermes update/{f=1;next} f&&/^## /{f=0} f' "$readme")"
-  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh 11-install-supabase.sh; do
+  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh 11-install-supabase.sh 27-install-nginx.sh ensure-hermes-ui-proxy.sh; do
     assert_eq "after-update section names $s" "$(printf '%s' "$section" | grep -q "$s" && echo y)" "y"
   done
 }

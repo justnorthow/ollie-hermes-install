@@ -362,9 +362,24 @@ class TestUpdateHeartbeat(unittest.TestCase):
                                  "hermes-update", "reinstall-cortex-plugin",
                                  "repatch-cron-brain", "reinstall-souls",
                                  "reinstall-identity-sync", "heal-dashboard-units",
-                                 "ensure-hermes-ui-proxy"])
+                                 "install-nginx", "ensure-hermes-ui-proxy"])
         self.assertEqual(out[-1], {"event": "done", "component": "hermes"})
         self.assertEqual(seen[2], ["hermes", "update"])
+
+    def test_update_installs_nginx_before_the_ui_proxy_step(self):
+        # ensure-hermes-ui-proxy.sh sudo-writes /etc/nginx/** and then runs
+        # `nginx -t`. On any box provisioned before this feature, update calls
+        # neither 03 nor 05, so nginx is absent: that step would orphan a
+        # bearer-token file and exit 1 on command-not-found, aborting the whole
+        # update run. nginx must be installed first, on both hermes and all.
+        for component in ("hermes", "all"):
+            steps = load_fleetctl().build_update_steps(component)
+            names = [s[0] for s in steps]
+            self.assertIn("install-nginx", names, component)
+            self.assertLess(names.index("install-nginx"),
+                            names.index("ensure-hermes-ui-proxy"), component)
+            argv = dict((s[0], s[1]) for s in steps)["install-nginx"]
+            self.assertIn("27-install-nginx.sh", " ".join(argv))
 
     def test_update_stops_and_errors_on_failed_step(self):
         calls = {"n": 0}
@@ -1579,6 +1594,30 @@ class TestSessionTokenDropin(unittest.TestCase):
                 mod._write_session_token_dropin("hermes-dashboard-emma.service"))
             self.assertFalse(
                 os.path.exists(os.path.join(units, "hermes-dashboard-emma.service.d")))
+
+    def test_create_dashboard_unit_renders_ui_proxy(self):
+        # An agent created through `ollie-fleetctl agents create` used to get a
+        # unit and a token drop-in but no nginx listener, so `ssh -L` to its
+        # port refused to connect until some unrelated command re-rendered the
+        # proxy. ensure-hermes-ui-proxy.sh globs hermes-dashboard*.service, so
+        # it has to run after the unit is on disk.
+        mod = load_fleetctl()
+        seen = []
+        mod.run_cmd = lambda args, timeout=30, input_text=None: (
+            seen.append(list(args)), (0, "", ""))[1]
+        with tempfile.TemporaryDirectory() as d:
+            units = self._setup(mod, d)
+            port = mod._create_dashboard_unit("emma")
+            self.assertIsNotNone(port)
+            proxy_calls = [a for a in seen
+                           if any("ensure-hermes-ui-proxy.sh" in x for x in a)]
+            self.assertEqual(len(proxy_calls), 1, seen)
+            self.assertEqual(proxy_calls[0][0], "bash")
+            # The unit and its drop-in must already exist when it runs.
+            self.assertTrue(os.path.exists(
+                os.path.join(units, "hermes-dashboard-emma.service")))
+            enable_idx = next(i for i, a in enumerate(seen) if "enable" in a)
+            self.assertGreater(seen.index(proxy_calls[0]), enable_idx)
 
     def test_whitespace_token_raises(self):
         # systemd splits Environment= at whitespace — a truncated token would
