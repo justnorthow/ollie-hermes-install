@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 # tests/test-app-migrations.sh — direct checks for the migration runner.
 set -uo pipefail
-# lastpipe: without it, the right side of every `| psql_fn` pipe below runs in
-# a forked subshell, so rec_psql's `n` counter resets each call and every
-# apply overwrites APPLIES/1.sql instead of advancing to 2.sql, 3.sql, ... —
-# a bash pipe-subshell artifact in this test's own bookkeeping, unrelated to
-# app-migrations.sh's behavior (confirmed by inspecting CALLS/APPLIED_LIST,
-# which are appended via `>>` and are therefore unaffected either way).
-shopt -s lastpipe
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pass=0; fail=0
 ok()  { echo "PASS: $1"; pass=$((pass+1)); }
@@ -35,16 +28,30 @@ export PATH="$T/bin:$PATH"
 
 . "${DIR}/scripts/lib/app-migrations.sh"
 
+declare -F app_migrations_apply >/dev/null \
+  && ok "app_migrations_apply is defined" || bad "app_migrations_apply is NOT defined"
+
 # ---- 1. applies in filename order, one call per file, INSERT in the same call
 CALLS="$T/calls"; APPLIES="$T/applies"; mkdir -p "$APPLIES"; : > "$CALLS"
 APPLIED_LIST="$T/applied"; : > "$APPLIED_LIST"
-n=0
+# Counter lives in a file, not a shell variable: rec_psql runs as the
+# right-hand side of `| psql_fn` inside the lib, and every stage of a
+# pipeline (including the last) executes in its own forked subshell unless
+# `shopt -s lastpipe` is on AND job control is off — neither of which this
+# suite can assume for every caller (sourced execution, `set -m`, CI
+# wrappers). A shell-variable counter's increments would die with that
+# subshell; a file survives across forks unconditionally, mirroring the
+# APPLY_COUNT_FILE idiom in tests/test-24-install-agent-apps.sh.
+APPLY_COUNT_FILE="$T/apply-count"; rm -f "${APPLY_COUNT_FILE}"
 rec_psql() {
   local args="$*"
   echo "${args}" >> "$CALLS"
   if [[ "${args}" == *"-1 -f -"* ]]; then
-    n=$((n+1)); cat > "${APPLIES}/${n}.sql"
-    sed -nE "s/.*values \('([^']+)'\).*/\1/p" "${APPLIES}/${n}.sql" | tail -1 >> "${APPLIED_LIST}"
+    local idx=0
+    [[ -f "${APPLY_COUNT_FILE}" ]] && idx="$(cat "${APPLY_COUNT_FILE}")"
+    idx=$((idx+1)); echo "${idx}" > "${APPLY_COUNT_FILE}"
+    cat > "${APPLIES}/${idx}.sql"
+    sed -nE "s/.*values \('([^']+)'\).*/\1/p" "${APPLIES}/${idx}.sql" | tail -1 >> "${APPLIED_LIST}"
     return 0
   fi
   if [[ "${args}" == *"select 1 from "* ]]; then
@@ -69,7 +76,7 @@ grep -q 'select 0;' "${APPLIES}/1.sql" \
 # ---- 2. skips an already-applied migration
 : > "$CALLS"; rm -f "${APPLIES}"/*.sql
 printf '0001_first.sql\n' > "${APPLIED_LIST}"
-n=0
+rm -f "${APPLY_COUNT_FILE}"
 OUT="$(app_migrations_apply img rec_psql hia._migrations)"
 grep -q 'skip 0001_first.sql (applied)' <<<"$OUT" \
   && ok "skips an already-applied migration" || bad "did not skip an applied migration"
