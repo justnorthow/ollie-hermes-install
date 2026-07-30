@@ -43,6 +43,11 @@ changed=0
 write_if_changed() {  # $1=path  $2=content  $3=mode(optional)
   local path="$1" content="$2" mode="${3:-}"
   if [[ -f "${path}" ]] && [[ "$(${SUDO} cat "${path}" 2>/dev/null)" == "${content}" ]]; then
+    # Content already matches. Still re-assert mode: it may have drifted
+    # more permissive (restored from backup, touched by another process) and
+    # this file can hold a bearer token. A mode-only fix is not a content
+    # change, so it must NOT set changed=1 or trigger a reload.
+    [[ -n "${mode}" ]] && ${SUDO} chmod "${mode}" "${path}"
     return 0
   fi
   ${SUDO} mkdir -p "$(dirname "${path}")"

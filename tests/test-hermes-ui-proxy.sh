@@ -83,6 +83,23 @@ test_auth_file_mode_600() {
   rm -f "$probe"
 }
 
+test_auth_file_mode_reasserted_on_drift() {
+  local d; d="$(setup_dir)"; run_ensure "$d"
+  local probe; probe="$(mktemp)"; chmod 600 "$probe"
+  if [[ "$(stat -c %a "$probe")" == "600" ]]; then
+    local before; before="$(cat "$d/nginx/hermes-ui-auth.conf")"
+    chmod 644 "$d/nginx/hermes-ui-auth.conf"
+    run_ensure "$d"
+    assert_eq "auth file mode re-asserted to 600 after drift" \
+      "$(stat -c %a "$d/nginx/hermes-ui-auth.conf")" "600"
+    assert_eq "auth file content unchanged by mode-only fix" \
+      "$(cat "$d/nginx/hermes-ui-auth.conf")" "$before"
+  else
+    echo "SKIP: mode-600 assertion (filesystem does not enforce POSIX modes)"
+  fi
+  rm -f "$probe"
+}
+
 test_missing_token_fails_loudly() {
   local d; d="$(setup_dir)"
   printf '\n' > "$d/orch.env"
@@ -100,5 +117,6 @@ test_single_shared_map_no_duplicate_directive
 test_never_binds_public
 test_idempotent_no_drift
 test_auth_file_mode_600
+test_auth_file_mode_reasserted_on_drift
 test_missing_token_fails_loudly
 finish
