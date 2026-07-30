@@ -26,8 +26,12 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER
     # Single-transaction apply: the migration file and its tracker INSERT
     # travel in ONE psql invocation, so a mid-file failure rolls back both —
     # no partially-applied file recorded as done, no applied file unrecorded.
-    { cat "$f"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
-      | "${psql_fn}" -1 -f -
+    if ! { cat "$f"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
+         | "${psql_fn}" -1 -f -; then
+      echo "error: migration ${base} failed — nothing was recorded as applied (single-transaction)" >&2
+      rm -rf "${mig_dir}"
+      return 1
+    fi
   done
   rm -rf "${mig_dir}"
 }
