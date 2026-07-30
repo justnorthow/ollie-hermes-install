@@ -41,8 +41,13 @@ Always confirm the tunnel is up before investigating the box itself.
     bash ~/ollie-hermes-install/scripts/check-box-config.sh | grep hermes-ui
 
 This reports `PASS: hermes-ui-auth matches orchestrator token` or a FAIL naming
-the stale file. Checking is cheaper than re-running. If the gate reports FAIL or
-you need to refresh, run:
+the stale file. Checking is cheaper than re-running. Two other FAILs are worth
+telling apart: `hermes-ui-auth could not be read` means the gate itself could not
+open the mode-600 file (no passwordless sudo, or the file is empty) — it is NOT a
+stale token, and re-running the token script will not fix it. `hermes-ui-proxy
+conf stale` means a listener is rendered for the wrong upstream port, which
+`ensure-hermes-ui-proxy.sh` will correct. If the gate reports FAIL or you need to
+refresh, run:
 
     bash ~/ollie-hermes-install/scripts/lib/ensure-dashboard-token.sh
 
@@ -55,6 +60,10 @@ WebSocket as `101` only when it CLOSES, so a working chat shows **no** 101 —
 check for `pty accepted` in `~/.hermes/logs/` instead.
 
 **Connection refused on the forward.** `systemctl is-active nginx` on the box.
+A full (non-`CHECK_SKIP_LIVE`) gate run covers this: it asserts nginx is active
+and that each agent's listener actually answers 200 on `/api/files`, so a box
+whose files are perfect but whose nginx is dead or never reloaded now FAILs
+instead of reporting done-done.
 
 ## After rotating the dashboard token
 

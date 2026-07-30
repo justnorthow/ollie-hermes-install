@@ -33,7 +33,7 @@ EOF
 # the set of dashboard units, so the fixtures stay self-consistent instead
 # of drifting from a hardcoded token/agent pair.
 sync_ui_fixtures() {
-  local d="$1" token unit name agent line
+  local d="$1" token unit name agent line upstream re='--port[= ]+([0-9]+)'
   mkdir -p "$d/nginx"
   token=""
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -48,7 +48,18 @@ sync_ui_fixtures() {
     name="${unit##*/}"
     agent="${name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
     [[ -z "${agent}" ]] && agent="default"
-    printf 'server { listen 127.0.0.1:9219; }\n' > "$d/nginx/hermes-ui-proxy-${agent}.conf"
+    # Derive the listen port from the unit exactly as ensure-hermes-ui-proxy.sh
+    # does (upstream + 100) and include the auth file, so the fixture is what
+    # the real renderer emits rather than a shape the gate can't distinguish
+    # from a stale conf left over for a retired port.
+    upstream=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == ExecStart=* ]] || continue
+      [[ "$line" =~ $re ]] && upstream="${BASH_REMATCH[1]}"
+    done < "$unit"
+    printf 'server {\n    listen 127.0.0.1:%s;\n    location / {\n        include %s;\n        proxy_pass http://127.0.0.1:%s;\n    }\n}\n' \
+      "$(( upstream + 100 ))" "$d/nginx/hermes-ui-auth.conf" "$upstream" \
+      > "$d/nginx/hermes-ui-proxy-${agent}.conf"
   done
   shopt -u nullglob
 }
@@ -390,6 +401,154 @@ test_ui_proxy_gate_fails_on_missing_auth_file() {
     "$(echo "$out" | grep -c 'FAIL: hermes-ui-auth missing')" "1"
 }
 
+# On a real box ensure-hermes-ui-proxy.sh writes the auth file root-owned mode
+# 600 while /etc/nginx stays 755, so `[[ -f ]]` succeeds for the service user
+# but the READ is denied and yields "". The gate then compared "" against the
+# expected header and reported "hermes-ui-auth stale" on a perfectly healthy
+# box — the primary diagnostic in the runbook, permanently unconvergeable.
+# NTFS has no modes and the fixtures are written by the test user, which is
+# exactly why the bug was invisible here. Simulate it instead: leave the
+# fixture file empty (what a denied read looks like to the gate) and put a
+# `sudo` on PATH that serves the root-only shadow copy.
+stub_sudo() { # $1=dir  $2=exit code for the privileged read (0 = it works)
+  local d="$1" rc="$2"
+  mkdir -p "$d/bin"
+  cat > "$d/bin/sudo" <<SH
+#!/usr/bin/env bash
+args=(); for a in "\$@"; do [[ "\$a" == -n ]] && continue; args+=("\$a"); done
+[[ $rc -eq 0 ]] || exit $rc
+if [[ "\${args[0]}" == cat && -f "\${args[1]}.root" ]]; then exec cat "\${args[1]}.root"; fi
+exec "\${args[@]}"
+SH
+  chmod +x "$d/bin/sudo"
+}
+
+test_ui_auth_read_uses_privileged_path() {
+  local d rc out
+  d="$(setup_healthy)"; stub_sudo "$d" 0
+  mv "$d/nginx/hermes-ui-auth.conf" "$d/nginx/hermes-ui-auth.conf.root"
+  : > "$d/nginx/hermes-ui-auth.conf"      # present, but unreadable-looking
+  out="$(run_gate "$d" PATH="$d/bin:$PATH")"; rc=$?
+  assert_eq "root-owned auth file still exits 0" "$rc" "0"
+  assert_eq "matching content PASSes via the privileged read" \
+    "$(echo "$out" | grep -c 'PASS: hermes-ui-auth matches orchestrator token')" "1"
+  assert_eq "healthy box is never called stale" \
+    "$(echo "$out" | grep -c 'hermes-ui-auth stale')" "0"
+}
+
+test_ui_auth_stale_still_fails_through_privileged_path() {
+  # The fix must not turn every mismatch into "unreadable": a genuinely stale
+  # root-owned file has to keep FAILing with the remedy message.
+  local d rc out
+  d="$(setup_healthy)"; stub_sudo "$d" 0
+  printf 'proxy_set_header Authorization "Bearer STALE-TOKEN";' \
+    > "$d/nginx/hermes-ui-auth.conf.root"
+  : > "$d/nginx/hermes-ui-auth.conf"
+  out="$(run_gate "$d" PATH="$d/bin:$PATH")"; rc=$?
+  assert_eq "stale root-owned auth file exits 1" "$rc" "1"
+  assert_eq "stale FAIL names the remedy" \
+    "$(echo "$out" | grep -c 'FAIL: hermes-ui-auth stale')" "1"
+}
+
+test_ui_auth_unreadable_fails_explicitly() {
+  # No privileged read available: the gate must say it could not read the file,
+  # never silently compare an empty string and call it "stale".
+  local d rc out
+  d="$(setup_healthy)"; stub_sudo "$d" 1
+  : > "$d/nginx/hermes-ui-auth.conf"
+  out="$(run_gate "$d" PATH="$d/bin:$PATH")"; rc=$?
+  assert_eq "unreadable auth file exits 1" "$rc" "1"
+  assert_eq "unreadable FAIL is explicit" \
+    "$(echo "$out" | grep -c 'FAIL: hermes-ui-auth could not be read')" "1"
+  assert_eq "unreadable is not reported as stale" \
+    "$(echo "$out" | grep -c 'hermes-ui-auth stale')" "0"
+}
+
+test_ui_proxy_conf_must_match_expected_port() {
+  # Presence-only let a conf left behind for a retired upstream PASS.
+  local d rc out
+  d="$(setup_healthy)"
+  sed -i 's|listen 127.0.0.1:9219;|listen 127.0.0.1:9999;|' \
+    "$d/nginx/hermes-ui-proxy-default.conf"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "wrong listen port exits 1" "$rc" "1"
+  assert_eq "stale conf FAIL names the expected port" \
+    "$(echo "$out" | grep -c "FAIL: hermes-ui-proxy conf stale (default: expected 'listen 127.0.0.1:9219;'")" "1"
+}
+
+test_ui_proxy_conf_must_include_auth_file() {
+  # A conf without the auth include renders a proxy that 401s every request.
+  local d rc out
+  d="$(setup_healthy)"
+  sed -i '/include /d' "$d/nginx/hermes-ui-proxy-default.conf"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "missing auth include exits 1" "$rc" "1"
+  assert_eq "missing include FAIL named" \
+    "$(echo "$out" | grep -c 'FAIL: hermes-ui-proxy conf missing the auth include (default')" "1"
+}
+
+# --- liveness (CHECK_SKIP_LIVE=0) -------------------------------------------
+# Correct files with a dead — or merely never-reloaded — nginx used to report
+# PASS, which is the one thing this gate must never do. These runs stub the
+# live probes; only the two ui-proxy liveness lines are asserted (the other
+# section-5 checks legitimately fail against stubs).
+stub_live() { # $1=dir  $2=nginx is-active rc  $3=http code the proxy answers
+  local d="$1" nginx_rc="$2" code="$3"
+  mkdir -p "$d/bin"
+  cat > "$d/bin/systemctl" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == nginx ]] && exit $nginx_rc; done
+exit 3
+SH
+  cat > "$d/bin/docker" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$d/bin/curl" <<SH
+#!/usr/bin/env bash
+printf '%s' "$code"
+SH
+  chmod +x "$d/bin/systemctl" "$d/bin/docker" "$d/bin/curl"
+}
+
+test_ui_proxy_liveness_is_skipped_under_skip_live() {
+  local d out
+  d="$(setup_healthy)"
+  out="$(run_gate "$d")"
+  assert_eq "no nginx systemd probe under CHECK_SKIP_LIVE=1" \
+    "$(echo "$out" | grep -cE '(PASS|FAIL): nginx (not )?active')" "0"
+  assert_eq "no proxy http probe under CHECK_SKIP_LIVE=1" \
+    "$(echo "$out" | grep -c 'hermes-ui-proxy answers')" "0"
+}
+
+test_ui_proxy_liveness_passes_when_live() {
+  local d out
+  d="$(setup_healthy)"; stub_live "$d" 0 200
+  out="$(run_gate "$d" CHECK_SKIP_LIVE=0 PATH="$d/bin:$PATH")"
+  assert_eq "nginx active PASS" "$(echo "$out" | grep -c 'PASS: nginx active')" "1"
+  assert_eq "proxy answers 200 PASS" \
+    "$(echo "$out" | grep -c 'PASS: hermes-ui-proxy answers 200 (default on 127.0.0.1:9219)')" "1"
+}
+
+test_ui_proxy_liveness_fails_on_dead_nginx() {
+  local d rc out
+  d="$(setup_healthy)"; stub_live "$d" 3 000
+  out="$(run_gate "$d" CHECK_SKIP_LIVE=0 PATH="$d/bin:$PATH")"; rc=$?
+  assert_eq "dead nginx exits 1" "$rc" "1"
+  assert_eq "dead nginx FAIL named" "$(echo "$out" | grep -c 'FAIL: nginx not active')" "1"
+}
+
+test_ui_proxy_liveness_fails_when_proxy_does_not_answer() {
+  # nginx up but never reloaded after a token rotation: the files are perfect
+  # and the proxy 401s. Files alone must not PASS this box.
+  local d rc out
+  d="$(setup_healthy)"; stub_live "$d" 0 401
+  out="$(run_gate "$d" CHECK_SKIP_LIVE=0 PATH="$d/bin:$PATH")"; rc=$?
+  assert_eq "non-200 proxy exits 1" "$rc" "1"
+  assert_eq "non-200 proxy FAIL named" \
+    "$(echo "$out" | grep -c "FAIL: hermes-ui-proxy did not answer 200 (default on 127.0.0.1:9219 returned '401'")" "1"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
@@ -403,4 +562,13 @@ test_ui_proxy_gate_passes_when_healthy
 test_ui_proxy_gate_fails_on_stale_token
 test_ui_proxy_gate_fails_on_missing_conf
 test_ui_proxy_gate_fails_on_missing_auth_file
+test_ui_auth_read_uses_privileged_path
+test_ui_auth_stale_still_fails_through_privileged_path
+test_ui_auth_unreadable_fails_explicitly
+test_ui_proxy_conf_must_match_expected_port
+test_ui_proxy_conf_must_include_auth_file
+test_ui_proxy_liveness_is_skipped_under_skip_live
+test_ui_proxy_liveness_passes_when_live
+test_ui_proxy_liveness_fails_on_dead_nginx
+test_ui_proxy_liveness_fails_when_proxy_does_not_answer
 finish

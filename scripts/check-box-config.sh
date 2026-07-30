@@ -88,27 +88,111 @@ for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   fi
 done
 
-# 3b. Hermes UI proxy — one conf per dashboard unit, auth file matching the token.
+# 3b. Hermes UI proxy — one conf per dashboard unit, listening on the agent's
+# upstream port + 100 and including the auth file; the auth file itself must
+# match the orchestrator's current token. Presence alone is not enough: a conf
+# left behind for a retired port, or one missing the auth include, renders a
+# proxy that either binds the wrong port or 401s every request.
+UI_PORT_OFFSET=100
+UI_LISTEN_PORTS=()   # "<agent>:<listen>" for the liveness probe below
+
+# Builtins only (no forks): this gate runs on every box and its runtime is
+# dominated by subprocess spawns.
+ui_upstream_port() { # $1=unit path -> the dashboard's --port, empty if absent
+  local line port="" re='--port[= ]+([0-9]+)'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == ExecStart=* ]] || continue
+    [[ "${line}" =~ $re ]] && port="${BASH_REMATCH[1]}"
+  done < "$1"
+  printf '%s' "${port}"
+}
+
+read_text_file() { # $1=path -> file content on stdout
+  local line out=""
+  while IFS= read -r line || [[ -n "${line}" ]]; do out+="${line}"$'\n'; done < "$1"
+  printf '%s' "${out}"
+}
+
+# ensure-hermes-ui-proxy.sh writes the auth file root-owned mode 600 (sudo tee
+# + sudo chmod 600) while /etc/nginx stays 755 — so `[[ -f ]]` succeeds for the
+# service user but a plain read is DENIED and yields an empty string. Comparing
+# that empty string would report a perfectly healthy box as "stale" forever and
+# send the operator into a loop that cannot converge. Mirror the writer's
+# privilege handling: read it directly when that works, otherwise `sudo -n cat`;
+# and if no read path works, say so explicitly rather than silently comparing
+# nothing. Read-only — this gate never mutates.
+read_nginx_auth_file() { # -> content on stdout; rc 1 = could not read it
+  local out
+  out="$(read_text_file "${NGINX_AUTH_FILE}" 2>/dev/null || true)"
+  if [[ -n "${out}" ]]; then printf '%s' "${out}"; return 0; fi
+  # Empty is never valid content here, so it is indistinguishable from a denied
+  # read — escalate rather than guess.
+  if out="$(sudo -n cat "${NGINX_AUTH_FILE}" 2>/dev/null)" && [[ -n "${out}" ]]; then
+    printf '%s' "${out}"; return 0
+  fi
+  return 1
+}
+
 for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   name="${unit##*/}"
   agent="${name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
   [[ -z "${agent}" ]] && agent="default"
-  if [[ -f "${NGINX_CONF_DIR}/hermes-ui-proxy-${agent}.conf" ]]; then
-    pass "hermes-ui-proxy conf present (${agent})"
-  else
+  conf="${NGINX_CONF_DIR}/hermes-ui-proxy-${agent}.conf"
+  if [[ ! -f "${conf}" ]]; then
     fail "hermes-ui-proxy conf missing (${agent})"
+    continue
+  fi
+  upstream="$(ui_upstream_port "${unit}")"
+  if [[ -z "${upstream}" ]]; then
+    fail "hermes-ui-proxy conf unverifiable (${agent}: no --port in ${name}, cannot derive the expected listen port)"
+    continue
+  fi
+  listen=$(( upstream + UI_PORT_OFFSET ))
+  conf_body="$(read_text_file "${conf}")"
+  if [[ "${conf_body}" != *"listen 127.0.0.1:${listen};"* ]]; then
+    fail "hermes-ui-proxy conf stale (${agent}: expected 'listen 127.0.0.1:${listen};' for upstream ${upstream} — rerun ensure-hermes-ui-proxy.sh)"
+  elif [[ "${conf_body}" != *"include ${NGINX_AUTH_FILE};"* ]]; then
+    fail "hermes-ui-proxy conf missing the auth include (${agent}: without ${NGINX_AUTH_FILE} every proxied request 401s — rerun ensure-hermes-ui-proxy.sh)"
+  else
+    pass "hermes-ui-proxy conf present (${agent})"
+    UI_LISTEN_PORTS+=("${agent}:${listen}")
   fi
 done
 
 if [[ -f "${NGINX_AUTH_FILE}" ]]; then
   printf -v EXPECTED_AUTH 'proxy_set_header Authorization "Bearer %s";' "${TOKEN}"
-  if [[ "$(<"${NGINX_AUTH_FILE}")" == "${EXPECTED_AUTH}" ]]; then
-    pass "hermes-ui-auth matches orchestrator token"
+  if AUTH_BODY="$(read_nginx_auth_file)"; then
+    if [[ "${AUTH_BODY}" == "${EXPECTED_AUTH}" ]]; then
+      pass "hermes-ui-auth matches orchestrator token"
+    else
+      fail "hermes-ui-auth stale (does not match HERMES_DASHBOARD_TOKEN — rerun ensure-dashboard-token.sh)"
+    fi
   else
-    fail "hermes-ui-auth stale (does not match HERMES_DASHBOARD_TOKEN — rerun ensure-dashboard-token.sh)"
+    fail "hermes-ui-auth could not be read (${NGINX_AUTH_FILE} is empty, or root-owned mode 600 and passwordless sudo is unavailable) — cannot verify it against HERMES_DASHBOARD_TOKEN"
   fi
 else
   fail "hermes-ui-auth missing (${NGINX_AUTH_FILE})"
+fi
+
+# 3c. Hermes UI proxy liveness. Correct files with a dead — or merely
+# never-reloaded — nginx serves nothing, so files alone must not PASS the box.
+# Network/systemd probes, so gated on CHECK_SKIP_LIVE like the section-5 checks.
+if [[ "${SKIP_LIVE}" != "1" ]]; then
+  if systemctl is-active --quiet nginx; then
+    pass "nginx active"
+  else
+    fail "nginx not active (hermes UI proxy is down — sudo systemctl start nginx)"
+  fi
+  for entry in "${UI_LISTEN_PORTS[@]:-}"; do
+    [[ -z "${entry}" ]] && continue
+    ui_agent="${entry%%:*}"; ui_port="${entry##*:}"
+    UI_CODE="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${ui_port}/api/files" 2>/dev/null || echo 000)"
+    if [[ "${UI_CODE}" == "200" ]]; then
+      pass "hermes-ui-proxy answers 200 (${ui_agent} on 127.0.0.1:${ui_port})"
+    else
+      fail "hermes-ui-proxy did not answer 200 (${ui_agent} on 127.0.0.1:${ui_port} returned '${UI_CODE}' — nginx may need a reload, or the injected token is stale)"
+    fi
+  done
 fi
 
 # 4. stack .env login-gate keys
