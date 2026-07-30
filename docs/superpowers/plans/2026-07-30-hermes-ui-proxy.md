@@ -545,6 +545,69 @@ git commit -m "feat(hermes-ui): install the UI proxy during profile install"
 
 ---
 
+### Task 4b: Install nginx on the NON-OPTIONAL path *(added mid-execution — plan defect)*
+
+**Why this exists.** Task 4 wired nginx into `03-install-profile.sh`, but `README.md:46`
+marks that step **"(Optional) Add additional profiles for extra agents"** — a default
+single-profile box never runs it. `05-install-orchestrator.sh` is non-optional (README
+step 7) and is the only caller of `ensure-dashboard-token.sh` on that path, and it
+contains zero nginx references. So without this task the proxy never installs on the
+most common box configuration: the token script would call the proxy script, hit the
+"need write access to /etc/nginx" guard, warn, and the feature would silently not exist.
+
+This was missed at planning time because the plan assumed `03` was universal. It is not.
+
+**Files:**
+- Modify: `scripts/05-install-orchestrator.sh` (before its `ensure-dashboard-token.sh` call, currently line 68)
+
+**Interfaces:**
+- Consumes: `scripts/27-install-nginx.sh` (Task 3), and the internal proxy call inside `ensure-dashboard-token.sh` (Task 2).
+- Produces: nginx guaranteed present on every box, whether or not `03` ever runs.
+
+- [ ] **Step 1: Confirm the gap still holds**
+
+Run:
+```bash
+grep -n 'Optional' README.md | head -3
+grep -c nginx scripts/05-install-orchestrator.sh
+grep -n 'ensure-dashboard-token' scripts/05-install-orchestrator.sh
+```
+Expected: README marks the profile step optional; `05` has 0 nginx references; `05`
+calls the token script. If any differs, STOP and report — the premise has changed.
+
+- [ ] **Step 2: Make the edit**
+
+Insert immediately before the existing `ENSURE_TOKEN_NO_RESTART=1 bash "${SCRIPT_DIR}/lib/ensure-dashboard-token.sh"` line:
+
+```bash
+# nginx must exist before the token script runs: it calls ensure-hermes-ui-proxy.sh
+# internally, which exits 1 without write access to /etc/nginx. 03-install-profile.sh
+# also installs nginx, but it is OPTIONAL (README step 5) and a default single-profile
+# box never runs it — so this call is what guarantees the proxy exists at all.
+# 27-install-nginx.sh is idempotent, so running it on both paths is free.
+bash "${SCRIPT_DIR}/27-install-nginx.sh"
+```
+
+- [ ] **Step 3: Verify ordering by inspection**
+
+Run: `grep -n '27-install-nginx\|ensure-dashboard-token' scripts/05-install-orchestrator.sh`
+Expected: the nginx line precedes the token line.
+
+- [ ] **Step 4: Syntax check and full suite**
+
+Run: `bash -n scripts/05-install-orchestrator.sh` then the full shell suite.
+Expected: syntax clean; all suites green. `test-24-install-agent-apps.sh` takes ~2m37s
+on Windows — normal, not a hang.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/05-install-orchestrator.sh
+git commit -m "fix(hermes-ui): install nginx on the non-optional orchestrator path"
+```
+
+---
+
 ### Task 5: Add to the `update hermes` runbook
 
 **Files:**
@@ -854,6 +917,23 @@ Expected: `pty accepted … mode=loopback cred=token`. Do **not** look for `101`
 - [ ] **Step 5: Rotation test — the one most likely to be skipped**
 
 Rotate `HERMES_DASHBOARD_TOKEN` in `~/.config/ollie-orchestrator/.env`, re-run `ensure-dashboard-token.sh`, restart `ollie-orchestrator`, then repeat Steps 2-4. Also confirm the OLD token now 401s directly against 9119.
+
+- [ ] **Step 5b: File modes — the assertions Windows could NOT run**
+
+Every mode-600 assertion in `tests/test-hermes-ui-proxy.sh` SKIPs on the NTFS dev
+box, so mode enforcement is verified by reasoning only until this step. The
+sandbox is Linux and enforces modes, so verify for real:
+
+```bash
+stat -c '%a %U %n' /etc/nginx/hermes-ui-auth.conf     # expect 600
+sudo chmod 644 /etc/nginx/hermes-ui-auth.conf
+bash ~/ollie-hermes-install/scripts/lib/ensure-hermes-ui-proxy.sh
+stat -c '%a %n' /etc/nginx/hermes-ui-auth.conf        # expect 600 again
+```
+
+The third command must restore 600 **without** reporting a content write — a
+mode-only correction must not trigger an nginx reload. Confirm no `wrote …` line
+appears in its output.
 
 - [ ] **Step 6: Gate and durability**
 
