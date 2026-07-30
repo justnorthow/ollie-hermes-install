@@ -549,6 +549,60 @@ test_ui_proxy_liveness_fails_when_proxy_does_not_answer() {
     "$(echo "$out" | grep -c "FAIL: hermes-ui-proxy did not answer 200 (default on 127.0.0.1:9219 returned '401'")" "1"
 }
 
+# --- liveness probe hygiene -------------------------------------------------
+# Both of these were found on the sandbox 2026-07-30 and neither was catchable
+# with the stub above, which always exits 0 and ignores -o.
+
+stub_live_recording() { # $1=dir  $2=curl exit code  $3=what curl prints
+  local d="$1" curl_rc="$2" body="$3"
+  mkdir -p "$d/bin"
+  cat > "$d/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do [[ "$a" == nginx ]] && exit 0; done
+exit 3
+SH
+  cat > "$d/bin/docker" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$d/bin/curl" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$d/curl-args.log"
+printf '%s' "$body"
+exit $curl_rc
+SH
+  chmod +x "$d/bin/systemctl" "$d/bin/docker" "$d/bin/curl"
+  : > "$d/curl-args.log"
+}
+
+test_liveness_probe_discards_the_body_to_dev_null() {
+  # The source had `-o \dev\null` with BACKSLASHES. bash unescapes that to
+  # `-o devnull`, so curl wrote every response body into a file literally named
+  # devnull in the working directory — it showed up as an untracked `devnull`
+  # in ~/ollie-hermes-install after a gate run.
+  local d; d="$(setup_healthy)"; stub_live_recording "$d" 0 200
+  run_gate "$d" CHECK_SKIP_LIVE=0 PATH="$d/bin:$PATH" >/dev/null 2>&1
+  # Scoped to the ui-proxy probe: other sections of the gate also call curl and
+  # already pass a correct /dev/null, so an unscoped grep matches those and the
+  # assertion silently proves nothing.
+  assert_eq "ui-proxy probe discards the body to /dev/null" \
+    "$(grep -- ':9219/api/files' "$d/curl-args.log" | grep -c -- '-o /dev/null')" "1"
+  assert_eq "ui-proxy probe never writes a stray devnull file" \
+    "$(grep -- ':9219/api/files' "$d/curl-args.log" | grep -c -- '-o devnull')" "0"
+}
+
+test_unreachable_proxy_reports_one_status_code() {
+  # Real curl prints '000' via -w AND exits non-zero when the connection is
+  # refused. The redundant `|| echo 000` then appended a SECOND one (no trailing
+  # newline on -w), so operators saw the nonsense code '000000'.
+  local d out; d="$(setup_healthy)"; stub_live_recording "$d" 7 000
+  out="$(run_gate "$d" CHECK_SKIP_LIVE=0 PATH="$d/bin:$PATH" 2>&1)"
+  assert_eq "reports a single 000" \
+    "$(printf '%s' "$out" | grep -c "returned '000'")" "1"
+  assert_eq "never reports a doubled 000000" \
+    "$(printf '%s' "$out" | grep -c '000000')" "0"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
@@ -571,4 +625,6 @@ test_ui_proxy_liveness_is_skipped_under_skip_live
 test_ui_proxy_liveness_passes_when_live
 test_ui_proxy_liveness_fails_on_dead_nginx
 test_ui_proxy_liveness_fails_when_proxy_does_not_answer
+test_liveness_probe_discards_the_body_to_dev_null
+test_unreachable_proxy_reports_one_status_code
 finish

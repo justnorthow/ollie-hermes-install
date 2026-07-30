@@ -186,7 +186,11 @@ if [[ "${SKIP_LIVE}" != "1" ]]; then
   for entry in "${UI_LISTEN_PORTS[@]:-}"; do
     [[ -z "${entry}" ]] && continue
     ui_agent="${entry%%:*}"; ui_port="${entry##*:}"
-    UI_CODE="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${ui_port}/api/files" 2>/dev/null || echo 000)"
+    # No `|| echo 000` fallback: curl's -w already emits 000 on a refused or
+    # timed-out connection, and with no trailing newline, so the fallback
+    # CONCATENATED a second one and operators saw the nonsense code '000000'.
+    UI_CODE="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${ui_port}/api/files" 2>/dev/null || true)"
+    [[ -z "${UI_CODE}" ]] && UI_CODE=000
     if [[ "${UI_CODE}" == "200" ]]; then
       pass "hermes-ui-proxy answers 200 (${ui_agent} on 127.0.0.1:${ui_port})"
     else
