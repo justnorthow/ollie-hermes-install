@@ -805,6 +805,6 @@ run "badname" "${STDIN[@]}" && bad "invalid app name should fail" || ok "invalid
 grep -q "foo_bar" "$T/out.log" && ok "error names the offending app" || bad "error does not name the app"
 grep -qE '\^\[a-z\]\[a-z0-9\]\*\$' "$T/out.log" \
   && ok "error states the required pattern" || bad "error omits the pattern"
-[[ ! -s "$SUB20_LOG" ]] && ok "no install work ran before validation" || bad "install work ran before validation"
+[[ ! -s "$CURL_LOG" ]] && ok "validation precedes the orchestrator preflight (empty CURL_LOG proves it)" || bad "orchestrator preflight ran before validation"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
