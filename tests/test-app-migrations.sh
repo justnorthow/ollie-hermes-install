@@ -92,4 +92,39 @@ fail_psql() {
 ( set -e; app_migrations_apply img fail_psql hia._migrations >/dev/null ) \
   && bad "a failing apply was swallowed" || ok "a failing apply propagates to the caller"
 
+# ---- 4. RLS gate: FAILING direction first
+#
+# The existence check below is NOT redundant. Without it, this block passes
+# before the feature is written: an undefined function makes the subshell exit
+# non-zero, and the `||` branch reads that as "the gate correctly refused".
+# That is the same class of lying probe this gate exists to prevent, so the
+# absence of the function has to be its own assertion.
+declare -F app_migrations_rls_gate >/dev/null \
+  && ok "app_migrations_rls_gate is defined" || bad "app_migrations_rls_gate is NOT defined"
+
+gate_psql_bad() {  # one table without RLS
+  [[ "$*" == *"relrowsecurity"* ]] && { echo "reports"; return 0; }
+  return 0
+}
+( set -e; app_migrations_rls_gate gate_psql_bad hia >"$T/gate.log" 2>&1 ) \
+  && bad "RLS gate passed a schema with an unprotected table" \
+  || ok "RLS gate FAILS on a table without RLS"
+grep -q 'reports' "$T/gate.log" \
+  && ok "gate names the offending table" || bad "gate does not name the table"
+grep -qi 'anon' "$T/gate.log" \
+  && ok "gate explains the shared-anon-key consequence" || bad "gate message lacks the reason"
+
+# ---- 5. RLS gate: passing direction
+gate_psql_ok() { return 0; }   # empty result = every table protected
+( set -e; app_migrations_rls_gate gate_psql_ok hia >/dev/null 2>&1 ) \
+  && ok "RLS gate passes when every table has RLS" || bad "RLS gate false-failed"
+
+# ---- 6. the gate runs as part of an apply, after the migrations
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
+app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
+grep -q 'relrowsecurity' "$CALLS" \
+  && ok "apply runs the RLS gate" || bad "apply did not run the RLS gate"
+tail -1 "$CALLS" | grep -q 'relrowsecurity' \
+  && ok "the gate runs AFTER the migrations, not before" || bad "gate ran before the migrations finished"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
