@@ -65,6 +65,12 @@ echo "==> step 3b: render agent proxy maps into orchestrator .env"
 detect_agents | python3 "${SCRIPT_DIR}/lib/render-proxy-maps.py"
 
 echo "==> step 3c: ensure stable dashboard session token + drop-ins"
+# nginx must exist before the token script runs: it calls ensure-hermes-ui-proxy.sh
+# internally, which exits 1 without write access to /etc/nginx. 03-install-profile.sh
+# also installs nginx, but it is OPTIONAL (README step 5) and a default single-profile
+# box never runs it — so this call is what guarantees the proxy exists at all.
+# 27-install-nginx.sh is idempotent, so running it on both paths is free.
+bash "${SCRIPT_DIR}/27-install-nginx.sh"
 ENSURE_TOKEN_NO_RESTART=1 bash "${SCRIPT_DIR}/lib/ensure-dashboard-token.sh"
 systemctl --user daemon-reload
 for u in "${HOME}/.config/systemd/user"/hermes-dashboard*.service; do
