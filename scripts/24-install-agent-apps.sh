@@ -7,9 +7,12 @@
 # key are upserted into the orchestrator's per-profile app registry). Caddy
 # (22) needs root, so this prints the exact command —
 # REMINDER: 22 renders from ONLY its args; pass the box's FULL vhost set.
-# Box-derived config is resolved here (stack anon key, orchestrator loopback);
+# Box-derived config is resolved here (core anon key, orchestrator loopback);
 # operator secrets arrive on stdin and flow through, never argv.
-# Input (stdin): APP_HOST (req first run), IMAGE_TARBALL (req first
+# Input (stdin): APP_HOST, SB_HOST (both req first run — SB_HOST is read and
+#   still enforced below even though the app's OWN Supabase identity now
+#   comes from the core stack, not a per-app one; retiring this requirement
+#   is a later task's scope, not this one's), IMAGE_TARBALL (req first
 #   run), GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT,
 #   STACK_ENV_FILE, APP_ENV_<KEY>... passthrough.
 # STACK_ENV_FILE (default ${HOME}/hermes-stack/.env) is the dashboard's OWN
@@ -91,8 +94,8 @@ ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d=
   exit 1
 }
 
-# WARNINGS counts every non-fatal WARNING emitted below (missing SSO secret,
-# a BASE_URL skip/no-op, a failed dashboard recreate, ...). A non-zero count
+# WARNINGS counts every non-fatal WARNING emitted below (an unreachable kong
+# bridge probe, a BASE_URL skip/no-op, a failed dashboard recreate, ...). A non-zero count
 # suppresses the final ✓ banner (see the end of this script) — the run still
 # exits 0, but the operator gets an unmissable ⚠ instead of a false-positive
 # success line.
@@ -190,13 +193,13 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   [[ -z "${APP_HOST}" && -f "${SB_ENV}" ]] && APP_HOST="$(supabase_app_env_val "${SB_ENV}" SITE_URL)" && APP_HOST="${APP_HOST#https://}"
   [[ -n "${APP_HOST}" && -n "${SB_HOST}" ]] || { echo "error: APP_HOST and SB_HOST required" >&2; exit 1; }
 
-  echo "==> agent-apps [${NAME}] 1/4: app schema + owner role in the core stack"
+  echo "==> agent-apps [${NAME}] 1/5: app schema + owner role in the core stack"
   {
     echo "APP_NAME=${NAME}"
     echo "CORE_STACK_DIR=${CORE_DIR}"
   } | bash "${SUB26}"
 
-  echo "==> agent-apps [${NAME}] 2/4: app migrations into schema '${NAME}'"
+  echo "==> agent-apps [${NAME}] 2/5: app migrations into schema '${NAME}'"
   if [[ -n "${IMAGE_TARBALL}" ]]; then
     LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
     if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
@@ -209,16 +212,25 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   CORE_PGPASS="$(supabase_app_env_val "${CORE_DIR}/.env" POSTGRES_PASSWORD)"
   [[ -n "${CORE_PGPASS}" ]] || { echo "error: POSTGRES_PASSWORD missing from ${CORE_DIR}/.env" >&2; exit 1; }
   core_psql() {
-    # Runs as <name>_owner, NOT supabase_admin: objects must be owned by the
-    # app's role so they inherit the default privileges 26 installed for the
-    # PostgREST roles. Created as supabase_admin they would be unreachable.
+    # ${NAME}_owner is NOLOGIN by design (26 CREATEs it that way and only
+    # GRANTs it to authenticator, for PostgREST's role-switching — it was
+    # never meant to be connected to directly). Postgres rejects a NOLOGIN
+    # role at connection time, before authentication is even consulted, so
+    # connecting with `-U ${NAME}_owner` fails outright regardless of
+    # PGPASSWORD/pg_hba. Connect as postgres instead and switch the SESSION
+    # role via PGOPTIONS. Objects created under that session role are still
+    # OWNED BY ${NAME}_owner (ownership follows the session/current role, not
+    # the login role), so they still inherit the default privileges 26
+    # installed for the PostgREST roles — the ownership requirement this
+    # comment used to describe is preserved; only the connection mechanism
+    # changed. Do not "simplify" this back to `-U ${NAME}_owner`.
     docker compose -f "${CORE_DIR}/docker-compose.yml" --env-file "${CORE_DIR}/.env" \
-      exec -T -e PGPASSWORD="${CORE_PGPASS}" db \
-      psql -h 127.0.0.1 -U "${NAME}_owner" -d postgres -v ON_ERROR_STOP=1 -qtA "$@"
+      exec -T -e PGPASSWORD="${CORE_PGPASS}" -e PGOPTIONS="-c role=${NAME}_owner" db \
+      psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -qtA "$@"
   }
   app_migrations_apply "${IMG}" core_psql "${NAME}._migrations" "${NAME}"
 
-  echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
+  echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
   # ORCH_KEY was already resolved above (before the preflight).
   CORE_URL="$(supabase_app_env_val "${CORE_DIR}/.env" SUPABASE_PUBLIC_URL)"
   ANON="$(supabase_app_env_val "${CORE_DIR}/.env" ANON_KEY)"

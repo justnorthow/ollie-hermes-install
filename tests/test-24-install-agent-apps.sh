@@ -374,7 +374,7 @@ run() { # PROFILE KEY=VALUE...
 }
 
 # 1. happy path: SUB20 gets the right stack params
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && ok "happy path exits 0" || bad "happy path exits 0"
@@ -385,8 +385,14 @@ grep -q 'create table if not exists popbys._migrations' "$DOCKER_LOG" \
   && ok "tracker is popbys._migrations" || bad "tracker is not the per-schema table"
 grep -q 'public._app_migrations' "$DOCKER_LOG" \
   && bad "still tracking in public._app_migrations" || ok "no longer tracking in public._app_migrations"
-grep -qE 'psql .*-U popbys_owner' "$DOCKER_LOG" \
-  && ok "migrations run as popbys_owner" || bad "migrations do not run as the owner role"
+# popbys_owner is NOLOGIN by design (26 grants it to authenticator only) — a
+# real connection as `-U popbys_owner` would be rejected by Postgres before
+# auth is even consulted. The correct shape connects as postgres and SWITCHES
+# the session role via PGOPTIONS, so that is what must be evidenced here, not
+# a `-U popbys_owner` flag (which would in fact be the broken shape).
+grep -qE -- '-e PGOPTIONS=-c role=popbys_owner' "$DOCKER_LOG" \
+  && ok "migrations connect as postgres and switch to the popbys_owner session role" \
+  || bad "migrations do not switch to the owner role via a session role switch"
 
 # 2. SUB23 gets app-server params, including the resolved anon key + ollie env
 grep -q '^APP_NAME=popbys$' "$SUB23_LOG" && ok "SUB23 got APP_NAME" || bad "SUB23 got APP_NAME"
@@ -417,7 +423,7 @@ grep -q "^IMAGE_TARBALL=$T/img.tar$" "$SUB23_LOG" && ok "SUB23 got IMAGE_TARBALL
 grep -qiE 'SERVICE_ROLE|core-service-role-DO-NOT-LEAK' "$SUB23_LOG" \
   && bad "a service-role key reached the app environment" \
   || ok "no service-role key in the app environment, in any form"
-grep -qi 'SSO_SECRET' "$SUB23_LOG" \
+grep -qiE 'SSO_SECRET|sso-secret-1' "$SUB23_LOG" \
   && bad "an SSO secret reached the app environment" || ok "no SSO secret in the app environment"
 grep -q '^APP_ENV_APP_BASE_PATH=/apps/popbys$' "$SUB23_LOG" && ok "SUB23 got APP_BASE_PATH" || bad "SUB23 got APP_BASE_PATH"
 
@@ -467,7 +473,7 @@ grep -q "insert into popbys._migrations (name) values ('0002_second.sql')" "$APP
 # 4. re-run: both migrations already applied -> no -f applies this time
 echo "0001_init.sql" >> "$MIGSTATE_FILE"
 echo "0002_second.sql" >> "$MIGSTATE_FILE"
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && ok "re-run exits 0" || bad "re-run exits 0"
 [ "$(grep -c -- ' -1 -f -$' "$DOCKER_LOG")" = "0" ] && ok "re-run applies no migrations" || bad "re-run applies no migrations"
@@ -493,7 +499,7 @@ grep -qE "sudo bash [^ ]*25-install-app-bridge\.sh popbys:8130" "$T/out.log" \
 # the same single-image guard 23 uses, so migrations aren't extracted from
 # an arbitrary image before a later multi-image rejection).
 : > "$T/multi.tar"
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 STDIN_MULTI=(
   "APP_HOST=popbys.test"
@@ -530,10 +536,18 @@ cat > "$MANIFEST_DIR/multi-app.json" <<'JSON'
   ]
 }
 JSON
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"; : > "$CURL_LOG"
 run "multi-app" "${STDIN[@]}" && bad "multi-app manifest refused" || ok "multi-app manifest refused"
 grep -q "multi-app manifests are not yet supported" "$T/out.log" && ok "multi-app error message" || bad "multi-app error message"
-[ -s "$SUB20_LOG" ] && bad "no SUB20 invocation for multi-app manifest" || ok "no SUB20 invocation for multi-app manifest"
+# SUB20 is never invoked on ANY path any more (task 6/7), so "[ -s SUB20_LOG ]"
+# is unconditionally empty here regardless of whether the multi-app guard
+# still runs — it would read the same "ok" even if that guard were deleted
+# outright (the identical class of vacuous witness ruled on in Task 2).
+# CURL_LOG is a live witness instead: the preflight's first curl call happens
+# AFTER the multi-app count check (24:83-86 precede 24's first curl at ~107),
+# so an empty CURL_LOG proves the guard fired before any install work — not
+# merely that a retired script was never called.
+[ ! -s "$CURL_LOG" ] && ok "multi-app guard precedes any install work (empty CURL_LOG proves it)" || bad "install work started before the multi-app guard fired"
 
 # 7. [retired] host carry-forward from a per-app stack `.env` — there is no
 # per-app stack any more (20 is never called; step 1 provisions a schema in
@@ -549,7 +563,40 @@ grep -q "multi-app manifests are not yet supported" "$T/out.log" && ok "multi-ap
 # 9. [retired] missing-SERVICE_ROLE_KEY fail-loud path — there is no per-app
 # stack `.env` for a service-role key to be missing FROM any more; step 3 now
 # fails loud instead if the core `.env` or the app's owner-JWT file (minted by
-# 26) is missing, which is exercised by the assertions above.
+# 26) is missing or empty. The happy-path assertions above prove the values
+# ARRIVE; they do not prove a missing/empty one is REFUSED. A missing file is
+# covered implicitly (`cat` on a nonexistent path fails, and `set -e` aborts)
+# but is not exercised by a dedicated case here. The EMPTY case below is the
+# one with real teeth — `cat` succeeds either way, so only the explicit
+# emptiness check stands between a silently-blank credential and a shipped
+# app — so it gets a dedicated test.
+
+# 9b. NEW: 26 mints an EMPTY owner-JWT file (a real failure mode: a partial
+# 26 run, a truncated write, a disk-full mint). Without the `[[ -n "${APP_KEY}" ]]`
+# guard, `cat` of an empty file still exits 0 and APP_KEY="" flows straight
+# into APP_ENV_SUPABASE_APP_KEY= — the app boots with no database identity
+# and nothing anywhere says why. Must fail loud instead, before ever
+# reaching the app server.
+export SUB26_EMPTYJWT_LOG="$T/sub26-emptyjwt.log"
+cat > "$T/bin/sub26-emptyjwt.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+cat > "${SUB26_EMPTYJWT_LOG}"
+name="$(sed -nE 's/^APP_NAME=(.*)$/\1/p' "${SUB26_EMPTYJWT_LOG}" | tail -1)"
+mkdir -p "${CORE_STACK_DIR}/app-keys"
+: > "${CORE_STACK_DIR}/app-keys/${name}.jwt"
+SH
+chmod +x "$T/bin/sub26-emptyjwt.sh"
+: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB23_LOG"
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
+SUB26="$T/bin/sub26-emptyjwt.sh" run real-estate "${STDIN[@]}" \
+  && bad "empty owner-JWT file refused" || ok "empty owner-JWT file refused"
+grep -q "error: .*app-keys/popbys\.jwt is empty" "$T/out.log" \
+  && ok "empty owner-JWT error message" || bad "empty owner-JWT error message"
+[ ! -s "$SUB23_LOG" ] \
+  && ok "app server never invoked with an empty owner JWT" \
+  || bad "app server was invoked despite an empty owner JWT"
 
 # 10. total orchestrator-API outage -> exit 1. Note: since the preflight
 # (added for the auto-create-agent feature) is now the FIRST curl call 24
@@ -560,7 +607,7 @@ grep -q "multi-app manifests are not yet supported" "$T/out.log" && ok "multi-ap
 # "could not create agent" message) — it now checks the HTTP status itself
 # and fails immediately with a message that correctly blames the orchestrator
 # list call, not agent creation.
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload"; : > "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && bad "registry POST failure refused" || ok "registry POST failure refused"
@@ -613,7 +660,7 @@ grep -q "create it in Fleet's Agents tab first" "$T/out.log" \
 # scripts/24-install-agent-apps.sh's "dashboard tile registration failed"
 # error path, which a blanket curl outage can no longer reach now that the
 # preflight's own GET/POST runs first (see test 10 above).
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload"
 printf '{"agents":[{"id":"real-estate","displayName":"Emma Ellis"}]}' > "$AGENTS_JSON_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
@@ -757,7 +804,7 @@ grep -q "^⚠ agent-apps" "$T/out.log" \
 # failure mode this branch exists to catch. The verify GET must keep 404ing,
 # the run must FAIL with the documented message, and the misleading
 # "created" success line must NEVER be printed.
-: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"
 printf '{"agents":[{"id":"default"}]}' > "$AGENTS_JSON_FILE"   # profile absent
 : > "$CREATED_AGENTS_FILE"                                      # clear any stale marker
 : > "$AGENT_NEVER_APPEARS_FILE"                                 # POST accepted, agent never appears
@@ -768,8 +815,14 @@ grep -q "error: agent 'real-estate' was not created (the orchestrator accepted t
 grep -q "created from manifest defaults" "$T/out.log" \
   && bad "printed the misleading 'created' success line despite the agent never existing" \
   || ok "did not print the 'created' line when verification never passed"
-[ -s "$SUB20_LOG" ] \
-  && bad "install work (SUB20) ran despite the agent never being verified" \
+# SUB20 is never invoked on ANY path any more, so it is unconditionally
+# empty here regardless of whether the agent-verification gate still runs —
+# the identical class of vacuous witness ruled on in Task 2. SUB26 is now
+# the first real install-work call (step 1/4), so its log is the live
+# witness: non-empty would mean install work started before the agent was
+# ever verified.
+[ -s "$SUB26_LOG" ] \
+  && bad "install work (SUB26) ran despite the agent never being verified" \
   || ok "no install work ran before the undetected creation failure was caught"
 rm -f "$AGENT_NEVER_APPEARS_FILE"
 
@@ -834,7 +887,7 @@ cat > "$MANIFEST_DIR/badname.json" <<'JSON'
   ]
 }
 JSON
-: > "$SUB20_LOG"; : > "$CURL_LOG"
+: > "$SUB20_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 printf '{"agents":[{"id":"badname"}]}' > "$AGENTS_JSON_FILE"
 run "badname" "${STDIN[@]}" && bad "invalid app name should fail" || ok "invalid app name fails"
 grep -q "foo_bar" "$T/out.log" && ok "error names the offending app" || bad "error does not name the app"
