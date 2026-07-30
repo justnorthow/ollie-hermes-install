@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
 # 24-install-agent-apps.sh <profile> — install every app the manifest
-# (apps/<profile>.json) bundles with an agent profile: 20 (Supabase stack) ->
-# app migrations (extracted from the app image; tracked in _app_migrations) ->
+# (apps/<profile>.json) bundles with an agent profile: 26 (app schema + owner
+# role) -> app migrations (extracted from the app image; applied into the
+# core database as the app's owner role, tracked in <name>._migrations) ->
 # 23 (app server) -> dashboard tile registration (manifest apps with a "tile"
 # key are upserted into the orchestrator's per-profile app registry). Caddy
 # (22) needs root, so this prints the exact command —
 # REMINDER: 22 renders from ONLY its args; pass the box's FULL vhost set.
 # Box-derived config is resolved here (stack anon key, orchestrator loopback);
 # operator secrets arrive on stdin and flow through, never argv.
-# Input (stdin): APP_HOST, SB_HOST (req first run), IMAGE_TARBALL (req first
+# Input (stdin): APP_HOST (req first run), IMAGE_TARBALL (req first
 #   run), GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT,
 #   STACK_ENV_FILE, APP_ENV_<KEY>... passthrough.
 # STACK_ENV_FILE (default ${HOME}/hermes-stack/.env) is the dashboard's OWN
 # stack env — distinct from ORCH_ENV_FILE, which may point elsewhere (e.g.
 # ~/.config/ollie-orchestrator/.env). Tile apps get <NAME>_BASE_URL written
 # here so generate-nginx.sh proxies /apps/<name>/ instead of rendering blank.
-# ORCH_ENV_FILE also supplies HIA_SSO_SECRET (dashboard SSO signing secret,
-# passed through as APP_ENV_HIA_SSO_SECRET; absent = WARN + continue, the
-# rollout runbook creates it) and ORCHESTRATOR_KEY (used both as
+# ORCH_ENV_FILE also supplies ORCHESTRATOR_KEY (used both as
 # APP_ENV_OLLIE_ORCHESTRATOR_KEY and as the bearer for the tile-registry POST).
-# SUPABASE_SERVICE_ROLE_KEY is read from the app's own stack .env (20 always
-# renders it) and passed through as APP_ENV_SUPABASE_SERVICE_ROLE_KEY — its
-# absence fails loud, since that means the stack render never ran.
+# The app's Supabase identity comes entirely from the CORE stack: its public
+# URL and ANON_KEY (from CORE_STACK_DIR/.env), and its runtime key — a JWT
+# claiming role=<name>_owner, minted by 26 into CORE_STACK_DIR/app-keys/<name>.jwt
+# — passed through as APP_ENV_SUPABASE_APP_KEY. This REPLACES service_role for
+# the app; core's SERVICE_ROLE_KEY must never reach an app container, so it is
+# never read here.
 set -euo pipefail
 if [[ "$(id -u)" -eq 0 ]]; then
   echo "error: run as the service user, not root" >&2; exit 1
@@ -35,6 +37,8 @@ MANIFEST="${MANIFEST_DIR:-${SCRIPT_DIR}/../apps}/${PROFILE}.json"
 [[ -n "${PROFILE}" && -f "${MANIFEST}" ]] || { echo "error: no manifest for profile '${PROFILE}'" >&2; exit 1; }
 SUB20="${SUB20:-${SCRIPT_DIR}/20-install-app-stack.sh}"
 SUB23="${SUB23:-${SCRIPT_DIR}/23-install-app-server.sh}"
+SUB26="${SUB26:-${SCRIPT_DIR}/26-provision-app-schema.sh}"
+CORE_DIR="${CORE_STACK_DIR:-$HOME/supabase-stack}"
 STACKS="${STACKS_DIR:-$HOME/stacks}"
 
 APP_HOST="" ; SB_HOST="" ; IMAGE_TARBALL="" ; GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET=""
@@ -186,19 +190,13 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   [[ -z "${APP_HOST}" && -f "${SB_ENV}" ]] && APP_HOST="$(supabase_app_env_val "${SB_ENV}" SITE_URL)" && APP_HOST="${APP_HOST#https://}"
   [[ -n "${APP_HOST}" && -n "${SB_HOST}" ]] || { echo "error: APP_HOST and SB_HOST required" >&2; exit 1; }
 
-  echo "==> agent-apps [${NAME}] 1/5: supabase stack (kong ${KONG_PORT})"
+  echo "==> agent-apps [${NAME}] 1/4: app schema + owner role in the core stack"
   {
-    echo "STACK_NAME=${NAME}"
-    echo "KONG_PORT=${KONG_PORT}"
-    echo "SUPABASE_PUBLIC_URL=https://${SB_HOST}"
-    echo "SITE_URL=https://${APP_HOST}"
-    echo "EMAIL_ENABLED=${EMAIL_ENABLED}"
-    [[ -n "${GOOGLE_CLIENT_ID}" ]] && echo "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}"
-    [[ -n "${GOOGLE_CLIENT_SECRET}" ]] && echo "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}"
-    true   # group's exit status must not hinge on the last optional field being absent (pipefail)
-  } | bash "${SUB20}"
+    echo "APP_NAME=${NAME}"
+    echo "CORE_STACK_DIR=${CORE_DIR}"
+  } | bash "${SUB26}"
 
-  echo "==> agent-apps [${NAME}] 2/5: app migrations"
+  echo "==> agent-apps [${NAME}] 2/4: app migrations into schema '${NAME}'"
   if [[ -n "${IMAGE_TARBALL}" ]]; then
     LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
     if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
@@ -208,52 +206,49 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   else
     IMG="$(app_image_from_env "${NAME}")"   # helper: APP_IMAGE from ~/apps/<name>/.env
   fi
-  PGPASS="$(supabase_app_env_val "${SB_ENV}" POSTGRES_PASSWORD)"
-  app_psql() {
-    docker compose -p "${NAME}" -f "${STACKS}/${NAME}/docker-compose.yml" --env-file "${SB_ENV}" \
-      exec -T -e PGPASSWORD="${PGPASS}" db \
-      psql -h 127.0.0.1 -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -qtA "$@"
+  CORE_PGPASS="$(supabase_app_env_val "${CORE_DIR}/.env" POSTGRES_PASSWORD)"
+  [[ -n "${CORE_PGPASS}" ]] || { echo "error: POSTGRES_PASSWORD missing from ${CORE_DIR}/.env" >&2; exit 1; }
+  core_psql() {
+    # Runs as <name>_owner, NOT supabase_admin: objects must be owned by the
+    # app's role so they inherit the default privileges 26 installed for the
+    # PostgREST roles. Created as supabase_admin they would be unreachable.
+    docker compose -f "${CORE_DIR}/docker-compose.yml" --env-file "${CORE_DIR}/.env" \
+      exec -T -e PGPASSWORD="${CORE_PGPASS}" db \
+      psql -h 127.0.0.1 -U "${NAME}_owner" -d postgres -v ON_ERROR_STOP=1 -qtA "$@"
   }
-  app_migrations_apply "${IMG}" app_psql public._app_migrations
+  app_migrations_apply "${IMG}" core_psql "${NAME}._migrations" "${NAME}"
 
-  echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
-  ANON="$(supabase_app_env_val "${SB_ENV}" ANON_KEY)"
+  echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
   # ORCH_KEY was already resolved above (before the preflight).
-  # Dashboard SSO: HIA_SSO_SECRET signs/validates the orchestrator's app-token
-  # (verified by the app's own /sso endpoint). Absent on a fresh box is
-  # expected pre-rollout — SSO just 503s gracefully — so warn and continue
-  # rather than fail the whole app install over it.
-  HIA_SSO_SECRET="$(grep -E '^HIA_SSO_SECRET=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
-  if [[ -z "${HIA_SSO_SECRET}" ]]; then
-    echo "WARN: HIA_SSO_SECRET missing from ${ORCH_ENV_FILE} — SSO will 503 until the rollout sets it" >&2
-    WARNINGS=$((WARNINGS+1))
-  fi
-  # SERVICE_ROLE_KEY: the app stack's supabase-app-env.sh renders this as part
-  # of the all-or-nothing 6-secret bundle every time (Step 1 above), so its
-  # absence here means that render never happened — a real misconfiguration,
-  # not a rollout gap. Fail loud instead of shipping an app that can never
-  # mint an SSO session.
-  SERVICE_ROLE_KEY="$(supabase_app_env_val "${SB_ENV}" SERVICE_ROLE_KEY)"
-  [[ -n "${SERVICE_ROLE_KEY}" ]] || { echo "error: SERVICE_ROLE_KEY missing from ${SB_ENV} (stack .env should always have it)" >&2; exit 1; }
+  CORE_URL="$(supabase_app_env_val "${CORE_DIR}/.env" SUPABASE_PUBLIC_URL)"
+  ANON="$(supabase_app_env_val "${CORE_DIR}/.env" ANON_KEY)"
+  [[ -n "${CORE_URL}" ]] || { echo "error: SUPABASE_PUBLIC_URL missing from ${CORE_DIR}/.env" >&2; exit 1; }
+  [[ -n "${ANON}" ]] || { echo "error: ANON_KEY missing from ${CORE_DIR}/.env" >&2; exit 1; }
+  # The app's runtime key: a JWT claiming role=<name>_owner, minted by 26.
+  # This REPLACES service_role for the app. Core's service_role key bypasses
+  # RLS and reaches every schema plus auth, so it must never reach a container.
+  APP_KEY_FILE="${CORE_DIR}/app-keys/${NAME}.jwt"
+  [[ -f "${APP_KEY_FILE}" ]] || { echo "error: ${APP_KEY_FILE} not found — 26 should have minted it in step 1/4" >&2; exit 1; }
+  APP_KEY="$(cat "${APP_KEY_FILE}")"
+  [[ -n "${APP_KEY}" ]] || { echo "error: ${APP_KEY_FILE} is empty" >&2; exit 1; }
   {
     echo "APP_NAME=${NAME}"
     echo "APP_PORT=${APP_PORT}"
     echo "CONTAINER_PORT=${CONTAINER_PORT}"
     echo "HEALTH_PATH=${HEALTH_PATH}"
     [[ -n "${IMAGE_TARBALL}" ]] && echo "IMAGE_TARBALL=${IMAGE_TARBALL}"
-    echo "APP_ENV_SUPABASE_URL=https://${SB_HOST}"
+    echo "APP_ENV_SUPABASE_URL=${CORE_URL}"
     # Server-side callers must NOT use the public hostname: on a cloudflared
     # box it resolves to Cloudflare's edge, which bot-challenges non-browser
-    # clients (HTTP 403) and breaks auth on every route. kong is loopback-only
-    # on the host, so reach it via the docker0 gateway bridge from 25.
-    # The BROWSER still gets the public URL (the app injects it separately).
-    echo "APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:${KONG_PORT}"
+    # clients (HTTP 403) and breaks auth on every route. Core kong is
+    # loopback-only, so reach it over the docker0 gateway bridge from 25.
+    echo "APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8000"
     echo "APP_ENV_SUPABASE_ANON_KEY=${ANON}"
+    echo "APP_ENV_SUPABASE_APP_KEY=${APP_KEY}"
+    echo "APP_ENV_SUPABASE_DB_SCHEMA=${NAME}"
     echo "APP_ENV_OLLIE_ENDPOINT=http://127.0.0.1:${ORCH_PORT}"
     echo "APP_ENV_OLLIE_AGENT=${PROFILE}"
     [[ -n "${ORCH_KEY}" ]] && echo "APP_ENV_OLLIE_ORCHESTRATOR_KEY=${ORCH_KEY}"
-    [[ -n "${HIA_SSO_SECRET}" ]] && echo "APP_ENV_HIA_SSO_SECRET=${HIA_SSO_SECRET}"
-    echo "APP_ENV_SUPABASE_SERVICE_ROLE_KEY=${SERVICE_ROLE_KEY}"
     echo "APP_ENV_APP_BASE_PATH=/apps/${NAME}"
     printf '%s\n' "${PASSTHRU[@]:-}" | grep -v '^$' || true
     true   # group's exit status must not hinge on the last optional/passthrough line (pipefail)
