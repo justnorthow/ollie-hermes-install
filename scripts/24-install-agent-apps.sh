@@ -60,6 +60,21 @@ mf() { # JQPATH — read a manifest value
   python3 -c "import json,sys; d=json.load(open('${MANIFEST}')); print(eval('d'+sys.argv[1]))" "$1"
 }
 APP_COUNT="$(mf "['apps'].__len__()")"
+# Every app name is used three ways with three different character rules:
+#   26-provision-app-schema.sh  ^[a-z][a-z0-9_]*$   Postgres identifier, no hyphens
+#   23-install-app-server.sh    ^[a-z][a-z0-9-]*$   compose project, no underscores
+#   25-install-app-bridge.sh    ^[a-z][a-z0-9-]*$   systemd unit, no underscores
+# So a name with an underscore breaks the bridge and a name with a hyphen
+# breaks the schema. Enforce the intersection here, before any install work,
+# rather than half-installing and failing at whichever script runs first.
+for i in $(seq 0 $((APP_COUNT-1))); do
+  _n="$(mf "['apps'][${i}]['name']")"
+  if [[ ! "${_n}" =~ ^[a-z][a-z0-9]*$ ]]; then
+    echo "error: manifest app name '${_n}' is invalid — must match ^[a-z][a-z0-9]*\$ (the intersection of the Postgres identifier rule used by 26 and the systemd/compose unit rule used by 23 and 25)" >&2
+    exit 1
+  fi
+done
+unset _n
 if [[ "${APP_COUNT}" -gt 1 ]]; then
   echo "error: multi-app manifests are not yet supported (APP_HOST/SB_HOST/IMAGE_TARBALL are single-app; add per-app host fields to the manifest schema first)" >&2
   exit 1

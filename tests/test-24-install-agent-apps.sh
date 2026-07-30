@@ -788,4 +788,23 @@ grep -qE "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$
   || bad "banner missing or warning count wrong — the probe's WARNINGS increment may have been lost"
 export CURL_FAIL_URL_PATTERN=""
 
+# 20. manifest app names must satisfy BOTH the Postgres-identifier rule (26) and
+# the systemd-unit rule (23/25). Validate before any install work.
+cat > "$MANIFEST_DIR/badname.json" <<'JSON'
+{
+  "profile": "badname",
+  "apps": [
+    { "name": "foo_bar",
+      "server": { "app_port": 8140, "container_port": 3000, "health_path": "/api/health" } }
+  ]
+}
+JSON
+: > "$SUB20_LOG"; : > "$CURL_LOG"
+printf '{"agents":[{"id":"badname"}]}' > "$AGENTS_JSON_FILE"
+run "badname" "${STDIN[@]}" && bad "invalid app name should fail" || ok "invalid app name fails"
+grep -q "foo_bar" "$T/out.log" && ok "error names the offending app" || bad "error does not name the app"
+grep -qE '\^\[a-z\]\[a-z0-9\]\*\$' "$T/out.log" \
+  && ok "error states the required pattern" || bad "error omits the pattern"
+[[ ! -s "$SUB20_LOG" ]] && ok "no install work ran before validation" || bad "install work ran before validation"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
