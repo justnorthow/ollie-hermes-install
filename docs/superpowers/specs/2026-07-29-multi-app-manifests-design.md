@@ -3,7 +3,26 @@
 Date: 2026-07-29
 Base: `ebf096a` (origin/main)
 Branch: `feat/multi-app-manifests`
-Status: approved for implementation
+Status: **SUPERSEDED by `2026-07-30-multi-app-agent-apps-design.md`**
+
+> ## ⚠ SUPERSEDED — read the 2026-07-30 spec instead
+>
+> This spec assumes each app has its own Supabase stack and its own public
+> hostnames. `2026-07-29-single-supabase-app-schemas-design.md` deletes that
+> architecture, and its stage 1 has shipped (`a98a96f`).
+>
+> **Wrong here:** `SB_HOST_<NAME>` and `APP_HOST_<NAME>`, the three-way resolution
+> order built around them, the carry-forward from each app's own stack `.env`, and
+> the caddy vhost step. Apps are now schemas in the core stack, served same-origin
+> under `/apps/<name>/`; there are no per-app hosts to resolve.
+>
+> **Still true:** the app-name filter (now load-bearing, not a convenience),
+> `IMAGE_TARBALL_<NAME>`, per-app `server.env`, the app-bridge reachability check,
+> the `NODE_OPTIONS` install default, removing the `APP_COUNT > 1` guard, and the
+> per-iteration-locals discipline — which guards one value now instead of three.
+>
+> Kept as a stub because STATE.md and the 2026-07-29 handoff both cite this path.
+> Full text: `git show f49726c -- <this file>`.
 
 ## Problem
 

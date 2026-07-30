@@ -1,5 +1,20 @@
 # Multi-App Agent Manifests Implementation Plan
 
+> ## ⚠ SUPERSEDED — DO NOT IMPLEMENT
+>
+> This plan was written against per-app Supabase stacks and against
+> `specs/2026-07-29-multi-app-manifests-design.md`, both of which are gone. It
+> builds `SB_HOST_<NAME>` / `APP_HOST_<NAME>` plumbing for hosts that no longer
+> exist: apps are now Postgres schemas in the core stack, served same-origin under
+> `/apps/<name>/`.
+>
+> **Current design:** `specs/2026-07-30-multi-app-agent-apps-design.md`. A
+> replacement plan will be written against it.
+>
+> Kept for the record only. Its one durable idea — never reassign the bare stdin
+> variables inside the per-app loop — carries forward to the new design, where it
+> guards `IMAGE_TARBALL` alone.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let one agent profile bundle more than one app, so a real-estate install can bring Home Inspection Advisor and Newsletter Studio alongside Pop Bys.
