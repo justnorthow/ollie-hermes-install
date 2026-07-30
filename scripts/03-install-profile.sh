@@ -174,6 +174,11 @@ systemctl --user enable --now "hermes-dashboard-${NAME}"
 echo "==> step 6b: refresh orchestrator proxy maps + dashboard token for the new agent"
 . "${SCRIPT_DIR}/lib/detect-agents.sh"
 detect_agents | python3 "${SCRIPT_DIR}/lib/render-proxy-maps.py"
+# nginx must exist before ensure-dashboard-token.sh runs: it calls
+# ensure-hermes-ui-proxy.sh internally (see task-2-report.md), and that script
+# hits its "need write access to /etc/nginx" guard and exits 1 on a box that
+# has never run 27 — a spurious FATAL-then-warning on every fresh provision.
+bash "${SCRIPT_DIR}/27-install-nginx.sh"
 bash "${SCRIPT_DIR}/lib/ensure-dashboard-token.sh"
 if systemctl --user is-active --quiet ollie-orchestrator; then
   systemctl --user restart ollie-orchestrator
