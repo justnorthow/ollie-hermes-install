@@ -19,6 +19,13 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
   docker cp "${ctr}:/app/supabase/migrations/." "${mig_dir}/"
   docker rm "${ctr}" >/dev/null
   "${psql_fn}" -c "create table if not exists ${tracker} (name text primary key, applied_at timestamptz not null default now());"
+  # anon/authenticated hold DML on every app schema, including this tracker,
+  # so it must not itself be an unprotected table — otherwise a schema whose
+  # migrations are all correctly gated would still fail the RLS gate on its
+  # own tracker. No policies: this denies anon/authenticated outright, while
+  # the table owner (this runner) still bypasses RLS as owners normally do.
+  # Idempotent — safe to re-run on every install.
+  "${psql_fn}" -c "alter table ${tracker} enable row level security;"
   for f in $(ls "${mig_dir}"/*.sql | sort); do
     base="$(basename "$f")"
     applied="$("${psql_fn}" -c "select 1 from ${tracker} where name='${base}';")"
@@ -50,12 +57,39 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
 # cross-app reach was structurally impossible. After consolidation it is
 # policy-dependent, and the policy is RLS. So RLS is mandatory, not advisory.
 app_migrations_rls_gate() { # PSQL_FN SCHEMA
-  local psql_fn="$1" schema="$2" unprotected
-  unprotected="$("${psql_fn}" -c "select relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = '${schema}' and c.relkind = 'r' and not c.relrowsecurity order by relname;")"
+  local psql_fn="$1" schema="$2" exists unprotected line
+
+  # Confirm the schema exists BEFORE trusting an empty result from the real
+  # check below. Zero rows and "the query never ran" are both empty stdout,
+  # and both are otherwise indistinguishable from "every table protected" —
+  # the gate must demand positive confirmation, not infer safety from
+  # absence. This also fails closed if the probe itself errors (wrong
+  # password, container not ready, a permission error): the exit status is
+  # checked, not just the output.
+  if ! exists="$("${psql_fn}" -c "select 1 from pg_namespace where nspname = '${schema}';")"; then
+    echo "error: RLS gate could not confirm schema '${schema}' exists (the query itself failed) — refusing to certify an unverified schema." >&2
+    return 1
+  fi
+  exists="$(printf '%s' "${exists}" | tr -d '\r' | grep -v '^$' || true)"
+  if [[ -z "${exists}" ]]; then
+    echo "error: schema '${schema}' does not exist (or is unreachable) — refusing to certify a schema the gate cannot find." >&2
+    return 1
+  fi
+
+  # relkind covers ordinary (r), partitioned (p), and foreign (f) tables — a
+  # partitioned parent with RLS off exposes every row of its leaves through
+  # the parent, under the shared anon key, exactly like an ordinary table.
+  # Deliberately excludes materialized views (m): relrowsecurity can never
+  # be true for a matview, so including it would make the gate permanently
+  # unsatisfiable.
+  if ! unprotected="$("${psql_fn}" -c "select relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = '${schema}' and c.relkind in ('r','p','f') and not c.relrowsecurity order by relname;")"; then
+    echo "error: RLS gate could not query schema '${schema}' — refusing to certify it. The gate must never pass on an unverified schema." >&2
+    return 1
+  fi
   unprotected="$(printf '%s' "${unprotected}" | tr -d '\r' | grep -v '^$' || true)"
   if [[ -n "${unprotected}" ]]; then
     echo "error: RLS is not enabled on these tables in schema '${schema}':" >&2
-    printf '  %s\n' ${unprotected} >&2
+    printf '%s\n' "${unprotected}" | while IFS= read -r line; do echo "  ${line}" >&2; done
     echo "Every app on this box shares the same core ANON_KEY, and anon/authenticated hold DML on every app schema — so each table above is readable AND writable by every other app's browser bundle. Add 'alter table <t> enable row level security' plus policies to the migration, then re-run." >&2
     return 1
   fi

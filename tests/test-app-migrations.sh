@@ -53,8 +53,13 @@ rec_psql() {
     cat > "${APPLIES}/${idx}.sql"
     sed -nE "s/.*values \('([^']+)'\).*/\1/p" "${APPLIES}/${idx}.sql" | tail -1 >> "${APPLIED_LIST}"
     return 0
-  fi
-  if [[ "${args}" == *"select 1 from "* ]]; then
+  elif [[ "${args}" == *"pg_namespace"* ]]; then
+    # The RLS gate's schema-existence probe also matches "select 1 from "
+    # (below) — this branch MUST come first, or the gate's own existence
+    # check gets misread as a tracker lookup and returns empty.
+    echo 1
+    return 0
+  elif [[ "${args}" == *"select 1 from "* ]]; then
     local want; want="$(printf '%s' "${args}" | sed -nE "s/.*name='([^']+)'.*/\1/p")"
     grep -qxF "${want}" "${APPLIED_LIST}" 2>/dev/null && echo 1
   fi
@@ -102,8 +107,15 @@ fail_psql() {
 declare -F app_migrations_rls_gate >/dev/null \
   && ok "app_migrations_rls_gate is defined" || bad "app_migrations_rls_gate is NOT defined"
 
-gate_psql_bad() {  # one table without RLS
-  [[ "$*" == *"relrowsecurity"* ]] && { echo "reports"; return 0; }
+gate_psql_bad() {  # schema exists (pg_namespace probe); one table without RLS
+  # NOTE: the unprotected-tables query itself also contains the substring
+  # "pg_namespace" (it joins against it), so the relrowsecurity branch MUST
+  # be checked first — a case statement takes the first match, and if
+  # pg_namespace were checked first it would swallow that call too.
+  case "$*" in
+    *relrowsecurity*) echo "reports" ;;
+    *pg_namespace*)   echo "1" ;;
+  esac
   return 0
 }
 ( set -e; app_migrations_rls_gate gate_psql_bad hia >"$T/gate.log" 2>&1 ) \
@@ -114,8 +126,76 @@ grep -q 'reports' "$T/gate.log" \
 grep -qi 'anon' "$T/gate.log" \
   && ok "gate explains the shared-anon-key consequence" || bad "gate message lacks the reason"
 
+# ---- 4b. RLS gate: fails closed when the query itself cannot be trusted
+#
+# These three do NOT use the `(set -e; ...) && bad || ok` idiom above. That
+# idiom depends on the FUNCTION returning non-zero on its own. If the gate
+# under test never inspects a failing psql_fn's exit status, a failing
+# command-substitution assignment ("x=$(cmd)") wrapped in `set -e` can abort
+# the *subshell* right there via bash's own errexit — which also reads as
+# non-zero, but for the wrong reason (bash's option, not code in the gate
+# that checked anything). That is the same class of lying probe again, one
+# level deeper, so it gets the same treatment: no `set -e` wrapper, call the
+# gate bare, and read $? directly. (Verified empirically: a function whose
+# body does `x="$(false_cmd)"` and then falls through, run under
+# `(set -e; fn)`, aborts the subshell at the assignment and never reaches
+# the fall-through code — so `set -e` would have quietly "fixed" the missing
+# check in the test, not in the gate.)
+
+# Critical 1: psql_fn itself fails (wrong password, container not ready,
+# ON_ERROR_STOP, a SQL typo). The query never ran; its empty stdout must
+# never be read as "no unprotected tables found".
+gate_psql_query_fails() { return 1; }
+app_migrations_rls_gate gate_psql_query_fails hia >"$T/gate-qf.log" 2>&1
+rc=$?
+[[ "${rc}" -ne 0 ]] \
+  && ok "gate fails closed when the psql query itself errors" \
+  || bad "gate passed when it could not run the query at all (rc=${rc})"
+
+# Critical 2: the query runs fine (exit 0) but every probe comes back
+# empty, because the schema does not exist / is misspelled — otherwise
+# indistinguishable from "every table protected" unless the gate demands
+# positive confirmation that the schema exists.
+gate_psql_no_such_schema() { return 0; }   # empty stdout for every call, incl. the existence probe
+app_migrations_rls_gate gate_psql_no_such_schema ghost_schema >"$T/gate-ns.log" 2>&1
+rc=$?
+[[ "${rc}" -ne 0 ]] \
+  && ok "gate fails closed on a schema it never confirmed exists" \
+  || bad "gate passed for a schema it could not find (rc=${rc})"
+
+# Critical 3: relkind coverage. A partitioned table (relkind 'p') without
+# RLS is exactly as exposed as an ordinary table, but invisible to a query
+# filtered to relkind = 'r'. The double only reports the offending relation
+# when the query's relkind filter actually includes 'p', so a pass here
+# proves the SQL was widened, not just that the double was generous.
+gate_psql_partitioned() {
+  # Same ordering note as gate_psql_bad above: relrowsecurity must be
+  # checked before pg_namespace, since the unprotected-tables query
+  # contains both substrings.
+  case "$*" in
+    *relrowsecurity*) [[ "$*" == *"'p'"* ]] && echo "events_2026" ;;
+    *pg_namespace*)   echo "1" ;;
+  esac
+  return 0
+}
+app_migrations_rls_gate gate_psql_partitioned hia >"$T/gate-part.log" 2>&1
+rc=$?
+[[ "${rc}" -ne 0 ]] \
+  && ok "gate catches an unprotected partitioned table (relkind 'p')" \
+  || bad "gate passed a schema with an unprotected partitioned table (rc=${rc})"
+
 # ---- 5. RLS gate: passing direction
-gate_psql_ok() { return 0; }   # empty result = every table protected
+gate_psql_ok() {   # schema exists (pg_namespace probe); every table has RLS
+  # Same ordering note again: the unprotected-tables query also contains
+  # "pg_namespace", so it must match the relrowsecurity branch (and echo
+  # nothing, i.e. no offending rows) rather than fall into the
+  # existence-probe branch below.
+  case "$*" in
+    *relrowsecurity*) : ;;
+    *pg_namespace*)   echo "1" ;;
+  esac
+  return 0
+}
 ( set -e; app_migrations_rls_gate gate_psql_ok hia >/dev/null 2>&1 ) \
   && ok "RLS gate passes when every table has RLS" || bad "RLS gate false-failed"
 
