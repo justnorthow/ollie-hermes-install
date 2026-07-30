@@ -439,6 +439,52 @@ git commit -m "test(app-migrations): direct coverage + propagate a failed apply"
 
 Write the **failing** direction first. A gate only ever observed passing is worthless — three probes lied in the 2026-07-29 session for exactly this reason.
 
+> ### ⚠ Corrections applied during execution — the snippets below are NOT sufficient
+>
+> This task shipped as `5c044cd` → `0761eea` → `8362812`. Review found **three
+> Criticals in the gate SQL and body written below**, all probe-confirmed, plus two
+> defects in the test harness. Read `scripts/lib/app-migrations.sh` as the source of
+> truth; the code in this task is kept for the record. Do not re-derive the gate from
+> it. What was wrong:
+>
+> 1. **Fail-open on a failed query.** `unprotected="$(…)"` never inspected the exit
+>    status, and because the call site is `app_migrations_rls_gate … || return 1`,
+>    `errexit` is suppressed inside the function body — so `set -euo pipefail` in the
+>    caller does not save it. A wrong password, a not-ready container or a permission
+>    error yielded empty stdout and the gate printed *"every table is protected"* and
+>    returned 0. **Both** psql calls need `if ! var="$(…)"; then … return 1; fi`.
+> 2. **Fail-open on a nonexistent or misspelled schema.** Zero rows is
+>    indistinguishable from "all protected". The gate must demand *positive
+>    confirmation* that the schema exists (`select 1 from pg_namespace where
+>    nspname = …`) and fail when it cannot get it — never infer safety from absence.
+> 3. **`relkind = 'r'` is blind to partitioned (`'p'`) and foreign (`'f'`) tables.**
+>    A partitioned parent with RLS off, over RLS-enabled leaves, returns every row
+>    through the parent under the shared anon key. Use `relkind in ('r','p','f')`.
+>    **Never add `'m'`** — `relrowsecurity` can never be true for a materialized
+>    view, so the gate would become permanently unsatisfiable.
+> 4. **The tracker table would fail the gate on every install.** `<name>._migrations`
+>    lives inside the gated schema, so Task 6's four-argument call reports it as
+>    unprotected. Fixed at creation in Task 3's lib: `alter table ${tracker} enable
+>    row level security;`, no policies, idempotent. Anon and authenticated are denied;
+>    the table owner bypasses RLS as owners do absent `FORCE ROW LEVEL SECURITY`.
+> 5. **The test doubles could not express any of this**, which is why 1–3 survived a
+>    green 16/0 suite. The doubles only string-matched `relrowsecurity` and never
+>    modelled Postgres. `rec_psql` additionally needs its branches matched by text
+>    **unique to each query** — a bare `*"pg_namespace"*` also matches the gate's main
+>    query, which joins `pg_namespace`, so the double answers it with `1` and the gate
+>    reports a phantom unprotected table named `1`. Match the main query on
+>    `relrowsecurity`/`pg_class`, the existence probe on the full phrase
+>    `from pg_namespace where nspname`, and the tracker lookup on `where name='`.
+> 6. **Assert that a gated apply SUCCEEDS.** The reason a broken gate stayed invisible
+>    is that the integration assertions grepped the call log for presence and ordering
+>    and never checked the exit status. Capture `$?` on the very next line and assert
+>    it is 0.
+>
+> The generalisable lesson, for every remaining task: an assertion of the shape
+> `( set -e; fn args ) && bad … || ok …` reports PASS for *any* non-zero exit,
+> including the function not existing. Pair it with `declare -F`, and prefer reading
+> `$?` directly.
+
 **Files:**
 - Modify: `scripts/lib/app-migrations.sh`
 - Test: `tests/test-app-migrations.sh`
