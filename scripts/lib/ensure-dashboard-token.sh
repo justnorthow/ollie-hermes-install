@@ -39,6 +39,19 @@ for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   echo "drop-in written: ${unit_name}"
 done
 
+# The Hermes UI proxy embeds this token in an nginx include file. Re-render it
+# here so a rotation can never leave the two out of step. No-op when the proxy
+# script is absent (older boxes) — never fail the token path because of it.
+# Placed before the ENSURE_TOKEN_NO_RESTART early exit below (deliberately —
+# see task-2-report.md): 05-install-orchestrator.sh always calls this script
+# with ENSURE_TOKEN_NO_RESTART=1, so a block placed after that exit would
+# never run in the real install path either, not just in tests.
+UI_PROXY="$(dirname "${BASH_SOURCE[0]}")/ensure-hermes-ui-proxy.sh"
+if [[ -f "${UI_PROXY}" ]]; then
+  ORCH_ENV="${ORCH_ENV}" SYSTEMD_USER_DIR="${UNIT_DIR}" bash "${UI_PROXY}" \
+    || echo "ensure-dashboard-token: warning: ui-proxy refresh failed" >&2
+fi
+
 if [[ "${ENSURE_TOKEN_NO_RESTART:-0}" == "1" ]]; then
   exit 0
 fi

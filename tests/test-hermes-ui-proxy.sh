@@ -111,6 +111,30 @@ test_missing_token_fails_loudly() {
     "$([[ -f "$d/nginx/hermes-ui-proxy-default.conf" ]] && echo yes || echo no)" "no"
 }
 
+test_rotation_rerenders_auth_file() {
+  local d; d="$(setup_dir)"; run_ensure "$d"
+  assert_eq "initial bearer" "$(cat "$d/nginx/hermes-ui-auth.conf")" \
+    'proxy_set_header Authorization "Bearer tok-abcdef0123456789";'
+  printf 'HERMES_DASHBOARD_TOKEN=tok-ROTATED-9876543210\n' > "$d/orch.env"
+  run_ensure "$d"
+  assert_eq "auth file follows rotation" "$(cat "$d/nginx/hermes-ui-auth.conf")" \
+    'proxy_set_header Authorization "Bearer tok-ROTATED-9876543210";'
+  assert_eq "server blocks unchanged by rotation" \
+    "$(grep -c 'listen 127.0.0.1:9219;' "$d/nginx/hermes-ui-proxy-default.conf")" "1"
+}
+
+test_ensure_token_invokes_ui_proxy() {
+  local d; d="$(setup_dir)"
+  ORCH_ENV="$d/orch.env" SYSTEMD_USER_DIR="$d/units" \
+  NGINX_CONF_DIR="$d/nginx" NGINX_AUTH_FILE="$d/nginx/hermes-ui-auth.conf" \
+  ENSURE_UI_PROXY_NO_RELOAD=1 ENSURE_TOKEN_NO_RESTART=1 \
+    bash "$HERE/../scripts/lib/ensure-dashboard-token.sh" >/dev/null 2>&1
+  local tok; tok="$(grep '^HERMES_DASHBOARD_TOKEN=' "$d/orch.env" | cut -d= -f2-)"
+  assert_eq "ui-proxy auth file written by token script" \
+    "$(cat "$d/nginx/hermes-ui-auth.conf")" \
+    "$(printf 'proxy_set_header Authorization "Bearer %s";' "$tok")"
+}
+
 test_renders_both_agents_with_correct_ports
 test_all_three_headers_present_per_agent
 test_single_shared_map_no_duplicate_directive
@@ -119,4 +143,6 @@ test_idempotent_no_drift
 test_auth_file_mode_600
 test_auth_file_mode_reasserted_on_drift
 test_missing_token_fails_loudly
+test_rotation_rerenders_auth_file
+test_ensure_token_invokes_ui_proxy
 finish
