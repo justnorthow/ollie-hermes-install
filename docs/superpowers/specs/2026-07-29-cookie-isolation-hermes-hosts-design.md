@@ -1,7 +1,10 @@
 # Cookie isolation for the Hermes backend hostnames — Design
 
 **Date:** 2026-07-29
-**Status:** Draft — awaiting review
+**Status:** **DECIDED 2026-07-29 — Option A.** John's call. Rollout: Towns first
+(before Joseph authenticates), then jnow prod + sandbox. GetBilled deferred.
+Three corrections found during the decision review are folded in below and
+marked ⚠️ CORRECTED.
 **Scope:** How the native Hermes dashboard is exposed per box, and the fleet-wide
 Supabase cookie domain that exposure currently forces.
 
@@ -61,11 +64,63 @@ applies **no role check**. Combined with the domain-wide cookie, any user who
 signs into a box's main dashboard can reach that box's native Hermes dashboard —
 Files, Keys, Config, MCP, Skills, Logs.
 
+⚠️ **CORRECTED 2026-07-29 (decision review) — the `-hermes` hostname is the ONLY
+path to the management surface, which makes deleting it worth more than this
+section claimed.** The main dashboard host already blocks that surface:
+`ollie-hermes-frontend/nginx.conf:48-62` returns 403 for
+`/hermes-proxy/api/sessions` and for
+`/hermes-proxy/api/(skills|cron|config|env|model|profiles|logs|analytics|dashboard/plugins|dashboard/plugin-providers|providers/oauth)`.
+Those regex blocks are matched in file order and outrank the `/hermes-proxy/`
+prefix block, so a signed-in member on the main host gets 403 on all of them.
+`generate-hermes-host.sh` builds a **separate server block** publishing the
+dashboard at `/` with none of those guards — it bypasses every one.
+
+⚠️ **UNVERIFIED, and no option here closes it:** `/api/files` is not in that
+blocklist. If the Hermes Files tab reads it, it is reachable through
+`/hermes-proxy` on the MAIN host today by any signed-in user. Check on a box
+before assuming goal 3 is fully met.
+
 Verified 2026-07-29: unauthenticated requests to `towns-hermes.jnow.io`,
 `ollie-hermes.jnow.io` and `billie-hermes.getbilled.io` all return a bare `401`
 from the origin, **not** a Cloudflare Access challenge. Despite the runbook
-requiring an Access application, none of the three has one. So for a pilot
-customer signing into their own box, this is a live exposure — not theoretical.
+requiring an Access application, none of the three has one.
+
+🛑 **CORRECTED 2026-07-30 by direct measurement on Towns — "this is a live
+exposure" was WRONG, and the whole section overstates the severity.** Hermes
+0.19.0 requires a **bearer session token** for its management surface. Measured
+against `127.0.0.1:9119` on the Towns box:
+
+| Attempt | `/api/files`, `/api/env`, `/api/skills`, `/api/config` |
+|---|---|
+| no credential | **401** |
+| bogus bearer token | **401** |
+| genuine loopback peer, no token | **401** |
+| `?token=` / `?session_token=` / `?access_token=` / `?key=` | **401** |
+| 5 cookie-name variants | **401** |
+| `Authorization: Bearer <HERMES_DASHBOARD_SESSION_TOKEN>` | **200** |
+
+`/login` serves *"Sign-in unavailable — Hermes Agent"*, and `hermes dashboard
+--insecure` is now documented as *"DEPRECATED / NO-OP … as of the June 2026
+hardening it no longer disables authentication."*
+
+**And the hermes-host nginx block explicitly strips the credential**
+(`proxy_set_header Authorization "";`) while injecting none of its own. So a
+signed-in customer reaching `<box>-hermes.jnow.io` gets the SPA shell and **401
+on every management call**. They cannot read Files, Keys, Config, MCP, Skills or
+Logs.
+
+**Where this spec's error came from:** `generate-hermes-host.sh:4-5` still
+describes the dashboard as *"loopback 127.0.0.1:9119, no auth of its own"* —
+true when written in June, falsified by the June 2026 hardening and 0.19.0. The
+comment was never updated and this spec inherited it. Same stale assumption
+behind the 2026-07-28 session-token bug: that was this identical 401 wall
+surfacing on the orchestrator path.
+
+**Consequence for priority:** Joseph onboarding was gated on this as a live
+admin exposure. It is not one. That gate is lifted. Removing the hostname
+remains correct — a redundant public surface, and removing it is what permits
+unsetting the cookie domain — but it is hygiene plus the header fix, not an
+incident response.
 
 ## Goals
 
@@ -92,13 +147,28 @@ ssh -o IdentityAgent=none -i <key> -L 9119:127.0.0.1:9119 ollie@<box>
 # browse http://127.0.0.1:9119
 ```
 
+🛑 **CORRECTED 2026-07-30 — the SSH port-forward does NOT give browser access.**
+Per the measured table above, a browser at `http://127.0.0.1:9119` over the
+forward hits the identical 401 wall: it cannot send an `Authorization: Bearer`
+header, there is no query-param or cookie fallback, and `/login` is disabled.
+**The operator path in this option as originally written does not work.**
+
+The admin path that DOES work, and is already correctly gated, is the
+orchestrator's `/v1/agents/{agent}/dashboard` proxy — it injects the token
+server-side behind an `account_admin+` check, and it is what `nginx.conf:52-62`
+routes the management surface to. That is the 2026-07-28 fix
+(`0d8caf5` / `12e69e5`). Second path: the `hermes` CLI on the box over plain
+SSH. Neither needs a public hostname. **Option A's step 1 should read "operators
+use the Ollie UI's gated admin surface, or the CLI over SSH" — not the
+port-forward.**
+
 - **Cookie domain:** can be unset immediately — the sibling host is gone.
-- **Goal 3:** satisfied absolutely; there is no public path to reach.
-- **Chat:** works today over loopback (verified: `101` + live TUI stream). It is
-  also the only configuration where Hermes chat is *known* to work on a jnow box.
+- **Goal 3:** satisfied absolutely; there is no public path to reach. (Note it
+  was already satisfied in practice by the bearer-token requirement.)
 - **Code change:** none. Remove hostname, unset one env var, recreate dashboard.
-- **Cost:** operators need SSH. Both current operators already SSH to these boxes
-  daily.
+- **Cost:** operators lose a browser bookmark that was already returning 401s on
+  every management call. Real admin access is unaffected — it runs through the
+  orchestrator proxy inside Ollie.
 - **Bonus:** removes the surface that consumed this entire investigation.
 
 ### B. Keep the hostname; gate it with Cloudflare Access instead of the Supabase cookie
@@ -115,8 +185,14 @@ hermes-host server block so no Supabase cookie is needed there.
   request is challenged **before** removing the Supabase layer, not after — the
   script's own comment warns the block is "only as protected as the dashboard's
   configured auth."
-- **Does not fix chat.** The 1006 returns as soon as an operator signs into a
-  second box, because header size is unchanged for that hostname.
+- ⚠️ **CORRECTED:** the original draft said "does not fix chat — header size is
+  unchanged," which contradicts this option's own first bullet. If the cookie
+  domain is unset (which B allows, since Access replaces the Supabase gate on
+  this host), cookies become host-only and the bloat goes away under B too.
+  **B's honest downsides are cost and single-gate risk, not chat.**
+- **Cost/availability caveat:** the 2026-06-27 decision to reuse the Supabase
+  gate instead of Access was made because Access "requires a paid plan John
+  won't use." Re-verify current plan coverage before choosing B.
 
 ### C. Nest the hostnames
 
@@ -181,13 +257,22 @@ recreated automatically by re-adding the route.
 
 ## Open questions
 
-1. **Joseph's access** — does removing the hostname fully close it, or does the
-   dashboard SPA link to `hermesUiUrl` in a way that still leaks the target? The
-   link renders from config and disappears when unset, but verify in-browser as
-   the customer rather than assume.
-2. **`HermesDashboardLink` role gate** — worth adding regardless
-   (`ollie-hermes-frontend/src/components/Layout.tsx`), so the link is
-   operator-only even if a hostname is published later.
+1. ⚠️ **ANSWERED 2026-07-29 — and the answer is NO, the link does not
+   disappear.** `ollie-hermes-frontend/src/components/Layout.tsx:185` reads
+   `href = cfg.hermesUiUrl || \`http://${window.location.hostname}:9119\``, and
+   the component returns `null` only when `href === '#'` (i.e. only if
+   `getBackendConfig()` throws). With config present and `hermesUiUrl` cleared,
+   it falls back to `http://<box>.jnow.io:9119`. **Security impact: nil** — 9119
+   is loopback-bound, host-firewalled, and has no tunnel route. **Pilot-UX
+   impact: real** — Joseph sees a "Backend Settings" link that dead-ends.
+   The other half of step 2 IS correct: `generate-hermes-host.sh:23` early-exits
+   and emits an empty conf when `HERMES_UI_HOSTNAME` is unset.
+2. **`HermesDashboardLink` role gate — now required, not optional.** Because of
+   (1), Option A leaves a visibly broken link for customer-side users. Fold both
+   into one commit in `ollie-hermes-frontend/src/components/Layout.tsx`:
+   role-gate the link to operators AND drop the `:9119` fallback so it renders
+   nothing when `hermesUiUrl` is unset. Not a blocker for the Towns rollout
+   (the link is dead, not dangerous) — ship it with the next frontend deploy.
 3. **GetBilled** — `billie-hermes.getbilled.io` works today precisely because
    that zone carries one box's cookie. Same treatment for consistency, or leave
    it as the working reference?
