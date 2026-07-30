@@ -43,6 +43,15 @@ APPLIED_LIST="$T/applied"; : > "$APPLIED_LIST"
 # subshell; a file survives across forks unconditionally, mirroring the
 # APPLY_COUNT_FILE idiom in tests/test-24-install-agent-apps.sh.
 APPLY_COUNT_FILE="$T/apply-count"; rm -f "${APPLY_COUNT_FILE}"
+# rec_psql discriminates FOUR distinct queries by text unique to each one —
+# NOT by a broad substring like bare "pg_namespace", which appears in BOTH
+# the gate's existence probe (its own query) AND the gate's main
+# unprotected-tables query (via that query's "join pg_namespace n on ..."
+# clause). Matching the broad substring first would answer the main query
+# with "1" too, and the gate would read that as an offending table
+# literally named "1" — failing a gated apply on a schema where nothing is
+# wrong. (This exact mistake shipped once already; see the review note in
+# the git history for this file.)
 rec_psql() {
   local args="$*"
   echo "${args}" >> "$CALLS"
@@ -53,13 +62,17 @@ rec_psql() {
     cat > "${APPLIES}/${idx}.sql"
     sed -nE "s/.*values \('([^']+)'\).*/\1/p" "${APPLIES}/${idx}.sql" | tail -1 >> "${APPLIED_LIST}"
     return 0
-  elif [[ "${args}" == *"pg_namespace"* ]]; then
-    # The RLS gate's schema-existence probe also matches "select 1 from "
-    # (below) — this branch MUST come first, or the gate's own existence
-    # check gets misread as a tracker lookup and returns empty.
+  elif [[ "${args}" == *"relrowsecurity"* || "${args}" == *"pg_class"* ]]; then
+    # The gate's main unprotected-tables query. "relrowsecurity"/"pg_class"
+    # appear in NO other query this double sees. Empty result = no
+    # unprotected tables, i.e. a clean fixture.
+    return 0
+  elif [[ "${args}" == *"from pg_namespace where nspname"* ]]; then
+    # The gate's schema-existence probe — matched on the full phrase, not
+    # the bare "pg_namespace" table name the main query above also contains.
     echo 1
     return 0
-  elif [[ "${args}" == *"select 1 from "* ]]; then
+  elif [[ "${args}" == *"where name='"* ]]; then
     local want; want="$(printf '%s' "${args}" | sed -nE "s/.*name='([^']+)'.*/\1/p")"
     grep -qxF "${want}" "${APPLIED_LIST}" 2>/dev/null && echo 1
   fi
@@ -202,9 +215,20 @@ gate_psql_ok() {   # schema exists (pg_namespace probe); every table has RLS
 # ---- 6. the gate runs as part of an apply, after the migrations
 : > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
 app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
+rc=$?
 grep -q 'relrowsecurity' "$CALLS" \
   && ok "apply runs the RLS gate" || bad "apply did not run the RLS gate"
 tail -1 "$CALLS" | grep -q 'relrowsecurity' \
   && ok "the gate runs AFTER the migrations, not before" || bad "gate ran before the migrations finished"
+# The two checks above only look at $CALLS for presence/ordering — neither
+# looks at whether the apply actually SUCCEEDED. A double that misidentifies
+# the gate's main query (see the rec_psql comment above) can log calls in
+# exactly the right order while still failing a clean fixture. $? is
+# captured immediately after the call, not inside a `(set -e; ...) && bad
+# || ok` wrapper, for the same reason the Critical-1/2/3 assertions above do
+# the same: that idiom lets a failing internal assignment's own set -e abort
+# masquerade as "the gate correctly refused."
+[[ "${rc}" -eq 0 ]] \
+  && ok "a gated apply on a clean schema succeeds" || bad "a gated apply on a clean schema failed (rc=${rc})"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
