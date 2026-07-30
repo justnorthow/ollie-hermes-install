@@ -150,4 +150,24 @@ test_rerun_without_tarball_keeps_image() {
 }
 test_rerun_without_tarball_keeps_image
 
+# NODE_OPTIONS install default: present when nothing supplies one
+rm -rf "$APPS_DIR/nodedef"
+printf 'APP_NAME=nodedef\nAPP_PORT=8199\nIMAGE_TARBALL=%s\nAPP_ENV_SUPABASE_URL=https://x.test\nAPP_ENV_SUPABASE_ANON_KEY=k\n' "$T/img.tar" \
+  | bash "${DIR}/scripts/23-install-app-server.sh" > "$T/out.log" 2>&1
+grep -qx 'NODE_OPTIONS=--max-http-header-size=65536' "$APPS_DIR/nodedef/.env" \
+  && ok "NODE_OPTIONS default present" || bad "NODE_OPTIONS default missing"
+
+# operator APP_ENV_NODE_OPTIONS wins over the default
+rm -rf "$APPS_DIR/nodeover"
+printf 'APP_NAME=nodeover\nAPP_PORT=8198\nIMAGE_TARBALL=%s\nAPP_ENV_SUPABASE_URL=https://x.test\nAPP_ENV_SUPABASE_ANON_KEY=k\nAPP_ENV_NODE_OPTIONS=--max-old-space-size=512\n' "$T/img.tar" \
+  | bash "${DIR}/scripts/23-install-app-server.sh" > "$T/out.log" 2>&1
+grep -qx 'NODE_OPTIONS=--max-old-space-size=512' "$APPS_DIR/nodeover/.env" \
+  && ok "operator NODE_OPTIONS wins" || bad "operator NODE_OPTIONS was overridden by the default"
+
+# an existing .env value survives a re-run (the default must not clobber it)
+printf 'APP_NAME=nodeover\nAPP_PORT=8198\n' \
+  | bash "${DIR}/scripts/23-install-app-server.sh" > "$T/out.log" 2>&1
+grep -qx 'NODE_OPTIONS=--max-old-space-size=512' "$APPS_DIR/nodeover/.env" \
+  && ok "existing NODE_OPTIONS survives a re-run" || bad "re-run clobbered NODE_OPTIONS with the default"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
