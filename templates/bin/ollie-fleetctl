@@ -430,6 +430,9 @@ def build_update_steps(component):
             # Heal stale per-profile dashboard units still on --host 0.0.0.0 (crash-loop
             # under current Hermes). Idempotent; a correct unit is left byte-identical.
             ("heal-dashboard-units", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "heal-dashboard-units.sh")], 60),
+            # Re-render the Hermes UI proxy's nginx config and its token include file.
+            # Idempotent; reloads nginx only when something actually changed.
+            ("ensure-hermes-ui-proxy", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "ensure-hermes-ui-proxy.sh")], 60),
         ]
     if component in ("stack", "all"):
         # Re-run 06 (not a bare compose pull/up): it restages docker-compose.yml from

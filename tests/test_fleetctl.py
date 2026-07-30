@@ -361,7 +361,8 @@ class TestUpdateHeartbeat(unittest.TestCase):
         self.assertEqual(steps, ["git-pull-install-repo", "reinstall-fleetctl",
                                  "hermes-update", "reinstall-cortex-plugin",
                                  "repatch-cron-brain", "reinstall-souls",
-                                 "reinstall-identity-sync", "heal-dashboard-units"])
+                                 "reinstall-identity-sync", "heal-dashboard-units",
+                                 "ensure-hermes-ui-proxy"])
         self.assertEqual(out[-1], {"event": "done", "component": "hermes"})
         self.assertEqual(seen[2], ["hermes", "update"])
 
