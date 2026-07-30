@@ -33,14 +33,19 @@ EOF
 # the set of dashboard units, so the fixtures stay self-consistent instead
 # of drifting from a hardcoded token/agent pair.
 sync_ui_fixtures() {
-  local d="$1" token unit name agent
+  local d="$1" token unit name agent line
   mkdir -p "$d/nginx"
-  token="$(grep '^HERMES_DASHBOARD_TOKEN=' "$d/orch.env" | tail -1 | cut -d= -f2-)"
+  token=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      HERMES_DASHBOARD_TOKEN=*) token="${line#HERMES_DASHBOARD_TOKEN=}" ;;
+    esac
+  done < "$d/orch.env"
   printf 'proxy_set_header Authorization "Bearer %s";' "$token" > "$d/nginx/hermes-ui-auth.conf"
   rm -f "$d"/nginx/hermes-ui-proxy-*.conf
   shopt -s nullglob
   for unit in "$d"/units/hermes-dashboard*.service; do
-    name="$(basename "$unit")"
+    name="${unit##*/}"
     agent="${name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
     [[ -z "${agent}" ]] && agent="default"
     printf 'server { listen 127.0.0.1:9219; }\n' > "$d/nginx/hermes-ui-proxy-${agent}.conf"
@@ -375,6 +380,16 @@ test_ui_proxy_gate_fails_on_missing_conf() {
   assert_eq "missing conf FAIL named" "$(echo "$out" | grep -c 'FAIL: hermes-ui-proxy conf missing (default)')" "1"
 }
 
+test_ui_proxy_gate_fails_on_missing_auth_file() {
+  local d rc out
+  d="$(setup_healthy)"
+  rm -f "$d/nginx/hermes-ui-auth.conf"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "missing auth file exit 1" "$rc" "1"
+  assert_eq "missing auth file FAIL named" \
+    "$(echo "$out" | grep -c 'FAIL: hermes-ui-auth missing')" "1"
+}
+
 test_healthy_box_passes
 test_each_gap_flagged
 test_detection_failure_fails_loudly
@@ -387,4 +402,5 @@ test_agent_apps_wrong_shape_manifest
 test_ui_proxy_gate_passes_when_healthy
 test_ui_proxy_gate_fails_on_stale_token
 test_ui_proxy_gate_fails_on_missing_conf
+test_ui_proxy_gate_fails_on_missing_auth_file
 finish

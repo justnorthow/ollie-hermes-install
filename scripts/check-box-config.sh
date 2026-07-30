@@ -90,7 +90,7 @@ done
 
 # 3b. Hermes UI proxy — one conf per dashboard unit, auth file matching the token.
 for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
-  name="$(basename "${unit}")"
+  name="${unit##*/}"
   agent="${name#hermes-dashboard}"; agent="${agent%.service}"; agent="${agent#-}"
   [[ -z "${agent}" ]] && agent="default"
   if [[ -f "${NGINX_CONF_DIR}/hermes-ui-proxy-${agent}.conf" ]]; then
@@ -101,7 +101,8 @@ for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
 done
 
 if [[ -f "${NGINX_AUTH_FILE}" ]]; then
-  if [[ "$(cat "${NGINX_AUTH_FILE}" 2>/dev/null)" == "$(printf 'proxy_set_header Authorization "Bearer %s";' "${TOKEN}")" ]]; then
+  printf -v EXPECTED_AUTH 'proxy_set_header Authorization "Bearer %s";' "${TOKEN}"
+  if [[ "$(<"${NGINX_AUTH_FILE}")" == "${EXPECTED_AUTH}" ]]; then
     pass "hermes-ui-auth matches orchestrator token"
   else
     fail "hermes-ui-auth stale (does not match HERMES_DASHBOARD_TOKEN — rerun ensure-dashboard-token.sh)"
