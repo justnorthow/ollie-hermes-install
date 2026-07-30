@@ -332,16 +332,31 @@ export PATH="$T/bin:$PATH"
 
 . "${DIR}/scripts/lib/app-migrations.sh"
 
+# The function under test must exist, asserted separately. Without this, the
+# `( set -e; … ) && bad || ok` shape in case 3 reports PASS when the function is
+# missing entirely — any non-zero subshell exit looks like "correctly refused".
+declare -F app_migrations_apply >/dev/null \
+  && ok "app_migrations_apply is defined" || bad "app_migrations_apply is NOT defined"
+
 # ---- 1. applies in filename order, one call per file, INSERT in the same call
 CALLS="$T/calls"; APPLIES="$T/applies"; mkdir -p "$APPLIES"; : > "$CALLS"
 APPLIED_LIST="$T/applied"; : > "$APPLIED_LIST"
-n=0
+# The apply index lives in a FILE, not a shell variable. `rec_psql` is invoked as
+# the right-hand side of a pipe, so it runs in a subshell and a variable counter
+# resets on every call — captured applies would all overwrite 1.sql. `shopt -s
+# lastpipe` appears to fix it and does not: lastpipe is inert whenever job control
+# is enabled, so `bash -c 'set -m; source …'` false-FAILs against correct code.
+# A file is immune unconditionally, and it is the idiom the big suite already uses
+# (APPLY_COUNT_FILE in tests/test-24-install-agent-apps.sh).
+APPLY_COUNT_FILE="$T/apply-count"; rm -f "${APPLY_COUNT_FILE}"
 rec_psql() {
-  local args="$*"
+  local args="$*" idx=0
   echo "${args}" >> "$CALLS"
   if [[ "${args}" == *"-1 -f -"* ]]; then
-    n=$((n+1)); cat > "${APPLIES}/${n}.sql"
-    sed -nE "s/.*values \('([^']+)'\).*/\1/p" "${APPLIES}/${n}.sql" | tail -1 >> "${APPLIED_LIST}"
+    [[ -f "${APPLY_COUNT_FILE}" ]] && idx="$(cat "${APPLY_COUNT_FILE}")"
+    idx=$((idx+1)); echo "${idx}" > "${APPLY_COUNT_FILE}"
+    cat > "${APPLIES}/${idx}.sql"
+    sed -nE "s/.*values \('([^']+)'\).*/\1/p" "${APPLIES}/${idx}.sql" | tail -1 >> "${APPLIED_LIST}"
     return 0
   fi
   if [[ "${args}" == *"select 1 from "* ]]; then
@@ -366,7 +381,7 @@ grep -q 'select 0;' "${APPLIES}/1.sql" \
 # ---- 2. skips an already-applied migration
 : > "$CALLS"; rm -f "${APPLIES}"/*.sql
 printf '0001_first.sql\n' > "${APPLIED_LIST}"
-n=0
+rm -f "${APPLY_COUNT_FILE}"   # reset the index between independent sub-tests
 OUT="$(app_migrations_apply img rec_psql hia._migrations)"
 grep -q 'skip 0001_first.sql (applied)' <<<"$OUT" \
   && ok "skips an already-applied migration" || bad "did not skip an applied migration"
@@ -465,7 +480,7 @@ gate_psql_ok() { return 0; }   # empty result = every table protected
   && ok "RLS gate passes when every table has RLS" || bad "RLS gate false-failed"
 
 # ---- 6. the gate runs as part of an apply, after the migrations
-: > "$CALLS"; : > "${APPLIED_LIST}"; n=0
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
 app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
 grep -q 'relrowsecurity' "$CALLS" \
   && ok "apply runs the RLS gate" || bad "apply did not run the RLS gate"
