@@ -1,4 +1,52 @@
-# Expose a box's Hermes dashboard (Backend Settings link)
+# ⛔ SUPERSEDED — do not follow this runbook
+
+**Use [`hermes-ui-proxy.md`](hermes-ui-proxy.md) instead.**
+
+The `<box>-hermes` public-hostname approach documented below was **rejected and
+its hostnames deleted** during the cookie-isolation work. Reaching the native
+Hermes dashboard now means an SSH port-forward to a loopback token-injecting
+proxy at `dashboard port + 100` (so `9219`, `9221`):
+
+    ssh -o IdentityAgent=none -i <key> -L 9219:127.0.0.1:9219 ollie@<box>
+
+and `HERMES_UI_URL=http://127.0.0.1:9219`, with **`HERMES_UI_HOSTNAME` left
+empty**. Setting that variable is what re-activates the machinery below.
+
+**Why it was rejected:** publishing the dashboard through the frontend's nginx
+requires passing the Hermes session token *into* the dashboard container — a
+permanent security cost for a convenience. The proxy keeps the token on the
+host next to systemd, where a compromised frontend container can proxy to
+Hermes but cannot authenticate to it.
+
+**This document caused a real wrong turn on 2026-07-30**: it was followed on the
+GetBilled box, re-created a deleted architecture, and was only caught because
+the operator remembered the decision. Nothing was exposed — the nginx cookie
+gate held and anonymous requests returned 401 with no token — but the next
+reader would have made the same mistake.
+
+**Two specific claims below are now false:**
+
+- The "Known gap" says `HermesDashboardLink` has no role gate. It does:
+  `atLeast(identity.tier, 'account_admin')` in
+  `ollie-hermes-frontend/src/components/Layout.tsx`.
+- Step 4 says to set **Hermes UI URL** in Fleet to a public hostname. On a box
+  running the UI proxy, that field should be `http://127.0.0.1:9219`.
+
+**If you are doing the deferred PUBLIC phase**, do not start here either — its
+hard part is authorization, not plumbing. A shared injected token means anyone
+past the outer gate gets full Hermes admin (files, keys, config, MCP, skills,
+logs, and a chat that executes code), so the gate must carry real identity. And
+see the OB1 standing rule: verify unauthenticated `curl -sI https://<host>/`
+returns a 302 to `<team>.cloudflareaccess.com` **before** pointing a route at
+anything, and rotate `HERMES_DASHBOARD_TOKEN` afterwards.
+
+---
+
+# Historical: expose a box's Hermes dashboard (Backend Settings link)
+
+*Retained for the Cloudflare-side mechanics only — tunnel routes, Access
+applications, and the WebSocket settings — which remain accurate and are still
+useful for the public phase. Do not follow the `.env` steps.*
 
 The native Hermes dashboard binds `127.0.0.1:9119` (loopback, no auth). To make
 the frontend's "Backend Settings" link work, publish it at the root of a

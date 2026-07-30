@@ -21,6 +21,35 @@ Confirm a box's ports with:
 
     grep -h -oE '\-\-port[= ]+[0-9]+' ~/.config/systemd/user/hermes-dashboard*.service
 
+## Wiring the Backend Settings link
+
+The frontend renders the link only when **both** hold
+(`ollie-hermes-frontend/src/components/Layout.tsx`):
+
+- `hermesUiUrl` is non-empty, and
+- the signed-in user is `account_admin` or above.
+
+So in `~/hermes-stack/.env` on the box:
+
+    HERMES_UI_URL=http://127.0.0.1:9219
+    HERMES_UI_HOSTNAME=
+
+Then `docker compose -f ~/hermes-stack/docker-compose.yml up -d --force-recreate dashboard`
+and confirm with:
+
+    curl -s http://127.0.0.1:3000/config.js | tr ',' '
+' | grep hermesUiUrl
+
+⚠️ **Leave `HERMES_UI_HOSTNAME` empty.** Setting it re-activates
+`generate-hermes-host.sh`, which publishes the dashboard on a public hostname —
+the approach that was rejected and deleted. See
+[`hermes-dashboard-cloudflare.md`](hermes-dashboard-cloudflare.md), which is
+retained only as superseded history.
+
+The link opens `http://127.0.0.1:9219`, so it works in the operator's browser
+only while the `ssh -L` forward above is up. That is intended: the dashboard is
+never published.
+
 ## Why the plain forward to 9119 does not work
 
 Hermes 0.19.0 requires an `Authorization: Bearer <session token>` header on its
