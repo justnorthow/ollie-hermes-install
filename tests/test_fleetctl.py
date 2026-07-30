@@ -358,11 +358,16 @@ class TestUpdateHeartbeat(unittest.TestCase):
         code, out = run_main(self.mod, ["update", "hermes"])
         self.assertEqual(code, 0)
         steps = [e["step"] for e in out if e.get("event") == "progress"]
+        # restart-dashboard-units is LAST and unconditional: `hermes update` swaps
+        # the source tree under the running dashboards, which then serve 500 on
+        # every route until restarted. It must come after every re-apply step so
+        # each dashboard comes up on the fully updated source, config and proxy.
         self.assertEqual(steps, ["git-pull-install-repo", "reinstall-fleetctl",
                                  "hermes-update", "reinstall-cortex-plugin",
                                  "repatch-cron-brain", "reinstall-souls",
                                  "reinstall-identity-sync", "heal-dashboard-units",
-                                 "install-nginx", "ensure-hermes-ui-proxy"])
+                                 "install-nginx", "ensure-hermes-ui-proxy",
+                                 "restart-dashboard-units"])
         self.assertEqual(out[-1], {"event": "done", "component": "hermes"})
         self.assertEqual(seen[2], ["hermes", "update"])
 

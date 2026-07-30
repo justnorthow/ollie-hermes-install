@@ -9,6 +9,8 @@ if [ -z "$PY" ]; then echo "FAIL: python3 not found on PATH (required to run oll
 # Capture the dry-run step names for a component into a newline list.
 steps_for() { "$PY" "$FLEETCTL" update "$1" --dry-run 2>/dev/null | grep -oE '"name": ?"[^"]+"' | sed -E 's/.*"name": ?"([^"]+)".*/\1/'; }
 has_step()  { steps_for "$1" | grep -qx "$2"; }
+# 1-based position of a step, "" when absent.
+step_index() { steps_for "$1" | grep -nxm1 "$2" | cut -d: -f1; }
 
 # CURRENT behavior (post-Tasks-2-4):
 test_hermes_reapply() {
@@ -24,6 +26,22 @@ test_hermes_reapply() {
   assert_eq "hermes installs nginx"            "$(has_step hermes install-nginx && echo y)" "y"
   assert_eq "hermes refreshes the UI proxy"    "$(has_step hermes ensure-hermes-ui-proxy && echo y)" "y"
 }
+# `hermes update` swaps the Hermes source tree under the running dashboards. Hermes
+# imports parts of hermes_cli lazily, so a dashboard left running then resolves a
+# freshly-imported module against a stale one in its sys.modules and returns 500 on
+# EVERY route. heal-dashboard-units.sh does not cover it — it skips units that are
+# already active, and these are active, just wrong. Sandbox 2026-07-30: three of four
+# agents were serving 500s from five-day-old processes after an update.
+test_hermes_restarts_every_dashboard_after_the_source_update() {
+  assert_eq "hermes restarts dashboard units" \
+    "$(has_step hermes restart-dashboard-units && echo y)" "y"
+  local upd rst
+  upd="$(step_index hermes hermes-update)"
+  rst="$(step_index hermes restart-dashboard-units)"
+  assert_eq "the restart runs AFTER the source update" \
+    "$([[ -n "$upd" && -n "$rst" && "$rst" -gt "$upd" ]] && echo y)" "y"
+}
+
 # Stack update must re-run 06 (restages compose + refreshes pins), not a bare compose pull/up.
 test_stack_reinstalls_06() {
   assert_eq "stack has reinstall-stack" "$(has_step stack reinstall-stack && echo y)" "y"
@@ -40,11 +58,12 @@ test_orch_reinstalls_05() {
 test_readme_matches_code() {
   local readme="$HERE/../README.md"
   local section; section="$(awk '/^## After a .hermes update/{f=1;next} f&&/^## /{f=0} f' "$readme")"
-  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh 11-install-supabase.sh 27-install-nginx.sh ensure-hermes-ui-proxy.sh; do
+  for s in 04-install-cortex-plugin.sh 07-patch-cron-brain.sh 08-install-souls.sh 09-install-identity-sync.sh heal-dashboard-units.sh restart-dashboard-units.sh 11-install-supabase.sh 27-install-nginx.sh ensure-hermes-ui-proxy.sh; do
     assert_eq "after-update section names $s" "$(printf '%s' "$section" | grep -q "$s" && echo y)" "y"
   done
 }
 test_hermes_reapply
+test_hermes_restarts_every_dashboard_after_the_source_update
 test_stack_reinstalls_06
 test_orch_reinstalls_05
 test_readme_matches_code

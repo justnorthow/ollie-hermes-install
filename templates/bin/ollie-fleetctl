@@ -440,6 +440,16 @@ def build_update_steps(component):
             # Re-render the Hermes UI proxy's nginx config and its token include file.
             # Idempotent; reloads nginx only when something actually changed.
             ("ensure-hermes-ui-proxy", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "ensure-hermes-ui-proxy.sh")], 60),
+            # LAST, and unconditional. `hermes update` swapped the source tree under
+            # the still-running dashboards; Hermes imports hermes_cli lazily, so those
+            # processes then resolve a fresh import against a stale sys.modules entry
+            # and return 500 on EVERY route until restarted. heal-dashboard-units.sh
+            # does not catch it — it skips units that are already active, and these
+            # are active, just wrong (sandbox 2026-07-30: 3 of 4 agents serving 500s
+            # from five-day-old processes). Runs last so each dashboard comes up on
+            # the fully re-applied source, config and proxy. Sequential restarts, each
+            # rebuilding its SPA, so the timeout is generous.
+            ("restart-dashboard-units", ["bash", os.path.join(INSTALL_DIR, "scripts", "lib", "restart-dashboard-units.sh")], 600),
         ]
     if component in ("stack", "all"):
         # Re-run 06 (not a bare compose pull/up): it restages docker-compose.yml from

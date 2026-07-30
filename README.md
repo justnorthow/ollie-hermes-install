@@ -135,6 +135,15 @@ Finally it makes sure the browser-access proxy is present and current: `27-insta
 `scripts/lib/ensure-hermes-ui-proxy.sh`, which re-renders each agent's loopback listener
 and its bearer-token include file. See `docs/runbooks/hermes-ui-proxy.md`.
 
+Last, it restarts every agent dashboard (`scripts/lib/restart-dashboard-units.sh`).
+This is **not** optional tidying: `hermes update` swaps the Hermes source tree under
+the still-running dashboards, and because Hermes imports `hermes_cli` lazily, a
+dashboard left running resolves a fresh import against a stale module cached in its
+own process and returns **500 on every route** — the dashboard looks "active" to
+systemd the whole time. `heal-dashboard-units.sh` does not cover this, since it skips
+units that are already active. Restarts are sequential (each dashboard rebuilds its
+SPA on start, so give it a minute or two per agent).
+
 `ollie-fleetctl update orchestrator` (also covered by `update all`) re-runs
 `05-install-orchestrator.sh` and then re-verifies the Supabase dashboard-auth config
 via `scripts/11-install-supabase.sh --verify-only` — a no-op SKIP on boxes that
