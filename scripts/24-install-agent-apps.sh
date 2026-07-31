@@ -278,6 +278,21 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     # Build the whole JSON payload in python (json.dumps) so tile field
     # values never get bash-string-spliced into a JSON literal — they come
     # straight out of the committed manifest, read by python, not interpolated.
+    #
+    # sso is registered FALSE. ExternalWebApp.tsx treats a truthy sso as: fetch
+    # an app-token, then load <base>sso?t=... That handoff signs into the app-s
+    # OWN Supabase with a service-role client. A consolidated app has no
+    # Supabase of its own and is handed no service-role key, so the handoff
+    # cannot succeed and the tile shows an open-failure message. Its failure is
+    # invisible to a health check: every failure path in the app-s /sso handler
+    # returns HTTP 200 with an expired-link page. Falsy sso loads /apps/<name>/
+    # directly on the first-party session cookie the same-origin proxy exists
+    # to preserve.
+    #
+    # NOTE: the python below runs inside python3 -c with a DOUBLE-quoted shell
+    # string, so double quotes, backticks and $ are consumed by bash before
+    # python sees them. Keep prose out of that block — a comment with an
+    # apostrophe or backtick in it silently corrupts the whole script.
     PAYLOAD="$(python3 -c "
 import json
 d = json.load(open('${MANIFEST}'))
@@ -290,7 +305,7 @@ payload = {
     'description': tile['description'],
     'order': tile['order'],
     'componentType': 'ExternalWebApp',
-    'config': {'url': '/apps/' + app['name'] + '/', 'sso': True},
+    'config': {'url': '/apps/' + app['name'] + '/', 'sso': False},
 }
 print(json.dumps(payload))
 ")"

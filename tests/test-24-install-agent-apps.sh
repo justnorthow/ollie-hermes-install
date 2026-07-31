@@ -445,7 +445,7 @@ assert d['description'] == 'Pop-by planning: contacts, cadence, routes, calendar
 assert d['order'] == 10, d
 assert d['componentType'] == 'ExternalWebApp', d
 assert d['config']['url'] == '/apps/popbys/', d
-assert d['config']['sso'] is True, d
+assert d['config']['sso'] is False, d
 " 2>"$T/payload-check.err"; then
   ok "tile registration payload shape correct"
 else
