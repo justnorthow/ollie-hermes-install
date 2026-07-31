@@ -108,6 +108,22 @@ grep -q "GRANT popbys_owner TO CURRENT_USER" "$PSQL_SQL_LOG" \
   && bad "grantee is a literal role, not CURRENT_USER (segfaults PG 15.8)" \
   || ok "grantee is a literal role, not CURRENT_USER (segfaults PG 15.8)"
 
+# Schema `auth` is owned by supabase_admin, and `postgres` holds USAGE WITHOUT
+# GRANT OPTION. Granting from postgres emits `WARNING: no privileges were
+# granted for "auth"` and returns success — ON_ERROR_STOP=1 does not catch
+# warnings, so the script exited 0 while an app's FK to auth.users would later
+# die with `permission denied for schema auth`. The cross-schema grants must be
+# issued by the schema owner. Found on the dev box 2026-07-30.
+grep -q "supabase_admin" "$DOCKER_LOG" \
+  && ok "cross-schema grants are issued as supabase_admin" \
+  || bad "cross-schema grants are issued as supabase_admin"
+
+# Belt and braces: because that failure mode is a WARNING rather than an error,
+# the script must PROVE the privileges landed instead of trusting the exit code.
+grep -qE "has_schema_privilege\('popbys_owner', *'auth'" "$PSQL_SQL_LOG" \
+  && ok "verifies the auth grants actually landed" \
+  || bad "verifies the auth grants actually landed"
+
 grep -q "GRANT popbys_owner TO authenticator" "$PSQL_SQL_LOG" \
   && ok "authenticator can switch into the owner role" || bad "authenticator can switch into the owner role"
 grep -q "GRANT USAGE ON SCHEMA auth TO popbys_owner" "$PSQL_SQL_LOG" \
@@ -128,7 +144,13 @@ grep -qiE "GRANT .* ON SCHEMA public TO popbys_owner" "$PSQL_SQL_LOG" \
 # privilege, and stops depending on the word "trigger" appearing anywhere.
 # \bauth\b matches `auth.users` / `SCHEMA auth` but not authenticator/authenticated;
 # -- comment lines are stripped first.
+# Scoped to PRIVILEGE-CHANGING statements, which is what this assertion is
+# actually about: the script must grant nothing on auth beyond these two. It
+# previously matched ANY line mentioning auth, which also caught read-only
+# checks — the has_schema_privilege/has_table_privilege verification that
+# proves the grants landed is not a privilege change and must not trip it.
 AUTH_STMTS="$(grep -vE '^[[:space:]]*--' "$PSQL_SQL_LOG" | grep -E '\bauth\b' \
+  | grep -E '^[[:space:]]*(GRANT|REVOKE|ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES)\b' \
   | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sort -u)"
 # sorted, since AUTH_STMTS is `sort -u`d
 AUTH_STMTS_EXPECTED='GRANT REFERENCES ON TABLE auth.users TO popbys_owner;

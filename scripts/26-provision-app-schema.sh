@@ -63,6 +63,27 @@ core_psql() {  # SQL on stdin
     exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d postgres
 }
 
+# Cross-schema grants must be issued by the OWNER of schema auth, which is
+# supabase_admin (the only superuser). `postgres` holds USAGE on auth WITHOUT
+# GRANT OPTION, and PostgreSQL answers a grant you may not make with
+#   WARNING: no privileges were granted for "auth"
+# and a SUCCESS exit — ON_ERROR_STOP=1 does not trap warnings. Issuing these as
+# postgres therefore looked fine and silently did nothing, leaving any app that
+# foreign-keys to auth.users to fail later with `permission denied for schema
+# auth`. Connects over TCP because the socket path rejects password auth.
+admin_psql() {  # SQL on stdin
+  docker compose -f "${CORE_DIR}/docker-compose.yml" --env-file "${CORE_DIR}/.env" \
+    exec -T -e PGPASSWORD="${CORE_DB_PASSWORD}" db \
+    psql -v ON_ERROR_STOP=1 -U supabase_admin -h 127.0.0.1 -d postgres
+}
+
+CORE_DB_PASSWORD="$(grep -E '^POSTGRES_PASSWORD=' "${CORE_DIR}/.env" | tail -1 | cut -d= -f2-)"
+if [[ -z "${CORE_DB_PASSWORD}" ]]; then
+  echo "error: POSTGRES_PASSWORD not found in ${CORE_DIR}/.env — needed to grant" \
+    "cross-schema access as supabase_admin" >&2
+  exit 1
+fi
+
 core_psql <<SQL
 -- Owner role. CREATE ROLE has no IF NOT EXISTS, so guard it.
 DO \$\$
@@ -95,10 +116,6 @@ ALTER SCHEMA ${APP_NAME} OWNER TO ${OWNER_ROLE};
 GRANT USAGE ON SCHEMA ${APP_NAME} TO anon, authenticated, service_role;
 GRANT ${OWNER_ROLE} TO authenticator;
 
--- Narrow, unavoidable cross-schema need: app rows FK to identity.
--- USAGE + REFERENCES only. No other privilege grants.
-GRANT USAGE ON SCHEMA auth TO ${OWNER_ROLE};
-GRANT REFERENCES ON TABLE auth.users TO ${OWNER_ROLE};
 
 -- Tables the owner creates later must be reachable by the PostgREST roles.
 ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER_ROLE} IN SCHEMA ${APP_NAME}
@@ -114,7 +131,30 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER_ROLE} IN SCHEMA ${APP_NAME}
 REVOKE ALL ON SCHEMA public FROM ${OWNER_ROLE};
 SQL
 
-echo "    schema + owner role provisioned"
+# Narrow, unavoidable cross-schema need: app rows FK to identity.
+# USAGE + REFERENCES only, no other privilege — and issued as supabase_admin,
+# which owns schema auth. See admin_psql above for why postgres cannot do this.
+admin_psql <<SQL
+GRANT USAGE ON SCHEMA auth TO ${OWNER_ROLE};
+GRANT REFERENCES ON TABLE auth.users TO ${OWNER_ROLE};
+SQL
+
+# PROVE it landed rather than trusting the exit code: the failure mode this
+# replaces was a WARNING with a success exit, so a silent no-op would otherwise
+# look identical to success and only surface when an app migration tried to
+# reference auth.users.
+core_psql <<SQL
+DO \$\$
+BEGIN
+  IF NOT has_schema_privilege('${OWNER_ROLE}', 'auth', 'USAGE')
+     OR NOT has_table_privilege('${OWNER_ROLE}', 'auth.users', 'REFERENCES') THEN
+    RAISE EXCEPTION 'cross-schema grants did not land for ${OWNER_ROLE}: an app FK to auth.users would fail with "permission denied for schema auth"';
+  END IF;
+END
+\$\$;
+SQL
+
+echo "    schema + owner role provisioned (auth grants verified)"
 
 # Register the schema with PostgREST. Absent key => start from "public", which
 # is the shipped default (verified on the sandbox: PGRST_DB_SCHEMAS=public).
