@@ -16,9 +16,23 @@
 #   plugins, not memory providers. The plugin's __init__.py registers via
 #   register_memory_provider().
 #
-# Tradeoff: this dir is reset by `hermes update`, so this script needs to be
-# re-run after every Hermes update. Mitigation: docs/post-install.md tells
-# operators to re-run scripts/04-install-cortex-plugin.sh after hermes update.
+# This dir SURVIVES `hermes update` — verified 2026-07-30 on two live boxes.
+# The earlier belief that it was wiped was wrong. `hermes update` runs
+# `git stash push --include-untracked` (hermes_cli/update_cmd.py:851), pulls,
+# then restores; this dir is untracked in the hermes-agent checkout
+# (`?? plugins/memory/cortex/`), so it goes into the stash and comes back out,
+# and there is no `git clean` anywhere in the update path.
+#
+# The re-patch tax belongs to PATCHES OF TRACKED upstream files — currently
+# cron/scheduler.py and run_agent.py on jnow prod — which can conflict with an
+# incoming pull. An untracked ADDITION like this one cannot conflict.
+#
+# One thing to leave alone: this depends on `updates.non_interactive_local_changes`
+# being `stash` (both boxes are). Set it to `discard` and the stash is dropped
+# instead of restored, which WOULD delete this plugin.
+#
+# Re-run this script when the vendored source in templates/cortex-plugin/
+# changes, not on a schedule.
 
 set -euo pipefail
 
@@ -74,5 +88,6 @@ done
 echo
 echo "✓ Cortex memory plugin installed and activated."
 echo
-echo "After 'hermes update' (which wipes this plugin dir), re-run THIS script."
+echo "This plugin SURVIVES 'hermes update' — no re-run needed after one."
+echo "Re-run this script when templates/cortex-plugin/ changes."
 echo "Memory extraction happens per-session, so start a new chat to see it fire."
