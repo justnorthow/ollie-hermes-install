@@ -231,4 +231,22 @@ tail -1 "$CALLS" | grep -q 'relrowsecurity' \
 [[ "${rc}" -eq 0 ]] \
   && ok "a gated apply on a clean schema succeeds" || bad "a gated apply on a clean schema failed (rc=${rc})"
 
+# ---- 7. the target schema reaches psql as a variable
+# Consolidated app migrations qualify their objects as :"schema" so ONE image
+# can install into any schema. psql substitutes that only when the variable is
+# set; without it the placeholder stays literal and every migration dies on
+# `syntax error at or near ":"`. Fail-closed, but only if the applier passes
+# the variable in the first place — which is what this asserts.
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
+app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
+grep -- '-1 -f -' "$CALLS" | grep -q -- '-v schema=hia' \
+  && ok "passes -v schema=<schema> on the apply call" || bad "apply call has no -v schema=<schema>"
+
+# No schema argument means no variable — the stack-based path applies into
+# `public` and must not start emitting an unset-variable reference.
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
+app_migrations_apply img rec_psql hia._migrations >/dev/null 2>&1
+grep -- '-1 -f -' "$CALLS" | grep -q -- '-v schema=' \
+  && bad "passed -v schema= with no schema argument" || ok "no -v schema= when no schema is given"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

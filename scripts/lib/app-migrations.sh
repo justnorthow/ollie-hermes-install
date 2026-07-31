@@ -14,6 +14,14 @@
 app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
   local img="$1" psql_fn="$2" tracker="$3" schema="${4:-}"
   local mig_dir ctr f base applied
+  # Consolidated app migrations qualify their objects as :"schema" so one image
+  # installs into any schema. psql substitutes that ONLY when the variable is
+  # set — otherwise the placeholder stays literal and the migration dies on
+  # `syntax error at or near ":"`. Empty-array expansion is written the
+  # set -u-safe way: callers source this under `set -euo pipefail`, where a
+  # bare "${arr[@]}" on an empty array is an unbound-variable error.
+  local -a schema_arg=()
+  [[ -n "${schema}" ]] && schema_arg=(-v "schema=${schema}")
   mig_dir="$(mktemp -d)"
   ctr="$(docker create "${img}")"
   docker cp "${ctr}:/app/supabase/migrations/." "${mig_dir}/"
@@ -35,7 +43,7 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
     # travel in ONE psql invocation, so a mid-file failure rolls back both —
     # no partially-applied file recorded as done, no applied file unrecorded.
     if ! { cat "$f"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
-         | "${psql_fn}" -1 -f -; then
+         | "${psql_fn}" ${schema_arg[@]+"${schema_arg[@]}"} -1 -f -; then
       echo "error: migration ${base} failed — nothing was recorded as applied (single-transaction)" >&2
       rm -rf "${mig_dir}"
       return 1
