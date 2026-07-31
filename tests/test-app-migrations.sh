@@ -272,4 +272,47 @@ app_migrations_apply img rec_psql hia._migrations >/dev/null 2>&1
 grep -q 'create table public\.widgets' "${APPLIES}/1.sql" \
   && ok "no schema argument leaves the SQL untouched" || bad "SQL was rewritten with no schema argument"
 
+# ---- 8. relocation tolerates real-world SQL style, and FAILS CLOSED otherwise
+# Pop Bys is written entirely in lowercase with a bare `set search_path =
+# public`. HIA is not: its pins are `SET search_path = public, pg_temp` —
+# uppercase, and a LIST. The first implementation matched the lowercase bare
+# form only, so on HIA it would have relocated every table reference while
+# leaving both security definer pins on `public`, with a zero exit. That is
+# the fail-late shape: migrations succeed, then the definer functions resolve
+# outside their own schema at runtime.
+rm -f "$FIXTURE_MIG_DIR"/*.sql
+cat > "$FIXTURE_MIG_DIR/0001_first.sql" <<'SQL'
+CREATE OR REPLACE FUNCTION public.handle_new_user() RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  INSERT INTO public.users (id, email) VALUES (new.id, new.email);
+  RETURN new;
+END;
+$$;
+SQL
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLIES}"/*.sql; rm -f "${APPLY_COUNT_FILE}"
+app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
+RENDERED="${APPLIES}/1.sql"
+grep -q 'SET search_path = hia, pg_temp' "${RENDERED}" \
+  && ok "uppercase SET and a search_path LIST are relocated (pg_temp preserved)" \
+  || bad "uppercase/list search_path pin was left on public"
+grep -q 'INSERT INTO hia\.users' "${RENDERED}" \
+  && ok "qualified references relocate regardless of surrounding case" || bad "qualified reference not relocated"
+
+# Fail closed on a form the rewrite cannot handle, rather than shipping a
+# half-relocated migration. `public` not immediately after the `=` is exactly
+# the case the targeted rewrite cannot safely reorder.
+rm -f "$FIXTURE_MIG_DIR"/*.sql
+cat > "$FIXTURE_MIG_DIR/0001_first.sql" <<'SQL'
+create function public.f() returns void language sql
+set search_path = pg_temp, public as $$ select 1 $$;
+SQL
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLIES}"/*.sql; rm -f "${APPLY_COUNT_FILE}"
+( set -e; app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1 ) \
+  && bad "a search_path the rewrite could not relocate was applied anyway" \
+  || ok "refuses to apply when a public reference survives the rewrite"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
