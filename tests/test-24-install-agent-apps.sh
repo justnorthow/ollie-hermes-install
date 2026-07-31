@@ -49,17 +49,37 @@ JSON
 # ---- fixture stacks dir (SUB20 stub writes popbys/.env here) ----
 export STACKS_DIR="$T/stacks"; mkdir -p "$STACKS_DIR"
 
+# ---- fixture CORE supabase stack (what 26 provisions into and 24 reads) ----
+export CORE_STACK_DIR="$T/supabase-stack"
+mkdir -p "$CORE_STACK_DIR/app-keys"
+cat > "$CORE_STACK_DIR/.env" <<'EOF'
+ANON_KEY=core-anon
+SERVICE_ROLE_KEY=core-service-role-DO-NOT-LEAK
+SUPABASE_PUBLIC_URL=https://sb-core.test
+POSTGRES_PASSWORD=corepw
+JWT_SECRET=core-jwt-secret
+PGRST_DB_SCHEMAS=public
+EOF
+: > "$CORE_STACK_DIR/docker-compose.yml"
+
+# ---- SUB26 stub: logs stdin; materializes the app's owner JWT ----
+export SUB26_LOG="$T/sub26.log"
+cat > "$T/bin/sub26.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+cat > "${SUB26_LOG}"
+name="$(sed -nE 's/^APP_NAME=(.*)$/\1/p' "${SUB26_LOG}" | tail -1)"
+mkdir -p "${CORE_STACK_DIR}/app-keys"
+printf 'jwt-for-%s' "${name}" > "${CORE_STACK_DIR}/app-keys/${name}.jwt"
+SH
+export SUB26="$T/bin/sub26.sh"
+chmod +x "$SUB26"
+
 # ---- fixture orchestrator env file (HIA_SSO_SECRET present: happy path) ----
 mkdir -p "$T/hermes-stack"
 cat > "$T/hermes-stack/.env" <<'EOF'
 ORCHESTRATOR_KEY=orch-key-1==
 HIA_SSO_SECRET=sso-secret-1
-EOF
-
-# ---- fixture orchestrator env file WITHOUT HIA_SSO_SECRET (warn-and-continue case) ----
-mkdir -p "$T/hermes-stack-nosso"
-cat > "$T/hermes-stack-nosso/.env" <<'EOF'
-ORCHESTRATOR_KEY=orch-key-1==
 EOF
 
 # ---- fixture migrations (what the fake docker cp extracts from the image) ----
@@ -159,7 +179,20 @@ case "$1" in
       done
       case "${cval}" in
         *"create table if not exists"*) : ;;
-        *"select 1 from public._app_migrations where name="*)
+        # The gate's unprotected-tables query joins pg_namespace, so it also
+        # contains the bare substring "pg_namespace" — this branch MUST be
+        # checked before the existence-probe branch below, or the gate's main
+        # query would be answered as if IT were the existence probe (see the
+        # F2/task-6 note: that exact ordering bug shipped once and produced a
+        # false "unprotected table literally named 1" failure on a clean
+        # fixture). Matched on "relrowsecurity"/"pg_class", which appear in NO
+        # other query here. Empty result = no unprotected tables (clean).
+        *relrowsecurity*|*pg_class*) : ;;
+        # The gate's schema-existence probe — matched on the full phrase, not
+        # the bare "pg_namespace" table name the query above also contains.
+        # Non-empty = the gate can confirm the schema exists.
+        *"from pg_namespace where nspname"*) echo 1 ;;
+        *"select 1 from "*"._migrations where name="*)
           name="$(echo "${cval}" | sed -E "s/.*name='([^']+)'.*/\1/")"
           if grep -qxF "${name}" "${MIGSTATE_FILE}" 2>/dev/null; then echo 1; fi
           ;;
@@ -341,32 +374,57 @@ run() { # PROFILE KEY=VALUE...
 }
 
 # 1. happy path: SUB20 gets the right stack params
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && ok "happy path exits 0" || bad "happy path exits 0"
-grep -q '^STACK_NAME=popbys$' "$SUB20_LOG" && ok "SUB20 got STACK_NAME" || bad "SUB20 got STACK_NAME"
-grep -q '^KONG_PORT=8030$' "$SUB20_LOG" && ok "SUB20 got KONG_PORT" || bad "SUB20 got KONG_PORT"
-grep -q '^SUPABASE_PUBLIC_URL=https://sb-popbys.test$' "$SUB20_LOG" && ok "SUB20 got SUPABASE_PUBLIC_URL" || bad "SUB20 got SUPABASE_PUBLIC_URL"
-grep -q '^SITE_URL=https://popbys.test$' "$SUB20_LOG" && ok "SUB20 got SITE_URL" || bad "SUB20 got SITE_URL"
-grep -q '^EMAIL_ENABLED=false$' "$SUB20_LOG" && ok "SUB20 got EMAIL_ENABLED" || bad "SUB20 got EMAIL_ENABLED"
-grep -q '^GOOGLE_CLIENT_ID=gid$' "$SUB20_LOG" && ok "SUB20 got GOOGLE_CLIENT_ID" || bad "SUB20 got GOOGLE_CLIENT_ID"
+grep -q '^APP_NAME=popbys$' "$SUB26_LOG" && ok "SUB26 got APP_NAME" || bad "SUB26 got APP_NAME"
+grep -q "^CORE_STACK_DIR=${CORE_STACK_DIR}\$" "$SUB26_LOG" && ok "SUB26 got CORE_STACK_DIR" || bad "SUB26 got CORE_STACK_DIR"
+[[ ! -s "$SUB20_LOG" ]] && ok "20-install-app-stack.sh is no longer called" || bad "24 still calls 20"
+grep -q 'create table if not exists popbys._migrations' "$DOCKER_LOG" \
+  && ok "tracker is popbys._migrations" || bad "tracker is not the per-schema table"
+grep -q 'public._app_migrations' "$DOCKER_LOG" \
+  && bad "still tracking in public._app_migrations" || ok "no longer tracking in public._app_migrations"
+# popbys_owner is NOLOGIN by design (26 grants it to authenticator only) — a
+# real connection as `-U popbys_owner` would be rejected by Postgres before
+# auth is even consulted. The correct shape connects as postgres and SWITCHES
+# the session role via PGOPTIONS, so that is what must be evidenced here, not
+# a `-U popbys_owner` flag (which would in fact be the broken shape).
+grep -qE -- '-e PGOPTIONS=-c role=popbys_owner' "$DOCKER_LOG" \
+  && ok "migrations connect as postgres and switch to the popbys_owner session role" \
+  || bad "migrations do not switch to the owner role via a session role switch"
 
 # 2. SUB23 gets app-server params, including the resolved anon key + ollie env
 grep -q '^APP_NAME=popbys$' "$SUB23_LOG" && ok "SUB23 got APP_NAME" || bad "SUB23 got APP_NAME"
 grep -q '^APP_PORT=8130$' "$SUB23_LOG" && ok "SUB23 got APP_PORT" || bad "SUB23 got APP_PORT"
-grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" && ok "SUB23 got SUPABASE_URL" || bad "SUB23 got SUPABASE_URL"
-grep -q '^APP_ENV_SUPABASE_ANON_KEY=stub-anon$' "$SUB23_LOG" && ok "SUB23 got SUPABASE_ANON_KEY" || bad "SUB23 got SUPABASE_ANON_KEY"
+grep -q '^APP_ENV_SUPABASE_URL=https://sb-core.test$' "$SUB23_LOG" \
+  && ok "SUB23 got core's public URL" || bad "SUB23 did not get core's public URL"
+grep -q '^APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8000$' "$SUB23_LOG" \
+  && ok "SUB23 got the core kong internal URL" || bad "internal URL is not core kong"
+grep -q '^APP_ENV_SUPABASE_ANON_KEY=core-anon$' "$SUB23_LOG" \
+  && ok "SUB23 got core's anon key" || bad "SUB23 did not get core's anon key"
+grep -q '^APP_ENV_SUPABASE_APP_KEY=jwt-for-popbys$' "$SUB23_LOG" \
+  && ok "SUB23 got the owner JWT as SUPABASE_APP_KEY" || bad "SUPABASE_APP_KEY missing or wrong"
+grep -q '^APP_ENV_SUPABASE_DB_SCHEMA=popbys$' "$SUB23_LOG" \
+  && ok "SUB23 got the schema name" || bad "schema name missing"
 grep -q '^APP_ENV_OLLIE_ENDPOINT=http://127.0.0.1:9123$' "$SUB23_LOG" && ok "SUB23 got OLLIE_ENDPOINT" || bad "SUB23 got OLLIE_ENDPOINT"
 grep -q '^APP_ENV_OLLIE_AGENT=real-estate$' "$SUB23_LOG" && ok "SUB23 got OLLIE_AGENT" || bad "SUB23 got OLLIE_AGENT"
 grep -q '^APP_ENV_OLLIE_ORCHESTRATOR_KEY=orch-key-1==$' "$SUB23_LOG" && ok "SUB23 got OLLIE_ORCHESTRATOR_KEY with = padding" || bad "SUB23 got OLLIE_ORCHESTRATOR_KEY with = padding"
 grep -q "^IMAGE_TARBALL=$T/img.tar$" "$SUB23_LOG" && ok "SUB23 got IMAGE_TARBALL" || bad "SUB23 got IMAGE_TARBALL"
 
-# 2b. SUB23 gets the dashboard-SSO env: HIA_SSO_SECRET (from the orchestrator
-# env file), SUPABASE_SERVICE_ROLE_KEY (from the stack .env SUB20 rendered),
-# and APP_BASE_PATH (derived from the app name).
-grep -q '^APP_ENV_HIA_SSO_SECRET=sso-secret-1$' "$SUB23_LOG" && ok "SUB23 got HIA_SSO_SECRET" || bad "SUB23 got HIA_SSO_SECRET"
-grep -q '^APP_ENV_SUPABASE_SERVICE_ROLE_KEY=stub-service-role$' "$SUB23_LOG" && ok "SUB23 got SUPABASE_SERVICE_ROLE_KEY" || bad "SUB23 got SUPABASE_SERVICE_ROLE_KEY"
+# 2b. CLOSED WHITELIST, not a narrow grep: prove no service-role key or SSO
+# secret reaches the app environment IN ANY FORM. Stage 1 (test-26) already
+# learned that a narrow grep for one variable name is too weak to prove
+# absence — a rename or a partial leak under a different key would slip
+# through. Match case-insensitively both on the family name (SERVICE_ROLE /
+# SSO_SECRET) and on the literal fixture secret values, so a leak under any
+# spelling still trips it. $SUB23_LOG is the exact stdin 24 piped to the app
+# server — this is the closest possible vantage point to "did it leak".
+grep -qiE 'SERVICE_ROLE|core-service-role-DO-NOT-LEAK' "$SUB23_LOG" \
+  && bad "a service-role key reached the app environment" \
+  || ok "no service-role key in the app environment, in any form"
+grep -qiE 'SSO_SECRET|sso-secret-1' "$SUB23_LOG" \
+  && bad "an SSO secret reached the app environment" || ok "no SSO secret in the app environment"
 grep -q '^APP_ENV_APP_BASE_PATH=/apps/popbys$' "$SUB23_LOG" && ok "SUB23 got APP_BASE_PATH" || bad "SUB23 got APP_BASE_PATH"
 
 # 2c. dashboard tile registration: manifest app has a "tile" key -> 24 POSTs
@@ -398,28 +456,28 @@ fi
 # single-transaction (-1 -f -) apply per file, with the tracker INSERT
 # embedded in the SAME stdin as the migration SQL (not a separate -c call —
 # see F2, a mid-file failure must roll back everything including the insert).
-grep -q "create table if not exists public._app_migrations" "$DOCKER_LOG" && ok "migrations table ensured" || bad "migrations table ensured"
-[ "$(grep -c "select 1 from public._app_migrations where name=" "$DOCKER_LOG")" = "2" ] && ok "one SELECT per fixture migration" || bad "one SELECT per fixture migration"
+grep -q "create table if not exists popbys._migrations" "$DOCKER_LOG" && ok "migrations table ensured" || bad "migrations table ensured"
+[ "$(grep -c "select 1 from popbys._migrations where name=" "$DOCKER_LOG")" = "2" ] && ok "one SELECT per fixture migration" || bad "one SELECT per fixture migration"
 [ "$(grep -c -- ' -1 -f -$' "$DOCKER_LOG")" = "2" ] && ok "one single-transaction (-1) apply per fixture migration" || bad "one single-transaction (-1) apply per fixture migration"
-[ "$(grep -c "insert into public._app_migrations" "$DOCKER_LOG")" = "0" ] && ok "INSERT is not a separate -c call" || bad "INSERT is not a separate -c call"
-[ "$(grep -l "insert into public._app_migrations" "$APPLY_LOG_DIR"/apply-*.stdin 2>/dev/null | wc -l)" = "2" ] \
+[ "$(grep -c "insert into popbys._migrations" "$DOCKER_LOG")" = "0" ] && ok "INSERT is not a separate -c call" || bad "INSERT is not a separate -c call"
+[ "$(grep -l "insert into popbys._migrations" "$APPLY_LOG_DIR"/apply-*.stdin 2>/dev/null | wc -l)" = "2" ] \
   && ok "INSERT embedded in the same stdin as each migration apply" \
   || bad "INSERT embedded in the same stdin as each migration apply"
 grep -q "select 1;" "$APPLY_LOG_DIR/apply-1.stdin" 2>/dev/null && ok "first apply's stdin carries its migration SQL" || bad "first apply's stdin carries its migration SQL"
-grep -q "insert into public._app_migrations (name) values ('0001_init.sql')" "$APPLY_LOG_DIR/apply-1.stdin" 2>/dev/null \
+grep -q "insert into popbys._migrations (name) values ('0001_init.sql')" "$APPLY_LOG_DIR/apply-1.stdin" 2>/dev/null \
   && ok "first apply's stdin carries its tracker insert" || bad "first apply's stdin carries its tracker insert"
 grep -q "select 2;" "$APPLY_LOG_DIR/apply-2.stdin" 2>/dev/null && ok "second apply's stdin carries its migration SQL" || bad "second apply's stdin carries its migration SQL"
-grep -q "insert into public._app_migrations (name) values ('0002_second.sql')" "$APPLY_LOG_DIR/apply-2.stdin" 2>/dev/null \
+grep -q "insert into popbys._migrations (name) values ('0002_second.sql')" "$APPLY_LOG_DIR/apply-2.stdin" 2>/dev/null \
   && ok "second apply's stdin carries its tracker insert" || bad "second apply's stdin carries its tracker insert"
 
 # 4. re-run: both migrations already applied -> no -f applies this time
 echo "0001_init.sql" >> "$MIGSTATE_FILE"
 echo "0002_second.sql" >> "$MIGSTATE_FILE"
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && ok "re-run exits 0" || bad "re-run exits 0"
 [ "$(grep -c -- ' -1 -f -$' "$DOCKER_LOG")" = "0" ] && ok "re-run applies no migrations" || bad "re-run applies no migrations"
-[ "$(grep -c "select 1 from public._app_migrations where name=" "$DOCKER_LOG")" = "2" ] && ok "re-run still checks both migrations" || bad "re-run still checks both migrations"
+[ "$(grep -c "select 1 from popbys._migrations where name=" "$DOCKER_LOG")" = "2" ] && ok "re-run still checks both migrations" || bad "re-run still checks both migrations"
 
 # 5. prints the root caddy command with BOTH vhosts and the full-set warning
 # every script in this repo is committed mode 644, so the printed command must
@@ -441,7 +499,7 @@ grep -qE "sudo bash [^ ]*25-install-app-bridge\.sh popbys:8130" "$T/out.log" \
 # the same single-image guard 23 uses, so migrations aren't extracted from
 # an arbitrary image before a later multi-image rejection).
 : > "$T/multi.tar"
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 STDIN_MULTI=(
   "APP_HOST=popbys.test"
@@ -478,63 +536,67 @@ cat > "$MANIFEST_DIR/multi-app.json" <<'JSON'
   ]
 }
 JSON
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"; : > "$CURL_LOG"
 run "multi-app" "${STDIN[@]}" && bad "multi-app manifest refused" || ok "multi-app manifest refused"
 grep -q "multi-app manifests are not yet supported" "$T/out.log" && ok "multi-app error message" || bad "multi-app error message"
-[ -s "$SUB20_LOG" ] && bad "no SUB20 invocation for multi-app manifest" || ok "no SUB20 invocation for multi-app manifest"
+# SUB20 is never invoked on ANY path any more (task 6/7), so "[ -s SUB20_LOG ]"
+# is unconditionally empty here regardless of whether the multi-app guard
+# still runs — it would read the same "ok" even if that guard were deleted
+# outright (the identical class of vacuous witness ruled on in Task 2).
+# CURL_LOG is a live witness instead: the preflight's first curl call happens
+# AFTER the multi-app count check (24:83-86 precede 24's first curl at ~107),
+# so an empty CURL_LOG proves the guard fired before any install work — not
+# merely that a retired script was never called.
+[ ! -s "$CURL_LOG" ] && ok "multi-app guard precedes any install work (empty CURL_LOG proves it)" || bad "install work started before the multi-app guard fired"
 
-# 7. carry-forward test: re-run without APP_HOST/SB_HOST, derive from stack .env
-STDIN_CARRY=(
-  "IMAGE_TARBALL=$T/img.tar"
-  "GOOGLE_CLIENT_ID=gid"
-  "ORCH_ENV_FILE=$T/hermes-stack/.env"
-)
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
-rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
-run "real-estate" "${STDIN_CARRY[@]}" && ok "carry-forward run exits 0" || bad "carry-forward run exits 0"
-grep -q '^SUPABASE_PUBLIC_URL=https://sb-popbys.test$' "$SUB20_LOG" && ok "SUB20 got derived SUPABASE_PUBLIC_URL" || bad "SUB20 got derived SUPABASE_PUBLIC_URL"
-grep -q '^SITE_URL=https://popbys.test$' "$SUB20_LOG" && ok "SUB20 got derived SITE_URL" || bad "SUB20 got derived SITE_URL"
-grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" && ok "SUB23 got derived SUPABASE_URL from carry-forward" || bad "SUB23 got derived SUPABASE_URL from carry-forward"
+# 7. [retired] host carry-forward from a per-app stack `.env` — there is no
+# per-app stack any more (20 is never called; step 1 provisions a schema in
+# the core stack instead), so there is nothing to carry APP_HOST/SB_HOST
+# forward from. This scenario described behaviour Task 6/7 deliberately
+# removed, not a live requirement, so it is gone rather than weakened.
 
-# 8. missing HIA_SSO_SECRET (orchestrator env file has no key at all) -> WARN
-# on stderr but the install still completes (SSO 503s gracefully; the rollout
-# runbook is what actually creates the secret).
-STDIN_NOSSO=(
-  "APP_HOST=popbys.test"
-  "SB_HOST=sb-popbys.test"
-  "IMAGE_TARBALL=$T/img.tar"
-  "ORCH_ENV_FILE=$T/hermes-stack-nosso/.env"
-)
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
-rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
-rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
-run "real-estate" "${STDIN_NOSSO[@]}" && ok "missing HIA_SSO_SECRET still exits 0" || bad "missing HIA_SSO_SECRET still exits 0"
-grep -q "WARN:.*HIA_SSO_SECRET" "$T/out.log" && ok "missing HIA_SSO_SECRET warns" || bad "missing HIA_SSO_SECRET warns"
-grep -q '^APP_ENV_HIA_SSO_SECRET=' "$SUB23_LOG" && bad "no HIA_SSO_SECRET line when absent" || ok "no HIA_SSO_SECRET line when absent"
-grep -q '^APP_ENV_SUPABASE_SERVICE_ROLE_KEY=stub-service-role$' "$SUB23_LOG" && ok "SERVICE_ROLE_KEY still passed without SSO secret" || bad "SERVICE_ROLE_KEY still passed without SSO secret"
+# 8. [retired] missing-HIA_SSO_SECRET warn-and-continue path — 24 no longer
+# reads or passes HIA_SSO_SECRET at all (see the closed-whitelist assertion
+# in section 2b below, which proves it can never leak even though the
+# fixture orchestrator env still defines one).
 
-# 9. missing SERVICE_ROLE_KEY in the stack .env -> fail loud (20 always
-# renders it; its absence means the stack render never ran).
-export SUB20_NOSRK_LOG="$T/sub20-nosrk.log"
-cat > "$T/bin/sub20-nosrk.sh" <<'SH'
+# 9. [retired] missing-SERVICE_ROLE_KEY fail-loud path — there is no per-app
+# stack `.env` for a service-role key to be missing FROM any more; step 3 now
+# fails loud instead if the core `.env` or the app's owner-JWT file (minted by
+# 26) is missing or empty. The happy-path assertions above prove the values
+# ARRIVE; they do not prove a missing/empty one is REFUSED. A missing file is
+# covered implicitly (`cat` on a nonexistent path fails, and `set -e` aborts)
+# but is not exercised by a dedicated case here. The EMPTY case below is the
+# one with real teeth — `cat` succeeds either way, so only the explicit
+# emptiness check stands between a silently-blank credential and a shipped
+# app — so it gets a dedicated test.
+
+# 9b. NEW: 26 mints an EMPTY owner-JWT file (a real failure mode: a partial
+# 26 run, a truncated write, a disk-full mint). Without the `[[ -n "${APP_KEY}" ]]`
+# guard, `cat` of an empty file still exits 0 and APP_KEY="" flows straight
+# into APP_ENV_SUPABASE_APP_KEY= — the app boots with no database identity
+# and nothing anywhere says why. Must fail loud instead, before ever
+# reaching the app server.
+export SUB26_EMPTYJWT_LOG="$T/sub26-emptyjwt.log"
+cat > "$T/bin/sub26-emptyjwt.sh" <<'SH'
 #!/usr/bin/env bash
 set -eu
-cat > "${SUB20_NOSRK_LOG}"
-mkdir -p "${STACKS_DIR}/popbys"
-cat > "${STACKS_DIR}/popbys/.env" <<ENVEOF
-ANON_KEY=stub-anon
-POSTGRES_PASSWORD=pw
-SUPABASE_PUBLIC_URL=https://sb-popbys.test
-SITE_URL=https://popbys.test
-ENVEOF
+cat > "${SUB26_EMPTYJWT_LOG}"
+name="$(sed -nE 's/^APP_NAME=(.*)$/\1/p' "${SUB26_EMPTYJWT_LOG}" | tail -1)"
+mkdir -p "${CORE_STACK_DIR}/app-keys"
+: > "${CORE_STACK_DIR}/app-keys/${name}.jwt"
 SH
-chmod +x "$T/bin/sub20-nosrk.sh"
-: > "$DOCKER_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
-rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
+chmod +x "$T/bin/sub26-emptyjwt.sh"
+: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB23_LOG"
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
-SUB20="$T/bin/sub20-nosrk.sh" run "real-estate" "${STDIN[@]}" && bad "missing SERVICE_ROLE_KEY refused" || ok "missing SERVICE_ROLE_KEY refused"
-grep -q "^error:.*SERVICE_ROLE_KEY" "$T/out.log" && ok "missing SERVICE_ROLE_KEY error message" || bad "missing SERVICE_ROLE_KEY error message"
-[ -s "$SUB23_LOG" ] && bad "no SUB23 invocation when SERVICE_ROLE_KEY missing" || ok "no SUB23 invocation when SERVICE_ROLE_KEY missing"
+SUB26="$T/bin/sub26-emptyjwt.sh" run real-estate "${STDIN[@]}" \
+  && bad "empty owner-JWT file refused" || ok "empty owner-JWT file refused"
+grep -q "error: .*app-keys/popbys\.jwt is empty" "$T/out.log" \
+  && ok "empty owner-JWT error message" || bad "empty owner-JWT error message"
+[ ! -s "$SUB23_LOG" ] \
+  && ok "app server never invoked with an empty owner JWT" \
+  || bad "app server was invoked despite an empty owner JWT"
 
 # 10. total orchestrator-API outage -> exit 1. Note: since the preflight
 # (added for the auto-create-agent feature) is now the FIRST curl call 24
@@ -545,7 +607,7 @@ grep -q "^error:.*SERVICE_ROLE_KEY" "$T/out.log" && ok "missing SERVICE_ROLE_KEY
 # "could not create agent" message) — it now checks the HTTP status itself
 # and fails immediately with a message that correctly blames the orchestrator
 # list call, not agent creation.
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload"; : > "$CURL_FAIL_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 run "real-estate" "${STDIN[@]}" && bad "registry POST failure refused" || ok "registry POST failure refused"
@@ -598,12 +660,20 @@ grep -q "create it in Fleet's Agents tab first" "$T/out.log" \
 # scripts/24-install-agent-apps.sh's "dashboard tile registration failed"
 # error path, which a blanket curl outage can no longer reach now that the
 # preflight's own GET/POST runs first (see test 10 above).
-: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"
+: > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload"
 printf '{"agents":[{"id":"real-estate","displayName":"Emma Ellis"}]}' > "$AGENTS_JSON_FILE"
 rm -rf "$APPLY_LOG_DIR"; mkdir -p "$APPLY_LOG_DIR"; rm -f "$APPLY_COUNT_FILE"
 export CURL_FAIL_URL_PATTERN="/v1/agents/real-estate/apps"
-run "real-estate" "${STDIN[@]}" && bad "tile registration POST failure refused" || ok "tile registration POST failure refused"
+run "real-estate" "${STDIN[@]}"; rc=$?
+# Exit-code-only would pass if the run failed for ANY unrelated reason before
+# ever reaching the tile POST (this happened for real earlier in this plan —
+# see task-6-report.md). Require direct evidence the targeted call was
+# actually attempted before trusting the exit code.
+grep -q "http://127.0.0.1:9123/v1/agents/real-estate/apps" "$CURL_LOG" \
+  && ok "tile registration POST was actually attempted before failing" \
+  || bad "tile registration POST was never attempted — the run failed earlier, for an unrelated reason"
+[[ "${rc}" -ne 0 ]] && ok "tile registration POST failure refused" || bad "tile registration POST failure refused (rc=${rc})"
 grep -q "error: dashboard tile registration failed" "$T/out.log" \
   && ok "tile registration POST failure error message" \
   || bad "tile registration POST failure error message"
@@ -734,7 +804,7 @@ grep -q "^⚠ agent-apps" "$T/out.log" \
 # failure mode this branch exists to catch. The verify GET must keep 404ing,
 # the run must FAIL with the documented message, and the misleading
 # "created" success line must NEVER be printed.
-: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"
+: > "$CURL_LOG"; : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"
 printf '{"agents":[{"id":"default"}]}' > "$AGENTS_JSON_FILE"   # profile absent
 : > "$CREATED_AGENTS_FILE"                                      # clear any stale marker
 : > "$AGENT_NEVER_APPEARS_FILE"                                 # POST accepted, agent never appears
@@ -745,24 +815,35 @@ grep -q "error: agent 'real-estate' was not created (the orchestrator accepted t
 grep -q "created from manifest defaults" "$T/out.log" \
   && bad "printed the misleading 'created' success line despite the agent never existing" \
   || ok "did not print the 'created' line when verification never passed"
-[ -s "$SUB20_LOG" ] \
-  && bad "install work (SUB20) ran despite the agent never being verified" \
+# SUB20 is never invoked on ANY path any more, so it is unconditionally
+# empty here regardless of whether the agent-verification gate still runs —
+# the identical class of vacuous witness ruled on in Task 2. SUB26 is now
+# the first real install-work call (step 1/4), so its log is the live
+# witness: non-empty would mean install work started before the agent was
+# ever verified.
+[ -s "$SUB26_LOG" ] \
+  && bad "install work (SUB26) ran despite the agent never being verified" \
   || ok "no install work ran before the undetected creation failure was caught"
 rm -f "$AGENT_NEVER_APPEARS_FILE"
 
-# 18. The app server must be told an INTERNAL Supabase URL (kong on the
-# docker0 gateway); the public hostname 403s from server-side callers on a
-# tunnel box. The PUBLIC APP_ENV_SUPABASE_URL must still be passed too (the
-# browser needs it), and 24 must print BOTH bridges (app + kong) in step 5/5.
+# 18. The app server must be told an INTERNAL Supabase URL (core kong on the
+# docker0 gateway, ALWAYS port 8000 — the core stack's fixed kong port, not
+# the manifest's per-app kong_port, since there is no per-app kong any more);
+# the public hostname 403s from server-side callers on a tunnel box. The
+# PUBLIC APP_ENV_SUPABASE_URL must still be passed too (the browser needs
+# it) — and it is now core's public URL, not a per-app one. 24 must still
+# print BOTH bridges (app + kong) in step 5/5 (that printing is unchanged;
+# it still uses the manifest's kong_port for the vhost/bridge, a separate
+# concern from which Supabase instance serves the app's API traffic).
 : > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
 run real-estate "${STDIN[@]}"
-grep -q '^APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8030$' "$SUB23_LOG" \
-  && ok "24 passes APP_ENV_SUPABASE_INTERNAL_URL with the manifest kong port" \
+grep -q '^APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8000$' "$SUB23_LOG" \
+  && ok "24 passes APP_ENV_SUPABASE_INTERNAL_URL as core kong (fixed :8000), not the manifest kong_port" \
   || bad "APP_ENV_SUPABASE_INTERNAL_URL missing/wrong in the 23 stdin"
 
-grep -q '^APP_ENV_SUPABASE_URL=https://sb-popbys.test$' "$SUB23_LOG" \
-  && ok "public APP_ENV_SUPABASE_URL still passed (browser needs it)" \
-  || bad "public APP_ENV_SUPABASE_URL was dropped"
+grep -q '^APP_ENV_SUPABASE_URL=https://sb-core.test$' "$SUB23_LOG" \
+  && ok "public APP_ENV_SUPABASE_URL is core's public URL (browser needs it)" \
+  || bad "public APP_ENV_SUPABASE_URL was dropped or is not core's URL"
 
 grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
   && ok "24 prints BOTH bridges (app + kong)" \
@@ -778,8 +859,15 @@ grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
 # probe's own `WARNINGS=$((WARNINGS+1))` actually ran (e.g. if it were
 # silently swallowed by a stray subshell) — asserting the exact count pins that.
 : > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
-CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env" \
-  && ok "probe failure is non-fatal (run still exits 0)" || bad "probe failure aborted the run"
+CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env"; rc=$?
+# Exit-code-only would pass if the run happened to exit 0 for a reason having
+# nothing to do with the probe (it never even reached the probe once, earlier
+# in this plan — see task-6-report.md). Require direct evidence the probe was
+# actually attempted (and made to fail) before trusting the exit code.
+grep -q "172.17.0.1:8030/auth/v1/health" "$CURL_LOG" \
+  && ok "the kong-bridge health probe was actually attempted (and made to fail)" \
+  || bad "the health probe was never attempted — exit 0 would prove nothing"
+[[ "${rc}" -eq 0 ]] && ok "probe failure is non-fatal (run still exits 0)" || bad "probe failure aborted the run (rc=${rc})"
 grep -qE "WARNING:.*25-install-app-bridge.sh popbys-sb:8030" "$T/out.log" \
   && ok "the warning names the missing bridge (anchored to the warning line itself, not the step-5/5 bridge print)" \
   || bad "warning does not name the bridge"
@@ -787,5 +875,24 @@ grep -qE "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$
   && ok "run ends on the warning banner with the exact count (probe's WARNINGS increment pinned)" \
   || bad "banner missing or warning count wrong — the probe's WARNINGS increment may have been lost"
 export CURL_FAIL_URL_PATTERN=""
+
+# 20. manifest app names must satisfy BOTH the Postgres-identifier rule (26) and
+# the systemd-unit rule (23/25). Validate before any install work.
+cat > "$MANIFEST_DIR/badname.json" <<'JSON'
+{
+  "profile": "badname",
+  "apps": [
+    { "name": "foo_bar",
+      "server": { "app_port": 8140, "container_port": 3000, "health_path": "/api/health" } }
+  ]
+}
+JSON
+: > "$SUB20_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
+printf '{"agents":[{"id":"badname"}]}' > "$AGENTS_JSON_FILE"
+run "badname" "${STDIN[@]}" && bad "invalid app name should fail" || ok "invalid app name fails"
+grep -q "foo_bar" "$T/out.log" && ok "error names the offending app" || bad "error does not name the app"
+grep -qE '\^\[a-z\]\[a-z0-9\]\*\$' "$T/out.log" \
+  && ok "error states the required pattern" || bad "error omits the pattern"
+[[ ! -s "$CURL_LOG" ]] && ok "validation precedes the orchestrator preflight (empty CURL_LOG proves it)" || bad "orchestrator preflight ran before validation"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

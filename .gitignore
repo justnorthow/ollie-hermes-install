@@ -5,3 +5,6 @@
 .vscode/
 .idea/
 __pycache__/
+
+# SDD scratch (briefs, reports, review packages) — never part of the repo
+.superpowers/

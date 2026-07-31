@@ -45,6 +45,20 @@ if [[ ! "${APP_PORT}" =~ ^[0-9]+$ ]]; then
   echo "error: APP_PORT required (numeric), got '${APP_PORT}'" >&2; exit 1
 fi
 
+# Node's default 16KB header limit is smaller than what a browser sends these
+# boxes: SUPABASE_COOKIE_DOMAIN=.jnow.io sends every box's chunked Supabase
+# cookie to every *.jnow.io host. Pop Bys' and HIA's SSO handoffs both broke at
+# exactly that threshold on 2026-07-29 — HTTP 431, blank tile, no client-side
+# error. A default is correct-by-construction; a per-app manifest field would
+# be folklore every future author has to remember. Harmless on a non-Node
+# container, which simply ignores the variable.
+# Only default when neither the operator nor a previous run supplied a value,
+# so a re-run never clobbers a deliberate override.
+if [[ -z "${APP_ENV_NODE_OPTIONS:-}" \
+   && -z "$(app_server_env_val "${APP_DIR}/.env" NODE_OPTIONS)" ]]; then
+  export APP_ENV_NODE_OPTIONS='--max-http-header-size=65536'
+fi
+
 APP_IMAGE=""
 if [[ -n "${IMAGE_TARBALL}" ]]; then
   [[ -f "${IMAGE_TARBALL}" ]] || { echo "error: IMAGE_TARBALL not found: ${IMAGE_TARBALL}" >&2; exit 1; }
