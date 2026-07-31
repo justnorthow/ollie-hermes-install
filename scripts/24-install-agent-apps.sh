@@ -43,6 +43,12 @@ SUB23="${SUB23:-${SCRIPT_DIR}/23-install-app-server.sh}"
 SUB26="${SUB26:-${SCRIPT_DIR}/26-provision-app-schema.sh}"
 CORE_DIR="${CORE_STACK_DIR:-$HOME/supabase-stack}"
 STACKS="${STACKS_DIR:-$HOME/stacks}"
+# The CORE stack's kong port is fixed (compose publishes 127.0.0.1:8000) and is
+# the only Supabase a consolidated app talks to. Kept as one constant so the
+# value written to APP_ENV_SUPABASE_INTERNAL_URL and the value the bridge probe
+# checks can never drift apart — they did, and the probe spent that time
+# reporting a failure for a per-app kong the app never used.
+CORE_KONG_PORT=8000
 
 APP_HOST="" ; SB_HOST="" ; IMAGE_TARBALL="" ; GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET=""
 ORCH_ENV_FILE="" ; ORCH_PORT="" ; STACK_ENV_FILE=""
@@ -254,7 +260,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     # box it resolves to Cloudflare's edge, which bot-challenges non-browser
     # clients (HTTP 403) and breaks auth on every route. Core kong is
     # loopback-only, so reach it over the docker0 gateway bridge from 25.
-    echo "APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8000"
+    echo "APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:${CORE_KONG_PORT}"
     echo "APP_ENV_SUPABASE_ANON_KEY=${ANON}"
     echo "APP_ENV_SUPABASE_APP_KEY=${APP_KEY}"
     echo "APP_ENV_SUPABASE_DB_SCHEMA=${NAME}"
@@ -342,24 +348,35 @@ print(json.dumps(payload))
 
   # /api/health does not touch Supabase, so a missing kong bridge leaves the
   # app "healthy" while every API call 403s. Announce it instead.
-  if ! curl -fsS --max-time 10 "http://172.17.0.1:${KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
-    echo "    WARNING: internal Supabase URL http://172.17.0.1:${KONG_PORT} is unreachable — the app will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}-sb:${KONG_PORT}" >&2
+  #
+  # Probes CORE kong (the fixed ${CORE_KONG_PORT}) — the same instance written
+  # to APP_ENV_SUPABASE_INTERNAL_URL above — NOT the manifest's per-app
+  # kong_port. A consolidated app is a schema in the core stack and never
+  # talks to a per-app kong, so probing that port reported a failure for a
+  # service the app does not use, while the genuinely missing core-kong bridge
+  # went unmentioned. The bridge is shared by every app on the box, hence the
+  # fixed `core-sb` name rather than a per-app one.
+  if ! curl -fsS --max-time 10 "http://172.17.0.1:${CORE_KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
+    echo "    WARNING: internal Supabase URL http://172.17.0.1:${CORE_KONG_PORT} is unreachable — the app will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}" >&2
     WARNINGS=$((WARNINGS+1))
   fi
 
   echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
-  echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT} ${SB_HOST}:${KONG_PORT}"
+  # App vhost only. A consolidated app has no Supabase of its own, so there is
+  # no sb-<app> hostname to serve; core's public hostname belongs to the core
+  # stack's own setup, not to a per-app install.
+  echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT}"
   echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
-  echo "    NOTE: caddy-fronted boxes only. On a cloudflared box SKIP 22 and add tunnel"
-  echo "          public hostnames instead (${APP_HOST} -> http://localhost:${APP_PORT},"
-  echo "          ${SB_HOST} -> http://localhost:${KONG_PORT}). Do NOT open :80/:443."
+  echo "    NOTE: caddy-fronted boxes only. On a cloudflared box SKIP 22 and add a tunnel"
+  echo "          public hostname instead (${APP_HOST} -> http://localhost:${APP_PORT})."
+  echo "          Do NOT open :80/:443."
   if [[ -n "${HAS_TILE}" ]]; then
     # Tile apps are embedded in the dashboard, which reaches the host via
     # host.docker.internal = 172.17.0.1 (the docker0 gateway) — unreachable
     # for a loopback-only (127.0.0.1) app server. 25 installs a static socat
     # bridge (same fix 06-install-stack.sh hand-builds for the native Hermes
     # dashboard on 9119) so the tile doesn't 502.
-    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT} ${NAME}-sb:${KONG_PORT}"
+    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT} core-sb:${CORE_KONG_PORT}"
   fi
 done
 if [[ "${WARNINGS}" -eq 0 ]]; then

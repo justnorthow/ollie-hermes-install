@@ -485,7 +485,13 @@ run "real-estate" "${STDIN[@]}" && ok "re-run exits 0" || bad "re-run exits 0"
 # fresh clone.
 grep -qE "sudo bash [^ ]*22-install-caddy-vhosts\.sh" "$T/out.log" && ok "prints copy-paste runnable caddy command (sudo bash)" || bad "prints copy-paste runnable caddy command (sudo bash)"
 grep -q "popbys.test:8130" "$T/out.log" && ok "caddy command has app vhost" || bad "caddy command has app vhost"
-grep -q "sb-popbys.test:8030" "$T/out.log" && ok "caddy command has supabase vhost" || bad "caddy command has supabase vhost"
+# A consolidated app has NO Supabase of its own — it is a schema in the core
+# stack, whose public hostname is the core stack's concern, not this app's.
+# Emitting an sb-<app> vhost here sends the operator to create a hostname and
+# tunnel route for a kong that does not exist.
+grep -q "sb-popbys.test:8030" "$T/out.log" \
+  && bad "caddy command still emits a per-app supabase vhost" \
+  || ok "caddy command emits no per-app supabase vhost"
 grep -q "EVERY vhost this box serves" "$T/out.log" && ok "warns to pass the FULL vhost set" || bad "warns to pass the FULL vhost set"
 
 # 5c. tile-bearing app (popbys has a "tile" key) -> also prints the bridge
@@ -845,9 +851,9 @@ grep -q '^APP_ENV_SUPABASE_URL=https://sb-core.test$' "$SUB23_LOG" \
   && ok "public APP_ENV_SUPABASE_URL is core's public URL (browser needs it)" \
   || bad "public APP_ENV_SUPABASE_URL was dropped or is not core's URL"
 
-grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
-  && ok "24 prints BOTH bridges (app + kong)" \
-  || bad "24 did not print the kong bridge"
+grep -q "25-install-app-bridge.sh popbys:8130 core-sb:8000" "$T/out.log" \
+  && ok "24 prints both bridges (app + CORE kong on :8000)" \
+  || bad "24 did not print the core kong bridge"
 
 # 19. Probe failure => loud warning naming the bridge, non-fatal to the run,
 # and the run ends on the warning banner with an EXACT count. Uses the
@@ -859,16 +865,16 @@ grep -q "25-install-app-bridge.sh popbys:8130 popbys-sb:8030" "$T/out.log" \
 # probe's own `WARNINGS=$((WARNINGS+1))` actually ran (e.g. if it were
 # silently swallowed by a stray subshell) — asserting the exact count pins that.
 : > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
-CURL_FAIL_URL_PATTERN="172.17.0.1:8030" run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env"; rc=$?
+CURL_FAIL_URL_PATTERN="172.17.0.1:8000" run real-estate "${STDIN[@]}" "STACK_ENV_FILE=$T/stack-env/.env"; rc=$?
 # Exit-code-only would pass if the run happened to exit 0 for a reason having
 # nothing to do with the probe (it never even reached the probe once, earlier
 # in this plan — see task-6-report.md). Require direct evidence the probe was
 # actually attempted (and made to fail) before trusting the exit code.
-grep -q "172.17.0.1:8030/auth/v1/health" "$CURL_LOG" \
+grep -q "172.17.0.1:8000/auth/v1/health" "$CURL_LOG" \
   && ok "the kong-bridge health probe was actually attempted (and made to fail)" \
   || bad "the health probe was never attempted — exit 0 would prove nothing"
 [[ "${rc}" -eq 0 ]] && ok "probe failure is non-fatal (run still exits 0)" || bad "probe failure aborted the run (rc=${rc})"
-grep -qE "WARNING:.*25-install-app-bridge.sh popbys-sb:8030" "$T/out.log" \
+grep -qE "WARNING:.*25-install-app-bridge.sh core-sb:8000" "$T/out.log" \
   && ok "the warning names the missing bridge (anchored to the warning line itself, not the step-5/5 bridge print)" \
   || bad "warning does not name the bridge"
 grep -qE "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$T/out.log" \

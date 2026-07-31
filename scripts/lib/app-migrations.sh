@@ -11,9 +11,49 @@
 #   TRACKER  fully-qualified tracker table, e.g. public._app_migrations
 #   SCHEMA   optional; when supplied, the RLS gate runs after all migrations
 
+# app_migrations_render FILE [SCHEMA]
+# Emit FILE's SQL relocated into SCHEMA. With no SCHEMA the file passes through
+# byte-identical (the stack-per-app path really does live in public).
+#
+# App migrations are written the ordinary Supabase way — `public.` qualified —
+# so they stay compatible with `supabase start`, the CLI's migration runner and
+# the app's own RLS integration suite. Relocating them is the INSTALLER's job,
+# done here at the moment of apply. (Parameterising the app's SQL with psql
+# `:"variables"` was tried and reverted: the CLI applies migrations over a
+# Postgres connection rather than through the psql client, so nothing
+# substituted them and every migration died on `syntax error at or near ":"`,
+# taking local dev and the RLS suite with it.)
+#
+# Two dot-anchored rewrites, both unambiguous:
+#   public.<obj>             -> <schema>.<obj>
+#   set search_path = public -> set search_path = <schema>
+#
+# The BARE word `public` is deliberately untouched: in `revoke ... from anon,
+# public` it names the PUBLIC ROLE, and rewriting it would silently change who
+# the revoke applies to — a privilege change wearing a relocation's clothes.
+# The search_path rewrite is security-critical in the other direction: a
+# security definer function left pinned to `public` resolves names outside its
+# own schema at runtime, so the migrations succeed and the failure surfaces
+# later, in the functions that enforce authorization.
+#
+# Caveat, deliberately accepted: a migration containing the literal text
+# `public.` inside a string literal or comment would also be rewritten.
+app_migrations_render() { # FILE [SCHEMA]
+  local file="$1" schema="${2:-}"
+  if [[ -z "${schema}" ]]; then cat "${file}"; return; fi
+  sed -e "s/public\./${schema}./g" \
+      -e "s/set search_path = public/set search_path = ${schema}/g" "${file}"
+}
+
 app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
   local img="$1" psql_fn="$2" tracker="$3" schema="${4:-}"
   local mig_dir ctr f base applied
+  # Interpolated into a sed replacement below, so constrain it to the same
+  # Postgres-identifier charset 26 enforces before it can carry sed metachars.
+  if [[ -n "${schema}" && ! "${schema}" =~ ^[a-z][a-z0-9_]*$ ]]; then
+    echo "error: app_migrations_apply: schema '${schema}' is not a bare Postgres identifier" >&2
+    return 1
+  fi
   mig_dir="$(mktemp -d)"
   ctr="$(docker create "${img}")"
   docker cp "${ctr}:/app/supabase/migrations/." "${mig_dir}/"
@@ -34,7 +74,7 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
     # Single-transaction apply: the migration file and its tracker INSERT
     # travel in ONE psql invocation, so a mid-file failure rolls back both —
     # no partially-applied file recorded as done, no applied file unrecorded.
-    if ! { cat "$f"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
+    if ! { app_migrations_render "$f" "${schema}"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
          | "${psql_fn}" -1 -f -; then
       echo "error: migration ${base} failed — nothing was recorded as applied (single-transaction)" >&2
       rm -rf "${mig_dir}"
