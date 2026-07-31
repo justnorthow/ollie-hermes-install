@@ -21,6 +21,7 @@ class CortexProvider(MemoryProvider):
         self._api_url = self._DEFAULT_API_URL
         self._api_key = ""
         self._session_id = ""
+        self._dispatch = None
 
     @property
     def name(self) -> str:
@@ -57,8 +58,17 @@ class CortexProvider(MemoryProvider):
         self._api_key = api_key
         self._client = CortexHttpClient(self._api_url, api_key=self._api_key)
 
+        # Lazy and guarded: dispatch is optional, memory is not. A dispatch
+        # construction failure must leave a working memory provider.
+        try:
+            from .dispatch import DispatchTools
+            self._dispatch = DispatchTools(session_id)
+        except Exception:  # noqa: BLE001
+            _logger.warning("dispatch tools unavailable", exc_info=True)
+            self._dispatch = None
+
     def system_prompt_block(self) -> str:
-        return (
+        block = (
             "# Cortex Memory\n"
             "Active. You have persistent memory and a brain knowledge base shared across ALL agents.\n\n"
             "Memory tools (per-thought facts about the user):\n"
@@ -77,6 +87,14 @@ class CortexProvider(MemoryProvider):
             "Prefer brain_append to the 'logs/' section over writing to local files; brain is shared across all agents.\n\n"
             "Always call memory_save immediately when the user shares personal information or asks you to remember something."
         )
+        try:
+            if self._dispatch is not None:
+                text = self._dispatch.prompt_block()
+                if text:
+                    block += "\n" + text
+        except Exception:  # noqa: BLE001 — memory's prompt must survive
+            _logger.warning("dispatch prompt block failed", exc_info=True)
+        return block
 
     def get_config_schema(self) -> list[dict]:
         return [
@@ -100,7 +118,7 @@ class CortexProvider(MemoryProvider):
         pass
 
     def get_tool_schemas(self) -> list[dict]:
-        return [
+        schemas = [
             {
                 "name": "memory_search",
                 "description": "Search persistent memory for relevant thoughts",
@@ -178,6 +196,12 @@ class CortexProvider(MemoryProvider):
                 },
             },
         ]
+        try:
+            if self._dispatch is not None:
+                schemas = schemas + self._dispatch.tool_schemas()
+        except Exception:  # noqa: BLE001 — memory's tools must survive
+            _logger.warning("dispatch tool schemas failed", exc_info=True)
+        return schemas
 
     @staticmethod
     def _brain_files_path(key: str) -> str:
@@ -194,6 +218,23 @@ class CortexProvider(MemoryProvider):
         return f"/brain/files/{k}"
 
     def handle_tool_call(self, name: str, args: dict) -> str:
+        # Memory names are routed by the block below. Dispatch is checked
+        # first only for its OWN names, so a dispatch failure can never
+        # intercept a memory call. A failed import is not cached in
+        # sys.modules, so a broken dispatch.py would re-raise on every call
+        # if this weren't guarded — fall through to memory routing instead;
+        # an unrecognized dispatch name lands on "Unknown tool" below, which
+        # is a clean string rather than a crash.
+        try:
+            from .dispatch import TOOL_NAMES
+            if name in TOOL_NAMES:
+                if self._dispatch is None:
+                    return json.dumps({"ok": False, "answer": None,
+                                       "reason": "dispatch_error",
+                                       "detail": "dispatch is not initialized"})
+                return self._dispatch.handle(name, args)
+        except Exception:  # noqa: BLE001 — memory routing must survive
+            _logger.warning("dispatch routing unavailable", exc_info=True)
         try:
             if name == "memory_search":
                 results = self._client.get("/memory/thoughts", params={"search": args["query"]})
