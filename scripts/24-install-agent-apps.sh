@@ -4,9 +4,11 @@
 # role) -> app migrations (extracted from the app image; applied into the
 # core database as the app's owner role, tracked in <name>._migrations) ->
 # 23 (app server) -> dashboard tile registration (manifest apps with a "tile"
-# key are upserted into the orchestrator's per-profile app registry). Caddy
-# (22) needs root, so this prints the exact command —
-# REMINDER: 22 renders from ONLY its args; pass the box's FULL vhost set.
+# key are upserted into the orchestrator's per-profile app registry) -> app
+# bridge check. There is NO caddy step: consolidated apps are served
+# same-origin under /apps/<name>/ through the dashboard's nginx, so no app has
+# a vhost or hostname of its own. Bridges need root, so this prints the exact
+# commands: one per app, plus core-sb once per box.
 # Box-derived config is resolved here (core anon key, orchestrator loopback);
 # operator secrets arrive on stdin and flow through, never argv.
 # Input (stdin): APP_HOST, SB_HOST (both req first run — SB_HOST is read and
@@ -185,10 +187,21 @@ else
   echo "    agent '${PROFILE}' already exists — leaving it untouched"
 fi
 
+# ONE core Supabase serves every app on this box, so this is a per-RUN check,
+# not a per-app one — probing it inside the loop turns one missing bridge into
+# N identical warnings and inflates the final count. /api/health does not touch
+# Supabase, so a missing bridge leaves every app "healthy" while every API call
+# fails. The bridge is shared, hence the fixed `core-sb` name.
+if ! curl -fsS --max-time 10 "http://172.17.0.1:${CORE_KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
+  echo "    WARNING: core Supabase at http://172.17.0.1:${CORE_KONG_PORT} is unreachable from the docker0 gateway — apps will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}" >&2
+  WARNINGS=$((WARNINGS+1))
+fi
+
 for i in $(seq 0 $((APP_COUNT-1))); do
   NAME="$(mf "['apps'][${i}]['name']")"
-  KONG_PORT="$(mf "['apps'][${i}]['stack']['kong_port']")"
-  EMAIL_ENABLED="$(mf "['apps'][${i}]['stack']['email_enabled']")"
+  # KONG_PORT / EMAIL_ENABLED are gone with the per-app stack: nothing consumes
+  # them, and reading them would fail on a manifest that has dropped its
+  # now-meaningless `stack` block.
   APP_PORT="$(mf "['apps'][${i}]['server']['app_port']")"
   CONTAINER_PORT="$(mf "['apps'][${i}]['server']['container_port']")"
   HEALTH_PATH="$(mf "['apps'][${i}]['server']['health_path']")"
@@ -199,13 +212,13 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   [[ -z "${APP_HOST}" && -f "${SB_ENV}" ]] && APP_HOST="$(supabase_app_env_val "${SB_ENV}" SITE_URL)" && APP_HOST="${APP_HOST#https://}"
   [[ -n "${APP_HOST}" && -n "${SB_HOST}" ]] || { echo "error: APP_HOST and SB_HOST required" >&2; exit 1; }
 
-  echo "==> agent-apps [${NAME}] 1/5: app schema + owner role in the core stack"
+  echo "==> agent-apps [${NAME}] 1/4: app schema + owner role in the core stack"
   {
     echo "APP_NAME=${NAME}"
     echo "CORE_STACK_DIR=${CORE_DIR}"
   } | bash "${SUB26}"
 
-  echo "==> agent-apps [${NAME}] 2/5: app migrations into schema '${NAME}'"
+  echo "==> agent-apps [${NAME}] 2/4: app migrations into schema '${NAME}'"
   if [[ -n "${IMAGE_TARBALL}" ]]; then
     LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
     if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
@@ -236,7 +249,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   }
   app_migrations_apply "${IMG}" core_psql "${NAME}._migrations" "${NAME}"
 
-  echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
+  echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
   # ORCH_KEY was already resolved above (before the preflight).
   CORE_URL="$(supabase_app_env_val "${CORE_DIR}/.env" SUPABASE_PUBLIC_URL)"
   ANON="$(supabase_app_env_val "${CORE_DIR}/.env" ANON_KEY)"
@@ -272,7 +285,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     true   # group's exit status must not hinge on the last optional/passthrough line (pipefail)
   } | bash "${SUB23}"
 
-  echo "==> agent-apps [${NAME}] 4/5: dashboard tile registration"
+  echo "==> agent-apps [${NAME}] 4/4: dashboard tile registration"
   HAS_TILE="$(python3 -c "import json; d=json.load(open('${MANIFEST}')); print('1' if 'tile' in d['apps'][${i}] else '')")"
   if [[ -n "${HAS_TILE}" ]]; then
     # Build the whole JSON payload in python (json.dumps) so tile field
@@ -361,41 +374,28 @@ print(json.dumps(payload))
     echo "    (no tile in manifest — skipping)"
   fi
 
-  # /api/health does not touch Supabase, so a missing kong bridge leaves the
-  # app "healthy" while every API call 403s. Announce it instead.
-  #
-  # Probes CORE kong (the fixed ${CORE_KONG_PORT}) — the same instance written
-  # to APP_ENV_SUPABASE_INTERNAL_URL above — NOT the manifest's per-app
-  # kong_port. A consolidated app is a schema in the core stack and never
-  # talks to a per-app kong, so probing that port reported a failure for a
-  # service the app does not use, while the genuinely missing core-kong bridge
-  # went unmentioned. The bridge is shared by every app on the box, hence the
-  # fixed `core-sb` name rather than a per-app one.
-  if ! curl -fsS --max-time 10 "http://172.17.0.1:${CORE_KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
-    echo "    WARNING: internal Supabase URL http://172.17.0.1:${CORE_KONG_PORT} is unreachable — the app will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}" >&2
+  # Script 23 binds the app to 127.0.0.1 only, while the dashboard container
+  # reaches tile apps over the docker0 gateway (host.docker.internal =
+  # 172.17.0.1). A missing bridge means the tile 502s while every loopback
+  # health check passes — which is exactly how HIA failed on 2026-07-29.
+  echo "==> agent-apps [${NAME}] 4/4: app bridge"
+  if ! curl -fsS --max-time 10 "http://172.17.0.1:${APP_PORT}${HEALTH_PATH}" >/dev/null 2>&1; then
+    echo "    WARNING: http://172.17.0.1:${APP_PORT}${HEALTH_PATH} is unreachable — the tile will 502 while the loopback health check passes. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}" >&2
     WARNINGS=$((WARNINGS+1))
+  else
+    echo "    app bridge reachable"
   fi
-
-  echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
-  # App vhost only. A consolidated app has no Supabase of its own, so there is
-  # no sb-<app> hostname to serve; core's public hostname belongs to the core
-  # stack's own setup, not to a per-app install.
-  echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT}"
-  echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
-  echo "    NOTE: caddy-fronted boxes only. On a cloudflared box SKIP 22 and add a tunnel"
-  echo "          public hostname instead (${APP_HOST} -> http://localhost:${APP_PORT})."
-  echo "          Do NOT open :80/:443."
-  if [[ -n "${HAS_TILE}" ]]; then
-    # Tile apps are embedded in the dashboard, which reaches the host via
-    # host.docker.internal = 172.17.0.1 (the docker0 gateway) — unreachable
-    # for a loopback-only (127.0.0.1) app server. 25 installs a static socat
-    # bridge (same fix 06-install-stack.sh hand-builds for the native Hermes
-    # dashboard on 9119) so the tile doesn't 502.
-    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT} core-sb:${CORE_KONG_PORT}"
-  fi
+  # No caddy step: consolidated apps are served same-origin under
+  # /apps/<name>/ through the dashboard's nginx, so no app has a vhost or a
+  # hostname of its own.
+  echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}"
 done
+
+echo "==> bridges (root step — run yourself; core-sb is once per BOX):"
+echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}"
+
 if [[ "${WARNINGS}" -eq 0 ]]; then
-  echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"
+  echo "✓ agent-apps for profile '${PROFILE}' installed (bridge steps printed above)"
 else
   echo "⚠ agent-apps for profile '${PROFILE}' installed with ${WARNINGS} warning(s) — see above; the app is not fully functional until they are resolved"
 fi
