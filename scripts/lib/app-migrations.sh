@@ -39,10 +39,32 @@
 # Caveat, deliberately accepted: a migration containing the literal text
 # `public.` inside a string literal or comment would also be rewritten.
 app_migrations_render() { # FILE [SCHEMA]
-  local file="$1" schema="${2:-}"
+  local file="$1" schema="${2:-}" out
   if [[ -z "${schema}" ]]; then cat "${file}"; return; fi
-  sed -e "s/public\./${schema}./g" \
-      -e "s/set search_path = public/set search_path = ${schema}/g" "${file}"
+  # Case-insensitive, and tolerant of a search_path LIST. Real migrations mix
+  # styles: Pop Bys is all lowercase with a bare `set search_path = public`,
+  # HIA writes `SET search_path = public, pg_temp`. Matching only the first
+  # form relocated HIA's tables while leaving both of its security definer
+  # pins on `public` — with a zero exit.
+  out="$(sed -E \
+    -e "s/\bpublic\./${schema}./Ig" \
+    -e "s/(set[[:space:]]+search_path[[:space:]]*(=|to)[[:space:]]*)public\b/\1${schema}/Ig" \
+    "${file}")"
+  # Fail closed. A half-landed rewrite is worse than a refusal: relocated
+  # tables plus a definer function still pinned to `public` applies cleanly and
+  # then misbehaves at runtime, inside the functions that enforce
+  # authorization. The BARE word `public` is deliberately not matched — in
+  # `revoke ... from anon, public` it is the PUBLIC ROLE and must survive.
+  # (Line-oriented, like the rewrite itself: a SET clause split across lines
+  # would need widening here too.)
+  local leftover='\bpublic\.|set[[:space:]]+search_path[[:space:]]*(=|to)[^;]*\bpublic\b'
+  if printf '%s' "${out}" | grep -qiE "${leftover}"; then
+    echo "error: app_migrations_render: $(basename "${file}") still references schema 'public'" \
+      "after relocation to '${schema}' — refusing to apply a half-relocated migration:" >&2
+    printf '%s' "${out}" | grep -inE "${leftover}" | sed 's/^/    /' >&2
+    return 1
+  fi
+  printf '%s\n' "${out}"
 }
 
 app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
@@ -74,7 +96,17 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
     # Single-transaction apply: the migration file and its tracker INSERT
     # travel in ONE psql invocation, so a mid-file failure rolls back both —
     # no partially-applied file recorded as done, no applied file unrecorded.
-    if ! { app_migrations_render "$f" "${schema}"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
+    # Rendered BEFORE the pipeline, not inside it: a render failure inside a
+    # `{ ...; } | psql` group is discarded — the group keeps going and the
+    # pipeline reports psql's status, so the fail-closed guard above would be
+    # silently defeated and the half-relocated SQL applied anyway.
+    local rendered
+    if ! rendered="$(app_migrations_render "$f" "${schema}")"; then
+      echo "error: migration ${base} could not be relocated into schema '${schema}' — nothing applied" >&2
+      rm -rf "${mig_dir}"
+      return 1
+    fi
+    if ! { printf '%s\n' "${rendered}"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
          | "${psql_fn}" -1 -f -; then
       echo "error: migration ${base} failed — nothing was recorded as applied (single-transaction)" >&2
       rm -rf "${mig_dir}"
