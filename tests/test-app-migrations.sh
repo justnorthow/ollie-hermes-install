@@ -231,22 +231,45 @@ tail -1 "$CALLS" | grep -q 'relrowsecurity' \
 [[ "${rc}" -eq 0 ]] \
   && ok "a gated apply on a clean schema succeeds" || bad "a gated apply on a clean schema failed (rc=${rc})"
 
-# ---- 7. the target schema reaches psql as a variable
-# Consolidated app migrations qualify their objects as :"schema" so ONE image
-# can install into any schema. psql substitutes that only when the variable is
-# set; without it the placeholder stays literal and every migration dies on
-# `syntax error at or near ":"`. Fail-closed, but only if the applier passes
-# the variable in the first place — which is what this asserts.
-: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
+# ---- 7. the app's SQL is relocated into the target schema at apply time
+# App migrations are written the ordinary Supabase way (`public.`) so they stay
+# compatible with `supabase start`, the supabase CLI's migration runner, and
+# the app's own RLS suite. Consolidation is THIS installer's concern: rewrite
+# them into the target schema on the way into psql. Doing it app-side instead
+# broke every one of those tools — the CLI applies SQL over a connection, not
+# through the psql client, so a psql :"variable" is never substituted and each
+# migration died on `syntax error at or near ":"`.
+rm -f "$FIXTURE_MIG_DIR"/*.sql
+cat > "$FIXTURE_MIG_DIR/0001_first.sql" <<'SQL'
+create table public.widgets (id uuid primary key);
+create or replace function public.is_owner(w uuid) returns boolean
+language sql security definer set search_path = public as $$
+  select exists (select 1 from members where id = w)
+$$;
+revoke execute on function public.is_owner(uuid) from anon, public;
+SQL
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLIES}"/*.sql; rm -f "${APPLY_COUNT_FILE}"
 app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
-grep -- '-1 -f -' "$CALLS" | grep -q -- '-v schema=hia' \
-  && ok "passes -v schema=<schema> on the apply call" || bad "apply call has no -v schema=<schema>"
+RENDERED="${APPLIES}/1.sql"
+grep -q 'create table hia\.widgets' "${RENDERED}" \
+  && ok "qualified objects are relocated to the target schema" || bad "objects were not relocated"
+# The pin is the security-critical half: a security definer function whose
+# search_path still said `public` would resolve names outside its own schema
+# at RUNTIME — migrations succeed, then every definer function misbehaves.
+grep -q 'set search_path = hia' "${RENDERED}" \
+  && ok "security definer search_path pins follow the tables" || bad "search_path pin still points at public"
+# `public` with no dot is the PUBLIC ROLE. Rewriting it would silently change
+# WHO the revoke applies to — a privilege change disguised as a relocation.
+grep -q 'from anon, public;' "${RENDERED}" \
+  && ok "the bare PUBLIC role is left alone" || bad "the PUBLIC role was rewritten"
+grep -q 'public\.' "${RENDERED}" \
+  && bad "a public.-qualified reference survived the rewrite" || ok "no public.-qualified reference remains"
 
-# No schema argument means no variable — the stack-based path applies into
-# `public` and must not start emitting an unset-variable reference.
-: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLY_COUNT_FILE}"
+# No schema argument => byte-identical passthrough (the stack-per-app path
+# genuinely lives in public and must not be rewritten).
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLIES}"/*.sql; rm -f "${APPLY_COUNT_FILE}"
 app_migrations_apply img rec_psql hia._migrations >/dev/null 2>&1
-grep -- '-1 -f -' "$CALLS" | grep -q -- '-v schema=' \
-  && bad "passed -v schema= with no schema argument" || ok "no -v schema= when no schema is given"
+grep -q 'create table public\.widgets' "${APPLIES}/1.sql" \
+  && ok "no schema argument leaves the SQL untouched" || bad "SQL was rewritten with no schema argument"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
