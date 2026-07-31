@@ -80,7 +80,12 @@ END
 --   ERROR: must be member of role "<name>_owner"
 -- Observed on a real box; the test harness never executes SQL, so no amount of
 -- SQL-text assertion could have caught it.
-GRANT ${OWNER_ROLE} TO CURRENT_USER;
+--
+-- Grantee is the LITERAL role, never CURRENT_USER: on PostgreSQL 15.8
+-- `GRANT <role> TO CURRENT_USER` SEGFAULTS the backend (signal 11), which
+-- terminates every other connection and forces database-wide recovery. Seen on
+-- the dev box. core_psql always connects -U postgres, so the name is known.
+GRANT ${OWNER_ROLE} TO postgres;
 
 CREATE SCHEMA IF NOT EXISTS ${APP_NAME} AUTHORIZATION ${OWNER_ROLE};
 ALTER SCHEMA ${APP_NAME} OWNER TO ${OWNER_ROLE};

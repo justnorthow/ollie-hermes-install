@@ -100,6 +100,14 @@ awk '/GRANT popbys_owner TO (CURRENT_USER|postgres)/{g=NR} /CREATE SCHEMA IF NOT
   && ok "the membership grant precedes CREATE SCHEMA" \
   || bad "the membership grant precedes CREATE SCHEMA"
 
+# The grantee must be the LITERAL role. `GRANT <role> TO CURRENT_USER` SEGFAULTS
+# the backend on PostgreSQL 15.8 (signal 11), killing every other connection and
+# forcing database-wide recovery — observed on the dev box 2026-07-30 while
+# fixing the membership bug above. Never reintroduce the CURRENT_USER form.
+grep -q "GRANT popbys_owner TO CURRENT_USER" "$PSQL_SQL_LOG" \
+  && bad "grantee is a literal role, not CURRENT_USER (segfaults PG 15.8)" \
+  || ok "grantee is a literal role, not CURRENT_USER (segfaults PG 15.8)"
+
 grep -q "GRANT popbys_owner TO authenticator" "$PSQL_SQL_LOG" \
   && ok "authenticator can switch into the owner role" || bad "authenticator can switch into the owner role"
 grep -q "GRANT USAGE ON SCHEMA auth TO popbys_owner" "$PSQL_SQL_LOG" \
