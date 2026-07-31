@@ -73,6 +73,15 @@ BEGIN
 END
 \$\$;
 
+-- Make the connecting role a MEMBER of the owner role before anything is
+-- created AUTHORIZATION-ed to it. Supabase's postgres is NOT a superuser
+-- (rolsuper=f), and on PG15 creating a role grants the creator no membership
+-- in it, so the CREATE SCHEMA below fails outright with
+--   ERROR: must be member of role "<name>_owner"
+-- Observed on a real box; the test harness never executes SQL, so no amount of
+-- SQL-text assertion could have caught it.
+GRANT ${OWNER_ROLE} TO CURRENT_USER;
+
 CREATE SCHEMA IF NOT EXISTS ${APP_NAME} AUTHORIZATION ${OWNER_ROLE};
 ALTER SCHEMA ${APP_NAME} OWNER TO ${OWNER_ROLE};
 

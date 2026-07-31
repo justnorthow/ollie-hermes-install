@@ -85,6 +85,21 @@ grep -q "ALTER SCHEMA popbys OWNER TO popbys_owner" "$PSQL_SQL_LOG" \
   && ok "role owns the schema" || bad "role owns the schema"
 grep -qE "GRANT USAGE ON SCHEMA popbys TO anon, authenticated, service_role" "$PSQL_SQL_LOG" \
   && ok "PostgREST roles can reach the schema" || bad "PostgREST roles can reach the schema"
+# The connecting role must be made a MEMBER of the owner role before anything is
+# created AUTHORIZATION-ed to it. Supabase's `postgres` is NOT a superuser and on
+# PG15 creating a role grants the creator no membership, so
+# CREATE SCHEMA ... AUTHORIZATION <owner> fails with `must be member of role`.
+# Caught on the dev box 2026-07-30; every existing test passed because the harness
+# only logs SQL text and never executes it against a real Postgres.
+grep -qE "GRANT popbys_owner TO (CURRENT_USER|postgres)" "$PSQL_SQL_LOG" \
+  && ok "grants the owner role to the connecting role" \
+  || bad "grants the owner role to the connecting role"
+
+# ...and it must precede CREATE SCHEMA, or the CREATE still fails.
+awk '/GRANT popbys_owner TO (CURRENT_USER|postgres)/{g=NR} /CREATE SCHEMA IF NOT EXISTS popbys/{c=NR} END{exit !(g && c && g < c)}' "$PSQL_SQL_LOG" \
+  && ok "the membership grant precedes CREATE SCHEMA" \
+  || bad "the membership grant precedes CREATE SCHEMA"
+
 grep -q "GRANT popbys_owner TO authenticator" "$PSQL_SQL_LOG" \
   && ok "authenticator can switch into the owner role" || bad "authenticator can switch into the owner role"
 grep -q "GRANT USAGE ON SCHEMA auth TO popbys_owner" "$PSQL_SQL_LOG" \
