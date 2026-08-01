@@ -162,6 +162,21 @@ else
   echo "     got:      ${AUTH_STMTS//$'\n'/ | }"
   echo "     expected: ${AUTH_STMTS_EXPECTED//$'\n'/ | }"
 fi
+
+# The owner role must reach `extensions`. Supabase installs uuid-ossp, pgcrypto
+# and friends there, and a migration calling uuid_generate_v4() UNQUALIFIED
+# cannot be relocated into the app schema — it resolves through search_path.
+# Putting the schema on the search_path is not enough: without USAGE the role
+# cannot see anything in it. Hit live cutting HIA over — its first migration
+# died on "function uuid_generate_v4() does not exist" with the search_path
+# already set. USAGE only: the role gets to CALL extension functions, not to
+# create anything there.
+grep -q "GRANT USAGE ON SCHEMA extensions TO popbys_owner" "$PSQL_SQL_LOG" \
+  && ok "grants USAGE on extensions to the owner role" \
+  || bad "no USAGE on extensions — unqualified extension calls will fail"
+grep -qE "has_schema_privilege\('popbys_owner', *'extensions'" "$PSQL_SQL_LOG" \
+  && ok "verifies the extensions grant actually landed" \
+  || bad "does not verify the extensions grant landed"
 grep -q "REVOKE ALL ON SCHEMA public FROM popbys_owner" "$PSQL_SQL_LOG" \
   && ok "explicitly revokes public" || bad "explicitly revokes public"
 

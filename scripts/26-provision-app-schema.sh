@@ -139,6 +139,20 @@ GRANT USAGE ON SCHEMA auth TO ${OWNER_ROLE};
 GRANT REFERENCES ON TABLE auth.users TO ${OWNER_ROLE};
 SQL
 
+# Supabase installs uuid-ossp, pgcrypto and friends in `extensions`. A migration
+# calling uuid_generate_v4() UNQUALIFIED cannot be relocated into the app schema
+# — it is not `public.`-qualified, it resolves through search_path — so the app
+# schema alone is not enough. Putting `extensions` on the search_path is also
+# not enough: without USAGE the role cannot see anything in it. Both are needed,
+# and this is the half that lives here. USAGE only — the role may CALL extension
+# functions, never create objects there.
+# (An app using only gen_random_uuid() never notices: that one also exists in
+# pg_catalog, which is always implicitly on the path. HIA's first migration is
+# what surfaced it.)
+admin_psql <<SQL
+GRANT USAGE ON SCHEMA extensions TO ${OWNER_ROLE};
+SQL
+
 # PROVE it landed rather than trusting the exit code: the failure mode this
 # replaces was a WARNING with a success exit, so a silent no-op would otherwise
 # look identical to success and only surface when an app migration tried to
@@ -149,6 +163,9 @@ BEGIN
   IF NOT has_schema_privilege('${OWNER_ROLE}', 'auth', 'USAGE')
      OR NOT has_table_privilege('${OWNER_ROLE}', 'auth.users', 'REFERENCES') THEN
     RAISE EXCEPTION 'cross-schema grants did not land for ${OWNER_ROLE}: an app FK to auth.users would fail with "permission denied for schema auth"';
+  END IF;
+  IF NOT has_schema_privilege('${OWNER_ROLE}', 'extensions', 'USAGE') THEN
+    RAISE EXCEPTION 'extensions grant did not land for ${OWNER_ROLE}: a migration calling uuid_generate_v4() would fail with "function does not exist"';
   END IF;
 END
 \$\$;
