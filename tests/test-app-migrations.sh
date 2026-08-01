@@ -315,4 +315,29 @@ SQL
   && bad "a search_path the rewrite could not relocate was applied anyway" \
   || ok "refuses to apply when a public reference survives the rewrite"
 
+# ---- 9. the apply session can reach extension functions
+# Relocated migrations run as <name>_owner, whose search_path does not include
+# `extensions`. Supabase installs uuid-ossp etc. THERE, so an unqualified
+# uuid_generate_v4() — which cannot be relocated, it is not `public.`-qualified
+# — fails with "function does not exist". Pop Bys never hit this because
+# gen_random_uuid() also exists in pg_catalog, which is always implicitly on
+# the path; HIA's first migration died on it.
+# `public` is deliberately NOT added back: that would restore the very reach
+# the schema separation exists to remove.
+rm -f "$FIXTURE_MIG_DIR"/*.sql
+printf 'create table public.t (id uuid primary key default uuid_generate_v4());\n' > "$FIXTURE_MIG_DIR/0001_first.sql"
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLIES}"/*.sql; rm -f "${APPLY_COUNT_FILE}"
+app_migrations_apply img rec_psql hia._migrations hia >/dev/null 2>&1
+head -1 "${APPLIES}/1.sql" | grep -q 'set search_path = hia, extensions;' \
+  && ok "apply session puts the target schema and extensions on the search_path" \
+  || bad "no search_path set for the apply session"
+grep -q 'set search_path = hia, extensions;.*public' "${APPLIES}/1.sql" \
+  && bad "public was added back to the apply search_path" || ok "public is not on the apply search_path"
+
+# No schema => no injected search_path (the stack-per-app path is unchanged).
+: > "$CALLS"; : > "${APPLIED_LIST}"; rm -f "${APPLIES}"/*.sql; rm -f "${APPLY_COUNT_FILE}"
+app_migrations_apply img rec_psql hia._migrations >/dev/null 2>&1
+grep -q 'set search_path' "${APPLIES}/1.sql" \
+  && bad "injected a search_path with no schema argument" || ok "no search_path injected without a schema"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

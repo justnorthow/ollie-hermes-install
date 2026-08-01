@@ -106,7 +106,21 @@ app_migrations_apply() { # IMG PSQL_FN TRACKER [SCHEMA]
       rm -rf "${mig_dir}"
       return 1
     fi
-    if ! { printf '%s\n' "${rendered}"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
+    # Extension functions must be reachable during the apply. Migrations call
+    # things like uuid_generate_v4() UNQUALIFIED, and those cannot be
+    # relocated — they are not `public.`-qualified, they resolve through
+    # search_path — while Supabase installs them in `extensions`. Without this
+    # the first such migration dies on "function uuid_generate_v4() does not
+    # exist". (gen_random_uuid() also lives in pg_catalog, which is always
+    # implicitly on the path, which is why an app using only that one never
+    # noticed.)
+    #
+    # `public` is deliberately NOT on this list: putting it back would restore
+    # exactly the cross-schema reach the separation exists to remove.
+    local path_stmt=""
+    [[ -n "${schema}" ]] && path_stmt="set search_path = ${schema}, extensions;"
+    if ! { [[ -n "${path_stmt}" ]] && printf '%s\n' "${path_stmt}"
+           printf '%s\n' "${rendered}"; printf "\ninsert into %s (name) values ('%s');\n" "${tracker}" "${base}"; } \
          | "${psql_fn}" -1 -f -; then
       echo "error: migration ${base} failed — nothing was recorded as applied (single-transaction)" >&2
       rm -rf "${mig_dir}"
