@@ -327,6 +327,20 @@ for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
   [[ -f "${APP_KEY_FILE}" ]] || { echo "error: ${APP_KEY_FILE} not found — 26 should have minted it in step 1/4" >&2; exit 1; }
   APP_KEY="$(cat "${APP_KEY_FILE}")"
   [[ -n "${APP_KEY}" ]] || { echo "error: ${APP_KEY_FILE} is empty" >&2; exit 1; }
+
+  # A pre-consolidation ~/apps/<name>/.env may still carry credentials for
+  # the retired per-app Supabase stack. Script 23 deliberately preserves bare
+  # app env keys across re-runs, so without an explicit scrub those stale
+  # service-role/SSO credentials survive the cutover and enter the consolidated
+  # container. They are unnecessary with the shared first-party session and,
+  # more importantly, a service-role key must never be present in an app that
+  # now talks to the core stack. Remove only the fixed retired keys before 23
+  # snapshots the old file; the running container is unchanged until 23 has
+  # successfully rendered the replacement and recreated it.
+  OLD_APP_ENV="${APPS_DIR:-$HOME/apps}/${NAME}/.env"
+  if [[ -f "${OLD_APP_ENV}" ]]; then
+    sed -i -E '/^(SUPABASE_SERVICE_ROLE_KEY|HIA_SSO_SECRET|NEWSLETTER_SSO_SECRET)=/d' "${OLD_APP_ENV}"
+  fi
   {
     echo "APP_NAME=${NAME}"
     echo "APP_PORT=${APP_PORT}"

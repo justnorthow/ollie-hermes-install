@@ -1008,7 +1008,7 @@ grep -q 'popbys' "$T/out.log" && grep -q 'hia' "$T/out.log" \
 # were shipped to the box and none took effect, because hia's .env already
 # pinned a two-day-old image.
 mkdir -p "$HOME/apps/popbys"
-printf 'APP_NAME=popbys\nAPP_IMAGE=sha256:deadbeefstale\n' > "$HOME/apps/popbys/.env"
+printf 'APP_NAME=popbys\nAPP_IMAGE=sha256:deadbeefstale\nSUPABASE_SERVICE_ROLE_KEY=old-service-role\nHIA_SSO_SECRET=old-hia-sso\nNEWSLETTER_SSO_SECRET=old-newsletter-sso\n' > "$HOME/apps/popbys/.env"
 : > "$DOCKER_LOG"; : > "$CURL_LOG"; rm -f "$SUB23_LOG".*
 printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
 run_app "real-estate" "popbys" "IMAGE_TARBALL=$T/img.tar" \
@@ -1019,6 +1019,9 @@ grep -q "docker load -i $T/img.tar" "$DOCKER_LOG" \
 grep -q "deadbeefstale" "$SUB23_LOG.popbys" \
   && bad "the stale pinned image was forwarded to 23" \
   || ok "the stale pinned image was not used"
+grep -qE '^(SUPABASE_SERVICE_ROLE_KEY|HIA_SSO_SECRET|NEWSLETTER_SSO_SECRET)=' "$HOME/apps/popbys/.env" \
+  && bad "retired per-app credentials survived the consolidated cutover" \
+  || ok "retired per-app credentials scrubbed before app env carry-forward"
 rm -rf "$HOME/apps/popbys"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
