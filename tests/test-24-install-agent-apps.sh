@@ -1000,4 +1000,25 @@ run_app "two-app" "nope" "${TWO_STDIN[@]}" "IMAGE_TARBALL=$T/img.tar" \
 grep -q 'popbys' "$T/out.log" && grep -q 'hia' "$T/out.log" \
   && ok "error lists the manifest's app names" || bad "error does not list valid names"
 
+# ---- 22. an explicitly passed tarball BEATS the pinned APP_IMAGE
+# The pinned image in ~/apps/<name>/.env is a convenience for re-runs that pass
+# no tarball. Preferring it over one the operator explicitly handed us makes
+# `24 ... IMAGE_TARBALL=<new>` a silent no-op: the run reports success while
+# installing the OLD image. Hit live cutting HIA over — three separate rebuilds
+# were shipped to the box and none took effect, because hia's .env already
+# pinned a two-day-old image.
+mkdir -p "$HOME/apps/popbys"
+printf 'APP_NAME=popbys\nAPP_IMAGE=sha256:deadbeefstale\n' > "$HOME/apps/popbys/.env"
+: > "$DOCKER_LOG"; : > "$CURL_LOG"; rm -f "$SUB23_LOG".*
+printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+run_app "real-estate" "popbys" "IMAGE_TARBALL=$T/img.tar" \
+  "ORCH_ENV_FILE=$T/hermes-stack/.env" "STACK_ENV_FILE=$T/stack-env/.env"
+grep -q "docker load -i $T/img.tar" "$DOCKER_LOG" \
+  && ok "an explicitly passed tarball is loaded even when APP_IMAGE is pinned" \
+  || bad "explicit tarball ignored in favour of the pinned APP_IMAGE"
+grep -q "deadbeefstale" "$SUB23_LOG.popbys" \
+  && bad "the stale pinned image was forwarded to 23" \
+  || ok "the stale pinned image was not used"
+rm -rf "$HOME/apps/popbys"
+
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

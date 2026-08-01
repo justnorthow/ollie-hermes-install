@@ -243,9 +243,18 @@ for i in "${TARGETS[@]}"; do
   UPPER="$(printf '%s' "${NAME}" | tr '[:lower:]' '[:upper:]')"
   PER_APP_VAR="IMAGE_TARBALL_${UPPER}"
   APP_TARBALL="${!PER_APP_VAR:-}"
+  # An explicitly passed tarball ALWAYS wins over the image pinned in the app's
+  # own .env. The pin is a convenience for re-runs that supply no tarball;
+  # preferring it over an explicit argument turns `IMAGE_TARBALL=<new>` into a
+  # silent no-op that reports success while installing the OLD image. Three
+  # rebuilds were shipped to the sandbox box with no effect before this was
+  # found, because the app's .env still pinned a two-day-old image.
+  if [[ -z "${APP_TARBALL}" && "${TARGET_COUNT}" -eq 1 && -n "${IMAGE_TARBALL}" ]]; then
+    APP_TARBALL="${IMAGE_TARBALL}"
+  fi
   if [[ -z "${APP_TARBALL}" ]]; then
     if [[ -n "$(app_image_from_env "${NAME}")" ]]; then
-      # Re-run path: the image is already pinned in the app's own .env.
+      # Re-run path: no tarball supplied, so use the image already pinned.
       APP_TARBALL=""
     elif [[ "${TARGET_COUNT}" -eq 1 ]]; then
       APP_TARBALL="${IMAGE_TARBALL}"
