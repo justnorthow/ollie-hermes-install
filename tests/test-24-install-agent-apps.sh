@@ -148,6 +148,23 @@ cat > "$MANIFEST_DIR/two-app.json" <<'JSON'
 }
 JSON
 
+# ---- manifest-scoped runtime-input fixture (different app inputs, no leaks) ----
+cat > "$MANIFEST_DIR/secret-routing.json" <<'JSON'
+{
+  "profile": "secret-routing",
+  "apps": [
+    { "name": "hia",
+      "server": { "app_port": 8110, "container_port": 3000, "health_path": "/apps/hia/api/health",
+                  "required_env": ["HIA_BROWSER_KEY"] } },
+    { "name": "popbys",
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health",
+                  "optional_env": ["POPBYS_SERVER_KEY"] } },
+    { "name": "newsletter",
+      "server": { "app_port": 8120, "container_port": 3000, "health_path": "/apps/newsletter/api/health/" } }
+  ]
+}
+JSON
+
 # ---- fake docker: logs full argv; simulates load/create/cp/rm and the
 # compose-exec'd psql (create-table / SELECT-applied / single-transaction
 # -1 -f - apply) ----
@@ -1023,5 +1040,93 @@ grep -qE '^(SUPABASE_SERVICE_ROLE_KEY|HIA_SSO_SECRET|NEWSLETTER_SSO_SECRET)=' "$
   && bad "retired per-app credentials survived the consolidated cutover" \
   || ok "retired per-app credentials scrubbed before app env carry-forward"
 rm -rf "$HOME/apps/popbys"
+
+# ---- 23. manifest-scoped runtime inputs route only to declaring apps
+SECRET_STDIN=(
+  "ORCH_ENV_FILE=$T/hermes-stack/.env"
+  "STACK_ENV_FILE=$T/stack-env/.env"
+  "IMAGE_TARBALL_HIA=$T/img-hia.tar"
+  "IMAGE_TARBALL_POPBYS=$T/img.tar"
+  "IMAGE_TARBALL_NEWSLETTER=$T/img-newsletter.tar"
+)
+: > "$T/img-newsletter.tar"
+: > "$CURL_LOG"; : > "$SUB26_LOG"; rm -f "$SUB23_LOG".*
+printf '{"agents":[{"id":"secret-routing"}]}' > "$AGENTS_JSON_FILE"
+run "secret-routing" "${SECRET_STDIN[@]}" "HIA_BROWSER_KEY=browser-test-key==" "POPBYS_SERVER_KEY=server-test-key==" \
+  && ok "manifest-scoped runtime input installs" || bad "manifest-scoped runtime input install failed"
+grep -q '^APP_ENV_HIA_BROWSER_KEY=browser-test-key==$' "$SUB23_LOG.hia" \
+  && ok "required browser key routed to HIA" || bad "browser key missing from HIA"
+grep -q 'POPBYS_SERVER_KEY' "$SUB23_LOG.hia" \
+  && bad "Pop Bys server key leaked into HIA" || ok "Pop Bys server key did not leak into HIA"
+grep -q '^APP_ENV_POPBYS_SERVER_KEY=server-test-key==$' "$SUB23_LOG.popbys" \
+  && ok "optional server key routed to Pop Bys" || bad "server key missing from Pop Bys"
+grep -q 'HIA_BROWSER_KEY' "$SUB23_LOG.popbys" \
+  && bad "HIA browser key leaked into Pop Bys" || ok "HIA browser key did not leak into Pop Bys"
+grep -qE '(HIA_BROWSER_KEY|POPBYS_SERVER_KEY)' "$SUB23_LOG.newsletter" \
+  && bad "app-scoped key leaked into Newsletter" || ok "app-scoped keys did not leak into Newsletter"
+
+# A missing first-install requirement must fail before the orchestrator call or
+# schema provisioning, not halfway through a multi-app mutation.
+: > "$CURL_LOG"; : > "$SUB26_LOG"; rm -rf "$HOME/apps/hia"
+run "secret-routing" "${SECRET_STDIN[@]}" \
+  && bad "missing required runtime input accepted" || ok "missing required runtime input rejected"
+grep -q "missing required env HIA_BROWSER_KEY for app 'hia'" "$T/out.log" \
+  && ok "missing-input error names the app and key" || bad "missing-input error lacks app/key"
+[[ ! -s "$CURL_LOG" && ! -s "$SUB26_LOG" ]] \
+  && ok "required-input preflight runs before external or schema mutation" \
+  || bad "install work started before required-input preflight"
+
+# Re-runs do not require the operator to re-enter a secret already stored in
+# the app's mode-600 env; real script 23 carries the bare value forward.
+mkdir -p "$HOME/apps/hia"
+printf 'HIA_BROWSER_KEY=existing-browser-key\n' > "$HOME/apps/hia/.env"
+: > "$CURL_LOG"; : > "$SUB26_LOG"; rm -f "$SUB23_LOG".*
+run "secret-routing" "${SECRET_STDIN[@]}" \
+  && ok "existing required runtime input satisfies re-run" \
+  || bad "re-run rejected existing required runtime input"
+grep -q 'APP_ENV_HIA_BROWSER_KEY' "$SUB23_LOG.hia" \
+  && bad "existing secret was unnecessarily copied through installer stdin" \
+  || ok "existing secret remains on script 23 carry-forward path"
+rm -rf "$HOME/apps/hia"
+
+# Manifest input names become environment-variable names, so reject unsafe
+# declarations before any external or database work.
+cat > "$MANIFEST_DIR/bad-env-key.json" <<'JSON'
+{
+  "profile": "bad-env-key",
+  "apps": [
+    { "name": "hia",
+      "server": { "app_port": 8110, "container_port": 3000, "health_path": "/api/health",
+                  "required_env": ["BAD-NAME"] } }
+  ]
+}
+JSON
+: > "$CURL_LOG"; : > "$SUB26_LOG"
+run "bad-env-key" "ORCH_ENV_FILE=$T/hermes-stack/.env" "IMAGE_TARBALL=$T/img-hia.tar" \
+  && bad "invalid manifest runtime-input name accepted" \
+  || ok "invalid manifest runtime-input name rejected"
+grep -q 'keys must match' "$T/out.log" \
+  && ok "invalid runtime-input error states the key contract" \
+  || bad "invalid runtime-input error omits the key contract"
+[[ ! -s "$CURL_LOG" && ! -s "$SUB26_LOG" ]] \
+  && ok "runtime-input validation precedes external or schema mutation" \
+  || bad "install work started before runtime-input validation"
+
+# Pin the production manifest contract: the browser-referrer key belongs only
+# in HIA. Pop Bys' server-side Google calls require a differently restricted
+# credential and Newsletter has no Google Maps integration.
+python3 - "$DIR/apps/real-estate.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+apps = {app['name']: app for app in d['apps']}
+assert apps['hia']['server'].get('required_env') == ['GOOGLE_MAPS_API_KEY']
+assert 'GOOGLE_MAPS_API_KEY' not in apps['popbys']['server'].get('required_env', [])
+assert 'GOOGLE_MAPS_API_KEY' not in apps['popbys']['server'].get('optional_env', [])
+assert 'GOOGLE_MAPS_API_KEY' not in apps['newsletter']['server'].get('required_env', [])
+assert 'GOOGLE_MAPS_API_KEY' not in apps['newsletter']['server'].get('optional_env', [])
+PY
+[[ $? -eq 0 ]] \
+  && ok "real-estate manifest scopes the browser Maps key to HIA" \
+  || bad "real-estate manifest Maps-key scope is wrong"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]

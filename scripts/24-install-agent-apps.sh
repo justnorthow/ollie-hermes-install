@@ -20,7 +20,11 @@
 #   narrowed by the app-name argument. Re-runs need neither: the image is
 #   already pinned in ~/apps/<name>/.env. Also GOOGLE_CLIENT_ID,
 #   GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT, STACK_ENV_FILE,
-#   APP_ENV_<KEY>... passthrough (which overrides the manifest's server.env).
+#   manifest-declared bare runtime inputs (for example GOOGLE_MAPS_API_KEY),
+#   plus APP_ENV_<KEY>... global passthrough (which overrides server.env and
+#   manifest-scoped inputs). A server.required_env input must be supplied on
+#   first install; server.optional_env is routed when present. Existing values
+#   in ~/apps/<name>/.env satisfy required inputs and survive re-runs.
 # APP_HOST/SB_HOST are retired: apps are served same-origin under
 #   /apps/<name>/, so none has a hostname or a Supabase of its own.
 # STACK_ENV_FILE (default ${HOME}/hermes-stack/.env) is the dashboard's OWN
@@ -61,6 +65,7 @@ CORE_KONG_PORT=8000
 APP_HOST="" ; SB_HOST="" ; IMAGE_TARBALL="" ; GOOGLE_CLIENT_ID="" ; GOOGLE_CLIENT_SECRET=""
 ORCH_ENV_FILE="" ; ORCH_PORT="" ; STACK_ENV_FILE=""
 declare -a PASSTHRU=()
+declare -A INPUT_ENV=()
 while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
   case "${k}" in
     APP_HOST) APP_HOST="${v}" ;;
@@ -74,6 +79,11 @@ while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
     # Per-app image, resolved into a per-iteration local inside the loop.
     IMAGE_TARBALL_*) export "${k}=${v}" ;;
     APP_ENV_*) PASSTHRU+=("${k}=${v}") ;;
+    # Bare runtime inputs are inert unless a target app explicitly declares
+    # the key in server.required_env or server.optional_env. This lets one
+    # multi-app install receive a secret once without broadcasting it to every
+    # app container (the legacy APP_ENV_* passthrough is intentionally global).
+    *) [[ "${k}" =~ ^[A-Z][A-Z0-9_]*$ ]] && INPUT_ENV["${k}"]="${v}" ;;
   esac
 done
 ORCH_ENV_FILE="${ORCH_ENV_FILE:-$HOME/hermes-stack/.env}"
@@ -120,6 +130,44 @@ fi
 # How many apps this RUN installs — NOT how many the manifest holds. The bare
 # stdin keys are legal only when this is 1.
 TARGET_COUNT=${#TARGETS[@]}
+
+# Validate every manifest runtime-input declaration before contacting the
+# orchestrator or mutating a schema. Only declarations for this run's targets
+# are emitted. Required inputs may come from this stdin or an existing app env;
+# script 23's carry-forward then preserves the latter without exposing it here.
+declare -A APP_INPUT_KEYS=()
+ENV_DECLS="$(python3 -c '
+import json, re, sys
+
+path = sys.argv[1]
+targets = {int(v) for v in sys.argv[2:]}
+d = json.load(open(path))
+for i, app in enumerate(d["apps"]):
+    server = app.get("server") or {}
+    seen = set()
+    for field, mode in (("required_env", "required"), ("optional_env", "optional")):
+        values = server.get(field, [])
+        if not isinstance(values, list):
+            raise SystemExit("error: manifest app %r server.%s must be an array" % (app.get("name"), field))
+        for key in values:
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+                raise SystemExit("error: manifest app %r has invalid %s key %r - keys must match ^[A-Z][A-Z0-9_]*$" % (app.get("name"), field, key))
+            if key in seen:
+                raise SystemExit("error: manifest app %r declares %s more than once" % (app.get("name"), key))
+            seen.add(key)
+            if i in targets:
+                print("%s\t%s\t%s\t%s" % (i, app["name"], mode, key))
+' "${MANIFEST}" "${TARGETS[@]}")"
+while IFS=$'\t' read -r env_i env_name env_mode env_key; do
+  [[ -n "${env_key}" ]] || continue
+  APP_INPUT_KEYS["${env_i}"]+="${env_key}"$'\n'
+  if [[ "${env_mode}" == "required" \
+     && -z "${INPUT_ENV[${env_key}]:-}" \
+     && -z "$(app_server_env_val "${APPS_DIR:-$HOME/apps}/${env_name}/.env" "${env_key}")" ]]; then
+    echo "error: missing required env ${env_key} for app '${env_name}' - pass ${env_key}=<value> on stdin" >&2
+    exit 1
+  fi
+done <<< "${ENV_DECLS}"
 
 ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
 [[ -n "${ORCH_KEY}" ]] || {
@@ -360,10 +408,13 @@ for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
     echo "APP_ENV_OLLIE_AGENT=${PROFILE}"
     [[ -n "${ORCH_KEY}" ]] && echo "APP_ENV_OLLIE_ORCHESTRATOR_KEY=${ORCH_KEY}"
     echo "APP_ENV_APP_BASE_PATH=/apps/${NAME}"
-    # Manifest server.env FIRST, operator passthrough second: 23 keeps the last
-    # value for a repeated key, so an APP_ENV_<KEY> on stdin overrides what the
-    # manifest declares.
+    # Static manifest env first, then manifest-scoped bare inputs, then global
+    # operator passthrough. Script 23 keeps the last value for a repeated key.
     [[ -n "${MF_ENV}" ]] && printf '%s\n' "${MF_ENV}"
+    while IFS= read -r env_key; do
+      [[ -n "${env_key}" && -n "${INPUT_ENV[${env_key}]:-}" ]] \
+        && echo "APP_ENV_${env_key}=${INPUT_ENV[${env_key}]}"
+    done <<< "${APP_INPUT_KEYS[${i}]:-}"
     printf '%s\n' "${PASSTHRU[@]:-}" | grep -v '^$' || true
     true   # group's exit status must not hinge on the last optional/passthrough line (pipefail)
   } | bash "${SUB23}"

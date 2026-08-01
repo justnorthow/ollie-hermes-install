@@ -32,3 +32,30 @@ same-origin through the dashboard at `/apps/<name>/` via `<NAME>_BASE_URL`
   is `~/.config/ollie-orchestrator/.env`, **not** `~/hermes-stack/.env` — pass it
   explicitly.
 - The app image staged on the box as a `docker save` tarball (`IMAGE_TARBALL`).
+
+## App runtime inputs
+
+An app can declare bare operator inputs in its manifest under
+`server.required_env` or `server.optional_env`. Pass each value once on stdin;
+24 routes it only to apps that declare it. Required values must be supplied on
+the first install. On a re-run, an existing value in `~/apps/<name>/.env`
+satisfies the requirement and is preserved.
+
+The real-estate profile requires `GOOGLE_MAPS_API_KEY` for HIA. It does not
+send that browser-referrer-restricted key to Pop Bys or Newsletter:
+
+```bash
+printf '%s\n' \
+  'GOOGLE_MAPS_API_KEY=<value>' \
+  'IMAGE_TARBALL_HIA=/home/ollie/hia.tar' \
+  'IMAGE_TARBALL_POPBYS=/home/ollie/popbys.tar' \
+  'IMAGE_TARBALL_NEWSLETTER=/home/ollie/newsletter.tar' \
+  'ORCH_ENV_FILE=/home/ollie/.config/ollie-orchestrator/.env' \
+  | bash scripts/24-install-agent-apps.sh real-estate
+```
+
+`APP_ENV_<KEY>` remains a global escape hatch and is sent to every app in the
+run. Use the manifest-scoped bare input for secrets shared by only some apps.
+Pop Bys' server-side Geocoding and Routes calls require a separate key that is
+not HTTP-referrer restricted; install that key in a Pop Bys-only run with
+`APP_ENV_GOOGLE_MAPS_API_KEY=<server-key>`.
