@@ -7,8 +7,17 @@
   },
   "apps": [
     {
+      "name": "hia",
+      "server": { "app_port": 8110, "container_port": 3000, "health_path": "/apps/hia/api/health" },
+      "tile": {
+        "label": "Home Inspection Advisor",
+        "icon": "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+        "description": "Turn an inspection report into a prioritized read for the deal",
+        "order": 0
+      }
+    },
+    {
       "name": "popbys",
-      "stack": { "kong_port": 8030, "email_enabled": "false" },
       "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" },
       "tile": {
         "label": "Pop Bys",
