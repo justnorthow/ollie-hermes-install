@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# 24-install-agent-apps.sh <profile> — install every app the manifest
+# 24-install-agent-apps.sh <profile> [app-name] — install every app the manifest
 # (apps/<profile>.json) bundles with an agent profile: 26 (app schema + owner
 # role) -> app migrations (extracted from the app image; applied into the
 # core database as the app's owner role, tracked in <name>._migrations) ->
 # 23 (app server) -> dashboard tile registration (manifest apps with a "tile"
-# key are upserted into the orchestrator's per-profile app registry). Caddy
-# (22) needs root, so this prints the exact command —
-# REMINDER: 22 renders from ONLY its args; pass the box's FULL vhost set.
+# key are upserted into the orchestrator's per-profile app registry) -> app
+# bridge check. There is NO caddy step: consolidated apps are served
+# same-origin under /apps/<name>/ through the dashboard's nginx, so no app has
+# a vhost or hostname of its own. Bridges need root, so this prints the exact
+# commands: one per app, plus core-sb once per box.
 # Box-derived config is resolved here (core anon key, orchestrator loopback);
 # operator secrets arrive on stdin and flow through, never argv.
-# Input (stdin): APP_HOST, SB_HOST (both req first run — SB_HOST is read and
-#   still enforced below even though the app's OWN Supabase identity now
-#   comes from the core stack, not a per-app one; retiring this requirement
-#   is a later task's scope, not this one's), IMAGE_TARBALL (req first
-#   run), GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT,
-#   STACK_ENV_FILE, APP_ENV_<KEY>... passthrough.
+# An optional second argument narrows the run to ONE app in the manifest —
+# the only safe way to install a single app while others in the same profile
+# are still on the old per-app-stack path.
+# Input (stdin): IMAGE_TARBALL_<NAME> per app on first install (e.g.
+#   IMAGE_TARBALL_POPBYS); the bare IMAGE_TARBALL key is legal ONLY when this
+#   run installs exactly one app — a single-app manifest, or a manifest
+#   narrowed by the app-name argument. Re-runs need neither: the image is
+#   already pinned in ~/apps/<name>/.env. Also GOOGLE_CLIENT_ID,
+#   GOOGLE_CLIENT_SECRET, ORCH_ENV_FILE, ORCH_PORT, STACK_ENV_FILE,
+#   APP_ENV_<KEY>... passthrough (which overrides the manifest's server.env).
+# APP_HOST/SB_HOST are retired: apps are served same-origin under
+#   /apps/<name>/, so none has a hostname or a Supabase of its own.
 # STACK_ENV_FILE (default ${HOME}/hermes-stack/.env) is the dashboard's OWN
 # stack env — distinct from ORCH_ENV_FILE, which may point elsewhere (e.g.
 # ~/.config/ollie-orchestrator/.env). Tile apps get <NAME>_BASE_URL written
@@ -63,6 +71,8 @@ while IFS='=' read -r k v || [[ -n "${k:-}" ]]; do
     ORCH_ENV_FILE) ORCH_ENV_FILE="${v}" ;;
     ORCH_PORT) ORCH_PORT="${v}" ;;
     STACK_ENV_FILE) STACK_ENV_FILE="${v}" ;;
+    # Per-app image, resolved into a per-iteration local inside the loop.
+    IMAGE_TARBALL_*) export "${k}=${v}" ;;
     APP_ENV_*) PASSTHRU+=("${k}=${v}") ;;
   esac
 done
@@ -89,10 +99,27 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   fi
 done
 unset _n
-if [[ "${APP_COUNT}" -gt 1 ]]; then
-  echo "error: multi-app manifests are not yet supported (APP_HOST/SB_HOST/IMAGE_TARBALL are single-app; add per-app host fields to the manifest schema first)" >&2
-  exit 1
+# Which apps THIS RUN installs. An optional second argument narrows a
+# multi-app manifest to one app — the only safe way to install a single app
+# while others in the same profile are still on the old per-app-stack path.
+APP_FILTER="${2:-}"
+TARGETS=()
+if [[ -n "${APP_FILTER}" ]]; then
+  for i in $(seq 0 $((APP_COUNT-1))); do
+    [[ "$(mf "['apps'][${i}]['name']")" == "${APP_FILTER}" ]] && TARGETS+=("${i}")
+  done
+  if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    NAMES=""
+    for i in $(seq 0 $((APP_COUNT-1))); do NAMES="${NAMES} $(mf "['apps'][${i}]['name']")"; done
+    echo "error: no app '${APP_FILTER}' in ${MANIFEST} — manifest apps are:${NAMES}" >&2
+    exit 1
+  fi
+else
+  for i in $(seq 0 $((APP_COUNT-1))); do TARGETS+=("${i}"); done
 fi
+# How many apps this RUN installs — NOT how many the manifest holds. The bare
+# stdin keys are legal only when this is 1.
+TARGET_COUNT=${#TARGETS[@]}
 
 ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d= -f2- || true)"
 [[ -n "${ORCH_KEY}" ]] || {
@@ -185,29 +212,71 @@ else
   echo "    agent '${PROFILE}' already exists — leaving it untouched"
 fi
 
-for i in $(seq 0 $((APP_COUNT-1))); do
+# ONE core Supabase serves every app on this box, so this is a per-RUN check,
+# not a per-app one — probing it inside the loop turns one missing bridge into
+# N identical warnings and inflates the final count. /api/health does not touch
+# Supabase, so a missing bridge leaves every app "healthy" while every API call
+# fails. The bridge is shared, hence the fixed `core-sb` name.
+if ! curl -fsS --max-time 10 "http://172.17.0.1:${CORE_KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
+  echo "    WARNING: core Supabase at http://172.17.0.1:${CORE_KONG_PORT} is unreachable from the docker0 gateway — apps will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}" >&2
+  WARNINGS=$((WARNINGS+1))
+fi
+
+for i in "${TARGETS[@]}"; do
   NAME="$(mf "['apps'][${i}]['name']")"
-  KONG_PORT="$(mf "['apps'][${i}]['stack']['kong_port']")"
-  EMAIL_ENABLED="$(mf "['apps'][${i}]['stack']['email_enabled']")"
+  # KONG_PORT / EMAIL_ENABLED are gone with the per-app stack: nothing consumes
+  # them, and reading them would fail on a manifest that has dropped its
+  # now-meaningless `stack` block.
   APP_PORT="$(mf "['apps'][${i}]['server']['app_port']")"
   CONTAINER_PORT="$(mf "['apps'][${i}]['server']['container_port']")"
   HEALTH_PATH="$(mf "['apps'][${i}]['server']['health_path']")"
-  SB_ENV="${STACKS}/${NAME}/.env"
+  # APP_HOST / SB_HOST are gone with tile-only serving: apps are reached solely
+  # at <box>/apps/<name>/ through the dashboard's nginx, so no app has a
+  # hostname of its own, and a consolidated app has no Supabase of its own to
+  # give one to. They were also single-app globals — requiring them here would
+  # have forced every app in a profile to share one hostname.
 
-  # carry-forward hosts from an existing stack .env on re-runs
-  [[ -z "${SB_HOST}" && -f "${SB_ENV}" ]] && SB_HOST="$(supabase_app_env_val "${SB_ENV}" SUPABASE_PUBLIC_URL)" && SB_HOST="${SB_HOST#https://}"
-  [[ -z "${APP_HOST}" && -f "${SB_ENV}" ]] && APP_HOST="$(supabase_app_env_val "${SB_ENV}" SITE_URL)" && APP_HOST="${APP_HOST#https://}"
-  [[ -n "${APP_HOST}" && -n "${SB_HOST}" ]] || { echo "error: APP_HOST and SB_HOST required" >&2; exit 1; }
+  # Per-iteration local. NEVER assign back to IMAGE_TARBALL: with two apps that
+  # leaks app 0's tarball into app 1, installing app 0's IMAGE under app 1's
+  # name and port — where it passes app 1's own health check. Nothing looks
+  # broken, which makes it far worse than a wrong hostname.
+  UPPER="$(printf '%s' "${NAME}" | tr '[:lower:]' '[:upper:]')"
+  PER_APP_VAR="IMAGE_TARBALL_${UPPER}"
+  APP_TARBALL="${!PER_APP_VAR:-}"
+  if [[ -z "${APP_TARBALL}" ]]; then
+    if [[ -n "$(app_image_from_env "${NAME}")" ]]; then
+      # Re-run path: the image is already pinned in the app's own .env.
+      APP_TARBALL=""
+    elif [[ "${TARGET_COUNT}" -eq 1 ]]; then
+      APP_TARBALL="${IMAGE_TARBALL}"
+    else
+      echo "error: no image for '${NAME}' — pass ${PER_APP_VAR}=<path>. The bare IMAGE_TARBALL key is only legal when exactly one app is being installed (a single-app manifest, or narrow this run: 24-install-agent-apps.sh ${PROFILE} ${NAME})" >&2
+      exit 1
+    fi
+    if [[ -z "${APP_TARBALL}" && -z "$(app_image_from_env "${NAME}")" ]]; then
+      echo "error: no image for '${NAME}' — pass ${PER_APP_VAR}=<path> on first install" >&2
+      exit 1
+    fi
+  fi
 
-  echo "==> agent-apps [${NAME}] 1/5: app schema + owner role in the core stack"
+  # Manifest server.env, emitted BEFORE the operator passthrough so an
+  # APP_ENV_<KEY> on stdin still wins.
+  MF_ENV="$(python3 -c "
+import json
+d = json.load(open('${MANIFEST}'))
+for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
+    print('APP_ENV_%s=%s' % (k, v))
+")"
+
+  echo "==> agent-apps [${NAME}] 1/4: app schema + owner role in the core stack"
   {
     echo "APP_NAME=${NAME}"
     echo "CORE_STACK_DIR=${CORE_DIR}"
   } | bash "${SUB26}"
 
-  echo "==> agent-apps [${NAME}] 2/5: app migrations into schema '${NAME}'"
-  if [[ -n "${IMAGE_TARBALL}" ]]; then
-    LOAD_OUT="$(docker load -i "${IMAGE_TARBALL}")"
+  echo "==> agent-apps [${NAME}] 2/4: app migrations into schema '${NAME}'"
+  if [[ -n "${APP_TARBALL}" ]]; then
+    LOAD_OUT="$(docker load -i "${APP_TARBALL}")"
     if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
       echo "error: tarball must contain exactly one image (got: ${LOAD_OUT})" >&2; exit 1
     fi
@@ -236,7 +305,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
   }
   app_migrations_apply "${IMG}" core_psql "${NAME}._migrations" "${NAME}"
 
-  echo "==> agent-apps [${NAME}] 3/5: app server (port ${APP_PORT})"
+  echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
   # ORCH_KEY was already resolved above (before the preflight).
   CORE_URL="$(supabase_app_env_val "${CORE_DIR}/.env" SUPABASE_PUBLIC_URL)"
   ANON="$(supabase_app_env_val "${CORE_DIR}/.env" ANON_KEY)"
@@ -254,7 +323,7 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     echo "APP_PORT=${APP_PORT}"
     echo "CONTAINER_PORT=${CONTAINER_PORT}"
     echo "HEALTH_PATH=${HEALTH_PATH}"
-    [[ -n "${IMAGE_TARBALL}" ]] && echo "IMAGE_TARBALL=${IMAGE_TARBALL}"
+    [[ -n "${APP_TARBALL}" ]] && echo "IMAGE_TARBALL=${APP_TARBALL}"
     echo "APP_ENV_SUPABASE_URL=${CORE_URL}"
     # Server-side callers must NOT use the public hostname: on a cloudflared
     # box it resolves to Cloudflare's edge, which bot-challenges non-browser
@@ -268,16 +337,35 @@ for i in $(seq 0 $((APP_COUNT-1))); do
     echo "APP_ENV_OLLIE_AGENT=${PROFILE}"
     [[ -n "${ORCH_KEY}" ]] && echo "APP_ENV_OLLIE_ORCHESTRATOR_KEY=${ORCH_KEY}"
     echo "APP_ENV_APP_BASE_PATH=/apps/${NAME}"
+    # Manifest server.env FIRST, operator passthrough second: 23 keeps the last
+    # value for a repeated key, so an APP_ENV_<KEY> on stdin overrides what the
+    # manifest declares.
+    [[ -n "${MF_ENV}" ]] && printf '%s\n' "${MF_ENV}"
     printf '%s\n' "${PASSTHRU[@]:-}" | grep -v '^$' || true
     true   # group's exit status must not hinge on the last optional/passthrough line (pipefail)
   } | bash "${SUB23}"
 
-  echo "==> agent-apps [${NAME}] 4/5: dashboard tile registration"
+  echo "==> agent-apps [${NAME}] 4/4: dashboard tile registration"
   HAS_TILE="$(python3 -c "import json; d=json.load(open('${MANIFEST}')); print('1' if 'tile' in d['apps'][${i}] else '')")"
   if [[ -n "${HAS_TILE}" ]]; then
     # Build the whole JSON payload in python (json.dumps) so tile field
     # values never get bash-string-spliced into a JSON literal — they come
     # straight out of the committed manifest, read by python, not interpolated.
+    #
+    # sso is registered FALSE. ExternalWebApp.tsx treats a truthy sso as: fetch
+    # an app-token, then load <base>sso?t=... That handoff signs into the app-s
+    # OWN Supabase with a service-role client. A consolidated app has no
+    # Supabase of its own and is handed no service-role key, so the handoff
+    # cannot succeed and the tile shows an open-failure message. Its failure is
+    # invisible to a health check: every failure path in the app-s /sso handler
+    # returns HTTP 200 with an expired-link page. Falsy sso loads /apps/<name>/
+    # directly on the first-party session cookie the same-origin proxy exists
+    # to preserve.
+    #
+    # NOTE: the python below runs inside python3 -c with a DOUBLE-quoted shell
+    # string, so double quotes, backticks and $ are consumed by bash before
+    # python sees them. Keep prose out of that block — a comment with an
+    # apostrophe or backtick in it silently corrupts the whole script.
     PAYLOAD="$(python3 -c "
 import json
 d = json.load(open('${MANIFEST}'))
@@ -290,7 +378,7 @@ payload = {
     'description': tile['description'],
     'order': tile['order'],
     'componentType': 'ExternalWebApp',
-    'config': {'url': '/apps/' + app['name'] + '/', 'sso': True},
+    'config': {'url': '/apps/' + app['name'] + '/', 'sso': False},
 }
 print(json.dumps(payload))
 ")"
@@ -346,41 +434,28 @@ print(json.dumps(payload))
     echo "    (no tile in manifest — skipping)"
   fi
 
-  # /api/health does not touch Supabase, so a missing kong bridge leaves the
-  # app "healthy" while every API call 403s. Announce it instead.
-  #
-  # Probes CORE kong (the fixed ${CORE_KONG_PORT}) — the same instance written
-  # to APP_ENV_SUPABASE_INTERNAL_URL above — NOT the manifest's per-app
-  # kong_port. A consolidated app is a schema in the core stack and never
-  # talks to a per-app kong, so probing that port reported a failure for a
-  # service the app does not use, while the genuinely missing core-kong bridge
-  # went unmentioned. The bridge is shared by every app on the box, hence the
-  # fixed `core-sb` name rather than a per-app one.
-  if ! curl -fsS --max-time 10 "http://172.17.0.1:${CORE_KONG_PORT}/auth/v1/health" >/dev/null 2>&1; then
-    echo "    WARNING: internal Supabase URL http://172.17.0.1:${CORE_KONG_PORT} is unreachable — the app will look healthy but every API call will fail. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}" >&2
+  # Script 23 binds the app to 127.0.0.1 only, while the dashboard container
+  # reaches tile apps over the docker0 gateway (host.docker.internal =
+  # 172.17.0.1). A missing bridge means the tile 502s while every loopback
+  # health check passes — which is exactly how HIA failed on 2026-07-29.
+  echo "==> agent-apps [${NAME}] 4/4: app bridge"
+  if ! curl -fsS --max-time 10 "http://172.17.0.1:${APP_PORT}${HEALTH_PATH}" >/dev/null 2>&1; then
+    echo "    WARNING: http://172.17.0.1:${APP_PORT}${HEALTH_PATH} is unreachable — the tile will 502 while the loopback health check passes. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}" >&2
     WARNINGS=$((WARNINGS+1))
+  else
+    echo "    app bridge reachable"
   fi
-
-  echo "==> agent-apps [${NAME}] 5/5: caddy (root step — run yourself)"
-  # App vhost only. A consolidated app has no Supabase of its own, so there is
-  # no sb-<app> hostname to serve; core's public hostname belongs to the core
-  # stack's own setup, not to a per-app install.
-  echo "    sudo bash ${SCRIPT_DIR}/22-install-caddy-vhosts.sh ${APP_HOST}:${APP_PORT}"
-  echo "    WARNING: 22 renders the Caddyfile from ONLY its args — include EVERY vhost this box serves."
-  echo "    NOTE: caddy-fronted boxes only. On a cloudflared box SKIP 22 and add a tunnel"
-  echo "          public hostname instead (${APP_HOST} -> http://localhost:${APP_PORT})."
-  echo "          Do NOT open :80/:443."
-  if [[ -n "${HAS_TILE}" ]]; then
-    # Tile apps are embedded in the dashboard, which reaches the host via
-    # host.docker.internal = 172.17.0.1 (the docker0 gateway) — unreachable
-    # for a loopback-only (127.0.0.1) app server. 25 installs a static socat
-    # bridge (same fix 06-install-stack.sh hand-builds for the native Hermes
-    # dashboard on 9119) so the tile doesn't 502.
-    echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT} core-sb:${CORE_KONG_PORT}"
-  fi
+  # No caddy step: consolidated apps are served same-origin under
+  # /apps/<name>/ through the dashboard's nginx, so no app has a vhost or a
+  # hostname of its own.
+  echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}"
 done
+
+echo "==> bridges (root step — run yourself; core-sb is once per BOX):"
+echo "    sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh core-sb:${CORE_KONG_PORT}"
+
 if [[ "${WARNINGS}" -eq 0 ]]; then
-  echo "✓ agent-apps for profile '${PROFILE}' installed (caddy step printed above)"
+  echo "✓ agent-apps for profile '${PROFILE}' installed (bridge steps printed above)"
 else
   echo "⚠ agent-apps for profile '${PROFILE}' installed with ${WARNINGS} warning(s) — see above; the app is not fully functional until they are resolved"
 fi

@@ -116,13 +116,37 @@ chmod +x "$SUB20"
 
 # ---- SUB23 stub: logs stdin only ----
 export SUB23_LOG="$T/sub23.log"
+# Writes BOTH a flat log (what the single-app cases assert on) and a per-app
+# one, so a two-app run can be told apart. Without the per-app files, "app 1
+# got app 0's value" — the exact leak the multi-app guard existed to prevent —
+# is invisible: the flat log just shows whichever app ran last.
 cat > "$T/bin/sub23.sh" <<'SH'
 #!/usr/bin/env bash
 set -eu
-cat > "${SUB23_LOG}"
+body="$(cat)"
+name="$(printf '%s' "$body" | sed -nE 's/^APP_NAME=(.*)$/\1/p' | tail -1)"
+printf '%s' "$body" > "${SUB23_LOG}"
+printf '%s' "$body" > "${SUB23_LOG}.${name}"
 SH
 export SUB23="$T/bin/sub23.sh"
 chmod +x "$SUB23"
+
+# ---- two-app manifest fixture (Pop Bys + HIA under one agent profile) ----
+cat > "$MANIFEST_DIR/two-app.json" <<'JSON'
+{
+  "profile": "two-app",
+  "agent": { "display_name": "Two App", "subtitle": "t", "color": "#000000" },
+  "apps": [
+    { "name": "popbys",
+      "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health" },
+      "tile": { "label": "Pop Bys", "icon": "M0", "description": "d", "order": 10 } },
+    { "name": "hia",
+      "server": { "app_port": 8110, "container_port": 3000, "health_path": "/apps/hia/api/health",
+                  "env": { "EXTRA_FROM_MANIFEST": "yes" } },
+      "tile": { "label": "Home Inspection Advisor", "icon": "M1", "description": "d", "order": 20 } }
+  ]
+}
+JSON
 
 # ---- fake docker: logs full argv; simulates load/create/cp/rm and the
 # compose-exec'd psql (create-table / SELECT-applied / single-transaction
@@ -373,6 +397,15 @@ run() { # PROFILE KEY=VALUE...
   printf '%s\n' "$@" | bash "${DIR}/scripts/24-install-agent-apps.sh" "${profile}" > "$T/out.log" 2>&1
 }
 
+# Sibling of run(), NOT a change to it: every existing case calls run(), and a
+# previous attempt at this work rewrote it and left the suite in a state that
+# was reported as a hang.
+run_app() { # PROFILE APP KEY=VALUE...
+  local profile="$1" app="$2"; shift 2
+  printf '%s\n' "$@" | bash "${DIR}/scripts/24-install-agent-apps.sh" "${profile}" "${app}" > "$T/out.log" 2>&1
+}
+: > "$T/img-hia.tar"
+
 # 1. happy path: SUB20 gets the right stack params
 : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$CURL_LOG"; : > "$SUB26_LOG"
 rm -f "$CURL_LOG.payload" "$CURL_FAIL_FILE"
@@ -445,7 +478,7 @@ assert d['description'] == 'Pop-by planning: contacts, cadence, routes, calendar
 assert d['order'] == 10, d
 assert d['componentType'] == 'ExternalWebApp', d
 assert d['config']['url'] == '/apps/popbys/', d
-assert d['config']['sso'] is True, d
+assert d['config']['sso'] is False, d
 " 2>"$T/payload-check.err"; then
   ok "tile registration payload shape correct"
 else
@@ -479,27 +512,39 @@ run "real-estate" "${STDIN[@]}" && ok "re-run exits 0" || bad "re-run exits 0"
 [ "$(grep -c -- ' -1 -f -$' "$DOCKER_LOG")" = "0" ] && ok "re-run applies no migrations" || bad "re-run applies no migrations"
 [ "$(grep -c "select 1 from popbys._migrations where name=" "$DOCKER_LOG")" = "2" ] && ok "re-run still checks both migrations" || bad "re-run still checks both migrations"
 
-# 5. prints the root caddy command with BOTH vhosts and the full-set warning
-# every script in this repo is committed mode 644, so the printed command must
+# 5. bridges, and NO caddy step.
+# Consolidated apps are served same-origin under /apps/<name>/ through the
+# dashboard's nginx, so no app has a vhost or hostname of its own. The caddy
+# step sent operators to publish hostnames for a kong that does not exist.
+# every script in this repo is committed mode 644, so any printed command must
 # invoke it via `bash` — direct execution would 403/Permission-denied on a
 # fresh clone.
-grep -qE "sudo bash [^ ]*22-install-caddy-vhosts\.sh" "$T/out.log" && ok "prints copy-paste runnable caddy command (sudo bash)" || bad "prints copy-paste runnable caddy command (sudo bash)"
-grep -q "popbys.test:8130" "$T/out.log" && ok "caddy command has app vhost" || bad "caddy command has app vhost"
-# A consolidated app has NO Supabase of its own — it is a schema in the core
-# stack, whose public hostname is the core stack's concern, not this app's.
-# Emitting an sb-<app> vhost here sends the operator to create a hostname and
-# tunnel route for a kong that does not exist.
-grep -q "sb-popbys.test:8030" "$T/out.log" \
-  && bad "caddy command still emits a per-app supabase vhost" \
-  || ok "caddy command emits no per-app supabase vhost"
-grep -q "EVERY vhost this box serves" "$T/out.log" && ok "warns to pass the FULL vhost set" || bad "warns to pass the FULL vhost set"
+# Fresh single run: the probe-count assertion below counts curl invocations,
+# and CURL_LOG accumulates across every run since the happy path (including the
+# re-run case above) — counting those together reported 2 for a once-per-run
+# probe that fires exactly once.
+: > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
+run "real-estate" "${STDIN[@]}"
 
-# 5c. tile-bearing app (popbys has a "tile" key) -> also prints the bridge
-# sudo command, right after the caddy line, so the dashboard container can
-# reach the loopback-only app server.
+grep -qi "caddy" "$T/out.log" && bad "caddy step still printed" || ok "no caddy step"
 grep -qE "sudo bash [^ ]*25-install-app-bridge\.sh popbys:8130" "$T/out.log" \
-  && ok "prints copy-paste runnable bridge command (sudo bash) for tile app" \
-  || bad "prints copy-paste runnable bridge command (sudo bash) for tile app"
+  && ok "prints the app bridge command (sudo bash)" || bad "app bridge command not printed"
+grep -qE "sudo bash [^ ]*25-install-app-bridge\.sh core-sb:8000" "$T/out.log" \
+  && ok "prints the core-sb bridge command (sudo bash)" || bad "core-sb bridge command not printed"
+grep -qE "popbys-sb:" "$T/out.log" \
+  && bad "still prints a per-app supabase bridge" || ok "no per-app supabase bridge"
+
+# The app bridge is probed per app, at ITS port and health path: script 23
+# binds the app to loopback only, while the dashboard container reaches tiles
+# over the docker0 gateway. A missing bridge 502s the tile while every
+# loopback health check passes.
+grep -qE "172\.17\.0\.1:8130/api/health" "$CURL_LOG" \
+  && ok "app bridge probed at the app port and health path" || bad "app bridge not probed"
+# One core Supabase serves every app on the box, so this is a per-RUN check.
+# Probing it once per app would multiply one missing bridge into N warnings.
+[[ "$(grep -c '172.17.0.1:8000/auth/v1/health' "$CURL_LOG")" -eq 1 ]] \
+  && ok "core kong probed exactly once per run" \
+  || bad "core kong probe count wrong ($(grep -c '172.17.0.1:8000/auth/v1/health' "$CURL_LOG"))"
 
 # 5b. multi-image tarball -> exit 1 before any docker create/cp (F4: apply
 # the same single-image guard 23 uses, so migrations aren't extracted from
@@ -521,10 +566,14 @@ grep -q "docker cp" "$DOCKER_LOG" && bad "no docker cp before multi-image reject
 # 6. unknown profile -> exit 1
 run "no-such-profile" "${STDIN[@]}" && bad "unknown profile refused" || ok "unknown profile refused"
 
-# 6b. multi-app manifest -> fail loud (F3: APP_HOST/SB_HOST/IMAGE_TARBALL are
-# single-app fields; a manifest with >1 app needs per-app host fields added
-# to the schema before 24 can drive it, so refuse instead of silently
-# clobbering one app's config with another's).
+# 6b. A multi-app manifest is INSTALLABLE now — the blanket refusal is gone
+# (case 21 covers the installing path, including per-app isolation). What stays
+# fatal is a multi-app run carrying only the BARE image key: nothing says which
+# app that tarball belongs to, and guessing would install one app's image under
+# another's name and port, where it passes that app's own health check.
+# This manifest keeps its now-ignored `stack` blocks on purpose: 24 must no
+# longer read kong_port/email_enabled, and a manifest that still has them must
+# not break it.
 cat > "$MANIFEST_DIR/multi-app.json" <<'JSON'
 {
   "profile": "multi-app",
@@ -543,17 +592,19 @@ cat > "$MANIFEST_DIR/multi-app.json" <<'JSON'
 }
 JSON
 : > "$DOCKER_LOG"; : > "$SUB20_LOG"; : > "$SUB23_LOG"; : > "$SUB26_LOG"; : > "$CURL_LOG"
-run "multi-app" "${STDIN[@]}" && bad "multi-app manifest refused" || ok "multi-app manifest refused"
-grep -q "multi-app manifests are not yet supported" "$T/out.log" && ok "multi-app error message" || bad "multi-app error message"
-# SUB20 is never invoked on ANY path any more (task 6/7), so "[ -s SUB20_LOG ]"
-# is unconditionally empty here regardless of whether the multi-app guard
-# still runs — it would read the same "ok" even if that guard were deleted
-# outright (the identical class of vacuous witness ruled on in Task 2).
-# CURL_LOG is a live witness instead: the preflight's first curl call happens
-# AFTER the multi-app count check (24:83-86 precede 24's first curl at ~107),
-# so an empty CURL_LOG proves the guard fired before any install work — not
-# merely that a retired script was never called.
-[ ! -s "$CURL_LOG" ] && ok "multi-app guard precedes any install work (empty CURL_LOG proves it)" || bad "install work started before the multi-app guard fired"
+# The agent must exist, or the run dies at the preflight and never reaches the
+# image resolution this case is about. The old guard fired before the preflight,
+# so this did not matter until now.
+printf '{"agents":[{"id":"multi-app"}]}' > "$AGENTS_JSON_FILE"
+run "multi-app" "${STDIN[@]}" \
+  && bad "bare IMAGE_TARBALL accepted for a 2-app manifest" \
+  || ok "bare IMAGE_TARBALL refused for a 2-app manifest"
+grep -q "IMAGE_TARBALL_" "$T/out.log" \
+  && ok "error names the per-app image key" || bad "error does not name the per-app image key"
+# The refusal must name the filter as the other way out, so an operator with a
+# single tarball is not stuck.
+grep -q "24-install-agent-apps.sh multi-app" "$T/out.log" \
+  && ok "error offers the app-name filter as the alternative" || bad "error does not mention the filter"
 
 # 7. [retired] host carry-forward from a per-app stack `.env` — there is no
 # per-app stack any more (20 is never called; step 1 provisions a schema in
@@ -837,10 +888,9 @@ rm -f "$AGENT_NEVER_APPEARS_FILE"
 # the manifest's per-app kong_port, since there is no per-app kong any more);
 # the public hostname 403s from server-side callers on a tunnel box. The
 # PUBLIC APP_ENV_SUPABASE_URL must still be passed too (the browser needs
-# it) — and it is now core's public URL, not a per-app one. 24 must still
-# print BOTH bridges (app + kong) in step 5/5 (that printing is unchanged;
-# it still uses the manifest's kong_port for the vhost/bridge, a separate
-# concern from which Supabase instance serves the app's API traffic).
+# it) — and it is now core's public URL, not a per-app one. Both bridges are
+# still printed, but separately: the app's own inside the per-app step, and
+# the shared core-sb one after the loop (it is installed once per box).
 : > "$CURL_LOG"; printf '{"agents":[{"id":"real-estate"}]}' > "$AGENTS_JSON_FILE"
 run real-estate "${STDIN[@]}"
 grep -q '^APP_ENV_SUPABASE_INTERNAL_URL=http://172.17.0.1:8000$' "$SUB23_LOG" \
@@ -851,9 +901,10 @@ grep -q '^APP_ENV_SUPABASE_URL=https://sb-core.test$' "$SUB23_LOG" \
   && ok "public APP_ENV_SUPABASE_URL is core's public URL (browser needs it)" \
   || bad "public APP_ENV_SUPABASE_URL was dropped or is not core's URL"
 
-grep -q "25-install-app-bridge.sh popbys:8130 core-sb:8000" "$T/out.log" \
-  && ok "24 prints both bridges (app + CORE kong on :8000)" \
-  || bad "24 did not print the core kong bridge"
+grep -qE "25-install-app-bridge\.sh popbys:8130" "$T/out.log" \
+  && grep -qE "25-install-app-bridge\.sh core-sb:8000" "$T/out.log" \
+  && ok "24 prints both bridges (app, and CORE kong on :8000)" \
+  || bad "24 did not print both bridges"
 
 # 19. Probe failure => loud warning naming the bridge, non-fatal to the run,
 # and the run ends on the warning banner with an EXACT count. Uses the
@@ -900,5 +951,53 @@ grep -q "foo_bar" "$T/out.log" && ok "error names the offending app" || bad "err
 grep -qE '\^\[a-z\]\[a-z0-9\]\*\$' "$T/out.log" \
   && ok "error states the required pattern" || bad "error omits the pattern"
 [[ ! -s "$CURL_LOG" ]] && ok "validation precedes the orchestrator preflight (empty CURL_LOG proves it)" || bad "orchestrator preflight ran before validation"
+
+# ---- 21. multi-app: the guard is gone, and nothing leaks across iterations
+TWO_STDIN=("ORCH_ENV_FILE=$T/hermes-stack/.env" "STACK_ENV_FILE=$T/stack-env/.env")
+: > "$CURL_LOG"; : > "$DOCKER_LOG"; rm -f "$SUB23_LOG".*
+printf '{"agents":[{"id":"two-app"}]}' > "$AGENTS_JSON_FILE"
+
+run "two-app" "${TWO_STDIN[@]}" "IMAGE_TARBALL_POPBYS=$T/img.tar" "IMAGE_TARBALL_HIA=$T/img-hia.tar" \
+  && ok "two-app manifest installs" || bad "two-app manifest failed"
+
+# THE regression the guard was hiding. A leaked tarball installs app 0's IMAGE
+# under app 1's name and port — where it passes app 1's own health check, so
+# nothing looks broken.
+grep -q "img-hia.tar" "$DOCKER_LOG" && ok "hia's own tarball was loaded" || bad "hia's tarball not loaded"
+grep -q '^APP_ENV_SUPABASE_DB_SCHEMA=hia$'    "$SUB23_LOG.hia"    && ok "hia got its own schema"    || bad "hia schema wrong"
+grep -q '^APP_ENV_SUPABASE_DB_SCHEMA=popbys$' "$SUB23_LOG.popbys" && ok "popbys got its own schema" || bad "popbys schema wrong"
+grep -q '^APP_PORT=8110$' "$SUB23_LOG.hia" && ok "hia got its own port" || bad "hia port leaked"
+grep -q '^APP_PORT=8130$' "$SUB23_LOG.popbys" && ok "popbys got its own port" || bad "popbys port leaked"
+grep -q 'EXTRA_FROM_MANIFEST' "$SUB23_LOG.hia" \
+  && ok "manifest server.env reached hia" || bad "server.env did not reach the app"
+grep -q 'EXTRA_FROM_MANIFEST' "$SUB23_LOG.popbys" \
+  && bad "hia's server.env leaked into popbys" || ok "server.env did not leak across apps"
+
+# operator APP_ENV_<KEY> beats manifest server.env
+run "two-app" "${TWO_STDIN[@]}" "IMAGE_TARBALL_POPBYS=$T/img.tar" "IMAGE_TARBALL_HIA=$T/img-hia.tar" \
+  "APP_ENV_EXTRA_FROM_MANIFEST=operator-wins"
+grep -q '^APP_ENV_EXTRA_FROM_MANIFEST=operator-wins$' "$SUB23_LOG.hia" \
+  && ok "operator APP_ENV wins over manifest server.env" || bad "manifest server.env beat the operator"
+
+# The bare key is FATAL with two apps in play, and names the key it wants.
+# (SUB23 is a stub here, so no ~/apps/<name>/.env ever exists and the
+# carry-forward path cannot mask this.)
+run "two-app" "${TWO_STDIN[@]}" "IMAGE_TARBALL=$T/img.tar" \
+  && bad "bare IMAGE_TARBALL accepted with two apps" || ok "bare IMAGE_TARBALL rejected with two apps"
+grep -q 'IMAGE_TARBALL_' "$T/out.log" \
+  && ok "error names the per-app key it wants" || bad "error does not name the per-app key"
+
+# the filter narrows the run to one app — and the bare key is legal again
+: > "$DOCKER_LOG"; rm -f "$SUB23_LOG".*
+run_app "two-app" "hia" "${TWO_STDIN[@]}" "IMAGE_TARBALL=$T/img-hia.tar" \
+  && ok "filtered run accepts the bare key" || bad "filtered run rejected the bare key"
+[[ -f "$SUB23_LOG.hia" && ! -f "$SUB23_LOG.popbys" ]] \
+  && ok "filter installed ONLY the named app" || bad "filter did not narrow the run"
+
+# an unknown app name errors and lists the valid ones
+run_app "two-app" "nope" "${TWO_STDIN[@]}" "IMAGE_TARBALL=$T/img.tar" \
+  && bad "unknown app name accepted" || ok "unknown app name rejected"
+grep -q 'popbys' "$T/out.log" && grep -q 'hia' "$T/out.log" \
+  && ok "error lists the manifest's app names" || bad "error does not list valid names"
 
 echo; echo "${pass} passed, ${fail} failed"; [ "$fail" -eq 0 ]
