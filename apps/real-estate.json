@@ -12,7 +12,15 @@
         "app_port": 8110,
         "container_port": 3000,
         "health_path": "/apps/hia/api/health",
-        "required_env": ["GOOGLE_MAPS_API_KEY"]
+        "required_env": ["GOOGLE_MAPS_API_KEY", "ANTHROPIC_API_KEY", "DOCRAPTOR_API_KEY"],
+        "optional_env": ["ATTOM_API_KEY", "DOCRAPTOR_TEST_MODE"]
+      },
+      "storage": {
+        "buckets": [
+          { "id": "inspection_pdfs", "max_bytes": 52428800, "mime_types": ["application/pdf"] },
+          { "id": "amendment_pdfs", "max_bytes": 52428800, "mime_types": ["application/pdf"] },
+          { "id": "report_pdfs", "max_bytes": 52428800, "mime_types": ["application/pdf"] }
+        ]
       },
       "tile": {
         "label": "Home Inspection Advisor",

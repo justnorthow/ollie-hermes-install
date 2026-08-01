@@ -75,6 +75,18 @@ SH
 export SUB26="$T/bin/sub26.sh"
 chmod +x "$SUB26"
 
+# ---- SUB27 stub: logs manifest-declared storage JSON per app ----
+export SUB27_LOG="$T/sub27.log"
+cat > "$T/bin/sub27.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+body="$(cat)"
+name="$(printf '%s' "$body" | sed -nE 's/^APP_NAME=(.*)$/\1/p' | tail -1)"
+printf '%s' "$body" > "${SUB27_LOG}.${name}"
+SH
+export SUB27="$T/bin/sub27.sh"
+chmod +x "$SUB27"
+
 # ---- fixture orchestrator env file (HIA_SSO_SECRET present: happy path) ----
 mkdir -p "$T/hermes-stack"
 cat > "$T/hermes-stack/.env" <<'EOF'
@@ -155,7 +167,10 @@ cat > "$MANIFEST_DIR/secret-routing.json" <<'JSON'
   "apps": [
     { "name": "hia",
       "server": { "app_port": 8110, "container_port": 3000, "health_path": "/apps/hia/api/health",
-                  "required_env": ["HIA_BROWSER_KEY"] } },
+                  "required_env": ["HIA_BROWSER_KEY"] },
+      "storage": { "buckets": [
+        { "id": "inspection_pdfs", "max_bytes": 52428800, "mime_types": ["application/pdf"] }
+      ] } },
     { "name": "popbys",
       "server": { "app_port": 8130, "container_port": 8080, "health_path": "/api/health",
                   "optional_env": ["POPBYS_SERVER_KEY"] } },
@@ -892,7 +907,7 @@ grep -q "created from manifest defaults" "$T/out.log" \
 # SUB20 is never invoked on ANY path any more, so it is unconditionally
 # empty here regardless of whether the agent-verification gate still runs —
 # the identical class of vacuous witness ruled on in Task 2. SUB26 is now
-# the first real install-work call (step 1/4), so its log is the live
+# the first real install-work call (step 1/6), so its log is the live
 # witness: non-empty would mean install work started before the agent was
 # ever verified.
 [ -s "$SUB26_LOG" ] \
@@ -943,7 +958,7 @@ grep -q "172.17.0.1:8000/auth/v1/health" "$CURL_LOG" \
   || bad "the health probe was never attempted — exit 0 would prove nothing"
 [[ "${rc}" -eq 0 ]] && ok "probe failure is non-fatal (run still exits 0)" || bad "probe failure aborted the run (rc=${rc})"
 grep -qE "WARNING:.*25-install-app-bridge.sh core-sb:8000" "$T/out.log" \
-  && ok "the warning names the missing bridge (anchored to the warning line itself, not the step-5/5 bridge print)" \
+  && ok "the warning names the missing bridge (anchored to the warning line itself, not the step-6/6 bridge print)" \
   || bad "warning does not name the bridge"
 grep -qE "^⚠ agent-apps for profile 'real-estate' installed with 1 warning" "$T/out.log" \
   && ok "run ends on the warning banner with the exact count (probe's WARNINGS increment pinned)" \
@@ -1064,6 +1079,10 @@ grep -q 'HIA_BROWSER_KEY' "$SUB23_LOG.popbys" \
   && bad "HIA browser key leaked into Pop Bys" || ok "HIA browser key did not leak into Pop Bys"
 grep -qE '(HIA_BROWSER_KEY|POPBYS_SERVER_KEY)' "$SUB23_LOG.newsletter" \
   && bad "app-scoped key leaked into Newsletter" || ok "app-scoped keys did not leak into Newsletter"
+grep -q '^STORAGE_CONFIG_JSON=.*inspection_pdfs' "$SUB27_LOG.hia" \
+  && ok "HIA storage contract routed to provisioner" || bad "HIA storage contract not provisioned"
+[[ ! -e "$SUB27_LOG.popbys" && ! -e "$SUB27_LOG.newsletter" ]] \
+  && ok "storage contract did not leak across apps" || bad "storage provisioner ran for undeclared app"
 
 # A missing first-install requirement must fail before the orchestrator call or
 # schema provisioning, not halfway through a multi-app mutation.
@@ -1119,7 +1138,13 @@ python3 - "$DIR/apps/real-estate.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 apps = {app['name']: app for app in d['apps']}
-assert apps['hia']['server'].get('required_env') == ['GOOGLE_MAPS_API_KEY']
+assert apps['hia']['server'].get('required_env') == [
+    'GOOGLE_MAPS_API_KEY', 'ANTHROPIC_API_KEY', 'DOCRAPTOR_API_KEY'
+]
+assert apps['hia']['server'].get('optional_env') == ['ATTOM_API_KEY', 'DOCRAPTOR_TEST_MODE']
+assert [b['id'] for b in apps['hia']['storage']['buckets']] == [
+    'inspection_pdfs', 'amendment_pdfs', 'report_pdfs'
+]
 assert 'GOOGLE_MAPS_API_KEY' not in apps['popbys']['server'].get('required_env', [])
 assert 'GOOGLE_MAPS_API_KEY' not in apps['popbys']['server'].get('optional_env', [])
 assert 'GOOGLE_MAPS_API_KEY' not in apps['newsletter']['server'].get('required_env', [])

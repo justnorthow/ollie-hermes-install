@@ -53,6 +53,7 @@ MANIFEST="${MANIFEST_DIR:-${SCRIPT_DIR}/../apps}/${PROFILE}.json"
 SUB20="${SUB20:-${SCRIPT_DIR}/20-install-app-stack.sh}"
 SUB23="${SUB23:-${SCRIPT_DIR}/23-install-app-server.sh}"
 SUB26="${SUB26:-${SCRIPT_DIR}/26-provision-app-schema.sh}"
+SUB27="${SUB27:-${SCRIPT_DIR}/27-provision-app-storage.sh}"
 CORE_DIR="${CORE_STACK_DIR:-$HOME/supabase-stack}"
 STACKS="${STACKS_DIR:-$HOME/stacks}"
 # The CORE stack's kong port is fixed (compose publishes 127.0.0.1:8000) and is
@@ -182,7 +183,7 @@ ORCH_KEY="$(grep -E '^ORCHESTRATOR_KEY=' "${ORCH_ENV_FILE}" | tail -n1 | cut -d=
 # success line.
 WARNINGS=0
 
-# Preflight: the orchestrator 404s the dashboard-tile POST (stage 4/5, below)
+# Preflight: the orchestrator 404s the dashboard-tile POST (stage 5/6, below)
 # if no agent with id == PROFILE exists yet — on a real box that kills the
 # run after the Supabase stack and app server are already built. Confirm (or
 # create) the agent FIRST so a missing agent fails before any install work.
@@ -325,13 +326,13 @@ for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
     print('APP_ENV_%s=%s' % (k, v))
 ")"
 
-  echo "==> agent-apps [${NAME}] 1/4: app schema + owner role in the core stack"
+  echo "==> agent-apps [${NAME}] 1/6: app schema + owner role in the core stack"
   {
     echo "APP_NAME=${NAME}"
     echo "CORE_STACK_DIR=${CORE_DIR}"
   } | bash "${SUB26}"
 
-  echo "==> agent-apps [${NAME}] 2/4: app migrations into schema '${NAME}'"
+  echo "==> agent-apps [${NAME}] 2/6: app migrations into schema '${NAME}'"
   if [[ -n "${APP_TARBALL}" ]]; then
     LOAD_OUT="$(docker load -i "${APP_TARBALL}")"
     if [[ "$(grep -c '^Loaded image' <<<"${LOAD_OUT}")" -ne 1 ]]; then
@@ -362,7 +363,17 @@ for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
   }
   app_migrations_apply "${IMG}" core_psql "${NAME}._migrations" "${NAME}"
 
-  echo "==> agent-apps [${NAME}] 3/4: app server (port ${APP_PORT})"
+  STORAGE_JSON="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d["apps"][int(sys.argv[2])].get("storage") or {}))' "${MANIFEST}" "${i}")"
+  if [[ "${STORAGE_JSON}" != "{}" ]]; then
+    echo "==> agent-apps [${NAME}] 3/6: private storage contract"
+    {
+      echo "APP_NAME=${NAME}"
+      echo "CORE_STACK_DIR=${CORE_DIR}"
+      printf 'STORAGE_CONFIG_JSON=%s\n' "${STORAGE_JSON}"
+    } | bash "${SUB27}"
+  fi
+
+  echo "==> agent-apps [${NAME}] 4/6: app server (port ${APP_PORT})"
   # ORCH_KEY was already resolved above (before the preflight).
   CORE_URL="$(supabase_app_env_val "${CORE_DIR}/.env" SUPABASE_PUBLIC_URL)"
   ANON="$(supabase_app_env_val "${CORE_DIR}/.env" ANON_KEY)"
@@ -372,7 +383,7 @@ for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
   # This REPLACES service_role for the app. Core's service_role key bypasses
   # RLS and reaches every schema plus auth, so it must never reach a container.
   APP_KEY_FILE="${CORE_DIR}/app-keys/${NAME}.jwt"
-  [[ -f "${APP_KEY_FILE}" ]] || { echo "error: ${APP_KEY_FILE} not found — 26 should have minted it in step 1/4" >&2; exit 1; }
+  [[ -f "${APP_KEY_FILE}" ]] || { echo "error: ${APP_KEY_FILE} not found — 26 should have minted it in step 1/6" >&2; exit 1; }
   APP_KEY="$(cat "${APP_KEY_FILE}")"
   [[ -n "${APP_KEY}" ]] || { echo "error: ${APP_KEY_FILE} is empty" >&2; exit 1; }
 
@@ -419,7 +430,7 @@ for k, v in ((d['apps'][${i}].get('server') or {}).get('env') or {}).items():
     true   # group's exit status must not hinge on the last optional/passthrough line (pipefail)
   } | bash "${SUB23}"
 
-  echo "==> agent-apps [${NAME}] 4/4: dashboard tile registration"
+  echo "==> agent-apps [${NAME}] 5/6: dashboard tile registration"
   HAS_TILE="$(python3 -c "import json; d=json.load(open('${MANIFEST}')); print('1' if 'tile' in d['apps'][${i}] else '')")"
   if [[ -n "${HAS_TILE}" ]]; then
     # Build the whole JSON payload in python (json.dumps) so tile field
@@ -512,7 +523,7 @@ print(json.dumps(payload))
   # reaches tile apps over the docker0 gateway (host.docker.internal =
   # 172.17.0.1). A missing bridge means the tile 502s while every loopback
   # health check passes — which is exactly how HIA failed on 2026-07-29.
-  echo "==> agent-apps [${NAME}] 4/4: app bridge"
+  echo "==> agent-apps [${NAME}] 6/6: app bridge verification"
   if ! curl -fsS --max-time 10 "http://172.17.0.1:${APP_PORT}${HEALTH_PATH}" >/dev/null 2>&1; then
     echo "    WARNING: http://172.17.0.1:${APP_PORT}${HEALTH_PATH} is unreachable — the tile will 502 while the loopback health check passes. Install the bridge: sudo bash ${SCRIPT_DIR}/25-install-app-bridge.sh ${NAME}:${APP_PORT}" >&2
     WARNINGS=$((WARNINGS+1))
