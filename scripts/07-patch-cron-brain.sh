@@ -102,7 +102,16 @@ PY
 fi
 
 echo
-echo "==> step 3: restart any running gateways so the patches load"
+echo "==> step 3: refresh whole-process sandboxing before gateway restart"
+mapfile -t runtime_units < <(find "${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}" -maxdepth 1 -type f \( -name 'hermes-gateway*.service' -o -name 'hermes-dashboard*.service' \) -printf '%f\n' | sort)
+if [[ "${#runtime_units[@]}" -eq 0 ]]; then
+  echo "error: no Hermes runtime units found to harden" >&2
+  exit 1
+fi
+bash "${SCRIPT_DIR}/lib/harden-hermes-runtime.sh" "${runtime_units[@]}"
+
+echo
+echo "==> step 4: restart any running gateways so the patches load"
 for unit in $(systemctl --user list-units --no-legend --plain --type=service --state=active 'hermes-gateway*' 2>/dev/null | awk '{print $1}'); do
   echo "    restarting ${unit}"
   systemctl --user restart "${unit}"

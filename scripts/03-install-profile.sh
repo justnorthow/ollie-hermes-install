@@ -168,6 +168,9 @@ StartLimitIntervalSec=60
 [Install]
 WantedBy=default.target
 EOF
+echo "==> step 6a: contain all autonomous Hermes process trees"
+bash "${SCRIPT_DIR}/lib/harden-hermes-runtime.sh" \
+  "hermes-gateway-${NAME}.service" "hermes-dashboard-${NAME}.service"
 systemctl --user daemon-reload
 systemctl --user enable --now "hermes-dashboard-${NAME}"
 

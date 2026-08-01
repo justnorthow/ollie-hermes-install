@@ -70,9 +70,31 @@ PY
   fi
 done
 
+# 2b. every autonomous Hermes service must carry the whole-process sandbox. The host
+# account retains trusted control-plane privileges, so a missing drop-in is a
+# host-root exposure, not a cosmetic hardening gap.
+shopt -s nullglob
+runtime_units=("${UNIT_DIR}"/hermes-gateway*.service "${UNIT_DIR}"/hermes-dashboard*.service)
+if [[ "${#runtime_units[@]}" -eq 0 ]]; then
+  fail "no Hermes runtime unit files found — sandbox unverifiable"
+else
+  for runtime_unit in "${runtime_units[@]}"; do
+    runtime_name="$(basename "${runtime_unit}")"
+    sandbox_conf="${runtime_unit}.d/20-ollie-runtime-sandbox.conf"
+    if [[ -f "${sandbox_conf}" ]] \
+       && grep -qx 'NoNewPrivileges=yes' "${sandbox_conf}" \
+       && grep -qx 'ProtectHome=tmpfs' "${sandbox_conf}" \
+       && grep -qx 'InaccessiblePaths=-/var/run/docker.sock' "${sandbox_conf}" \
+       && grep -qx 'InaccessiblePaths=-/run/user/%U/bus' "${sandbox_conf}"; then
+      pass "${runtime_name} autonomous runtime sandboxed"
+    else
+      fail "${runtime_name} missing/incomplete runtime sandbox (${sandbox_conf})"
+    fi
+  done
+fi
+
 # 3. session-token drop-in per dashboard unit, matching the orchestrator token
 TOKEN="$(orch_val HERMES_DASHBOARD_TOKEN)"
-shopt -s nullglob
 for unit in "${UNIT_DIR}"/hermes-dashboard*.service; do
   name="$(basename "${unit}")"
   conf="${UNIT_DIR}/${name}.d/session-token.conf"

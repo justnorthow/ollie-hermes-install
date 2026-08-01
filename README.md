@@ -14,6 +14,13 @@ A working install of:
 - **Ollie dashboard** (Docker) — the React frontend
 - **Cortex memory plugin** registered into Hermes so chat turns get extracted into memory
 
+The host service account remains a trusted control-plane identity because it
+manages the local Docker stack. Autonomous Hermes services do **not** inherit
+that ambient power: every gateway and dashboard receives a systemd whole-process sandbox
+that hides the service account's home (except Hermes state/cache), Docker
+socket, SSH/config files, and user-manager bus, and removes privilege gains and
+Linux capabilities. `check-box-config.sh` treats a missing sandbox as a failure.
+
 ## Prerequisites
 
 - A fresh Linux VM (tested on Ubuntu 24.04+)

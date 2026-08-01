@@ -8,6 +8,7 @@ setup_healthy() {
   local d; d="$(mktemp -d)"
   mkdir -p "$d/units/hermes-dashboard.service.d" "$d/profiles" "$d/nginx"
   printf 'API_SERVER_PORT=8642\n' > "$d/hermes.env"
+  printf '[Service]\nExecStart=hermes gateway\n' > "$d/units/hermes-gateway.service"
   printf '[Service]\nExecStart=hermes dashboard --host 127.0.0.1 --port 9119\n' > "$d/units/hermes-dashboard.service"
   cat > "$d/orch.env" <<'EOF'
 INSTANCE_ID=inst-1
@@ -18,6 +19,9 @@ HERMES_GATEWAY_URLS={"default": "http://127.0.0.1:8642"}
 HERMES_DASHBOARD_URLS={"default": "http://127.0.0.1:9119"}
 EOF
   printf '[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=tok123' > "$d/units/hermes-dashboard.service.d/session-token.conf"
+  SYSTEMD_USER_DIR="$d/units" HARDEN_RUNTIME_NO_RELOAD=1 \
+    bash "$HERE/../scripts/lib/harden-hermes-runtime.sh" \
+      hermes-gateway.service hermes-dashboard.service >/dev/null
   printf 'SUPABASE_URL=https://abc.supabase.co\nSUPABASE_ANON_KEY=anon\n' > "$d/stack.env"
   # Proxy artifacts a healthy box would have (Task 6): one nginx conf per
   # hermes-dashboard unit plus the auth drop-in matching
@@ -108,6 +112,11 @@ test_each_gap_flagged() {
   d="$(setup_healthy)"; sed -i '/^SUPABASE_ANON_KEY=/d' "$d/stack.env"
   out="$(run_gate "$d")"; rc=$?
   assert_eq "stack anon gap exit 1" "$rc" "1"
+
+  d="$(setup_healthy)"; rm "$d/units/hermes-gateway.service.d/20-ollie-runtime-sandbox.conf"
+  out="$(run_gate "$d")"; rc=$?
+  assert_eq "runtime sandbox gap exit 1" "$rc" "1"
+  assert_eq "runtime sandbox gap named" "$(echo "$out" | grep -c 'FAIL: hermes-gateway.service missing/incomplete runtime sandbox')" "1"
 }
 
 test_detection_failure_fails_loudly() {
