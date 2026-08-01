@@ -103,7 +103,7 @@ END
 -- SQL-text assertion could have caught it.
 --
 -- Grantee is the LITERAL role, never CURRENT_USER: on PostgreSQL 15.8
--- `GRANT <role> TO CURRENT_USER` SEGFAULTS the backend (signal 11), which
+-- GRANT ROLE TO CURRENT_USER SEGFAULTS the backend (signal 11), which
 -- terminates every other connection and forces database-wide recovery. Seen on
 -- the dev box. core_psql always connects -U postgres, so the name is known.
 GRANT ${OWNER_ROLE} TO postgres;
