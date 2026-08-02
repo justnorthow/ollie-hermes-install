@@ -1141,7 +1141,7 @@ apps = {app['name']: app for app in d['apps']}
 assert apps['hia']['server'].get('required_env') == [
     'GOOGLE_MAPS_API_KEY', 'ANTHROPIC_API_KEY', 'DOCRAPTOR_API_KEY'
 ]
-assert apps['hia']['server'].get('optional_env') == ['ATTOM_API_KEY', 'DOCRAPTOR_TEST_MODE']
+assert apps['hia']['server'].get('optional_env') == ['ANTHROPIC_MODEL', 'ATTOM_API_KEY', 'DOCRAPTOR_TEST_MODE']
 assert [b['id'] for b in apps['hia']['storage']['buckets']] == [
     'inspection_pdfs', 'amendment_pdfs', 'report_pdfs'
 ]

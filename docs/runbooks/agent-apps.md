@@ -41,12 +41,18 @@ An app can declare bare operator inputs in its manifest under
 the first install. On a re-run, an existing value in `~/apps/<name>/.env`
 satisfies the requirement and is preserved.
 
-The real-estate profile requires `GOOGLE_MAPS_API_KEY` for HIA. It does not
-send that browser-referrer-restricted key to Pop Bys or Newsletter:
+The real-estate profile requires `GOOGLE_MAPS_API_KEY`, `ANTHROPIC_API_KEY`,
+and `DOCRAPTOR_API_KEY` for HIA. It does not send those HIA-scoped values to
+Pop Bys or Newsletter. `ANTHROPIC_MODEL` is an optional runtime override, and
+`DOCRAPTOR_TEST_MODE=true` keeps dev/test PDF generations out of production
+document quota:
 
 ```bash
 printf '%s\n' \
   'GOOGLE_MAPS_API_KEY=<value>' \
+  'ANTHROPIC_API_KEY=<value>' \
+  'DOCRAPTOR_API_KEY=<value>' \
+  'DOCRAPTOR_TEST_MODE=true' \
   'IMAGE_TARBALL_HIA=/home/ollie/hia.tar' \
   'IMAGE_TARBALL_POPBYS=/home/ollie/popbys.tar' \
   'IMAGE_TARBALL_NEWSLETTER=/home/ollie/newsletter.tar' \
