@@ -19,7 +19,29 @@ if [[ "$#" -eq 0 ]]; then
   exit 2
 fi
 
-for unit in "$@"; do
+UNITS=("$@")
+BACKUPS=()
+HAD_ORIGINAL=()
+
+restore_dropins() {
+  local i unit conf
+  for i in "${!UNITS[@]}"; do
+    unit="${UNITS[$i]}"
+    conf="${UNIT_DIR}/${unit}.d/20-ollie-runtime-sandbox.conf"
+    if [[ "${HAD_ORIGINAL[$i]:-0}" == "1" ]]; then
+      mv -f "${BACKUPS[$i]}" "${conf}"
+    else
+      rm -f "${conf}" "${BACKUPS[$i]:-}"
+    fi
+  done
+}
+
+cleanup_backups() {
+  local backup
+  for backup in "${BACKUPS[@]}"; do rm -f "${backup}"; done
+}
+
+for unit in "${UNITS[@]}"; do
   if [[ ! "${unit}" =~ ^hermes-(gateway|dashboard)(-[A-Za-z0-9_-]+)?\.service$ ]]; then
     echo "harden-hermes-runtime: refusing non-Hermes-runtime unit '${unit}'" >&2
     exit 2
@@ -32,13 +54,22 @@ for unit in "$@"; do
 
   dropdir="${UNIT_DIR}/${unit}.d"
   mkdir -p "${dropdir}"
-  cat > "${dropdir}/20-ollie-runtime-sandbox.conf" <<'EOF'
+  conf="${dropdir}/20-ollie-runtime-sandbox.conf"
+  backup="${conf}.pre-hardening.$$"
+  BACKUPS+=("${backup}")
+  if [[ -f "${conf}" ]]; then
+    cp -p "${conf}" "${backup}"
+    HAD_ORIGINAL+=("1")
+  else
+    HAD_ORIGINAL+=("0")
+  fi
+
+  cat > "${conf}" <<'EOF'
 [Service]
 # Whole-process containment: applies to the gateway and every child it spawns.
 NoNewPrivileges=yes
 PrivateUsers=yes
 PrivateTmp=yes
-PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=tmpfs
 
@@ -56,11 +87,7 @@ InaccessiblePaths=-/run/user/%U/bus
 InaccessiblePaths=-/run/user/%U/systemd
 
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectClock=yes
-ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
 RestrictNamespaces=yes
@@ -68,22 +95,51 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes
 RemoveIPC=yes
-CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0077
+
+# Deliberately omitted for user services: PrivateDevices, ProtectKernelModules,
+# ProtectKernelLogs, ProtectClock, ProtectHostname, and CapabilityBoundingSet.
+# Unprivileged systemd user managers on supported VPS hosts cannot apply these
+# directives (status=218/CAPABILITIES). NoNewPrivileges plus the filesystem,
+# socket, namespace, and user-manager boundaries above enforce the relevant
+# privilege boundary without making the runtime fail closed at startup.
 EOF
-  chmod 0600 "${dropdir}/20-ollie-runtime-sandbox.conf"
+  chmod 0600 "${conf}"
   echo "harden-hermes-runtime: sandboxed ${unit}"
 done
 
 if [[ "${HARDEN_RUNTIME_NO_RELOAD:-0}" != "1" ]]; then
-  systemctl --user daemon-reload
-  for unit in "$@"; do
+  if ! systemctl --user daemon-reload; then
+    restore_dropins
+    systemctl --user daemon-reload || true
+    cleanup_backups
+    echo "harden-hermes-runtime: daemon-reload failed; restored previous drop-ins" >&2
+    exit 1
+  fi
+
+  failed_unit=""
+  for unit in "${UNITS[@]}"; do
     # `gateway install` normally starts immediately. Reloading does not alter an
     # already-running process, so restart it now or the new boundary would not
     # exist until the next reboot.
-    systemctl --user try-restart "${unit}"
+    if ! systemctl --user try-restart "${unit}"; then
+      failed_unit="${unit}"
+      break
+    fi
   done
+
+  if [[ -n "${failed_unit}" ]]; then
+    restore_dropins
+    systemctl --user daemon-reload || true
+    systemctl --user reset-failed "${UNITS[@]}" || true
+    for unit in "${UNITS[@]}"; do systemctl --user try-restart "${unit}" || true; done
+    cleanup_backups
+    echo "harden-hermes-runtime: ${failed_unit} failed after hardening; restored previous drop-ins" >&2
+    exit 1
+  fi
 fi
+
+cleanup_backups
